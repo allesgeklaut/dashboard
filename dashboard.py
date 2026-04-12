@@ -242,32 +242,30 @@ def _find_backlight():
     return None
 
 def screen_off():
-    """Set backlight brightness to 0."""
+    """Set backlight brightness to 0 via shell (mirrors what works in terminal)."""
     path = _find_backlight()
     if not path:
         return
+    # Use sudo for permission elevation (configured in sudoers for passwordless)
     try:
-        with open(f"{path}/brightness", "w") as f:
-            f.write("0")
-    except PermissionError:
-        # User not in video group yet — silently skip
-        pass
-    except Exception:
+        subprocess.run(["sudo", "bash", "-c", f"echo 0 > {path}/brightness"],
+                       check=True, capture_output=True, timeout=5)
+        return
+    except:
         pass
 
 def screen_on():
-    """Restore backlight to 80% brightness."""
+    """Restore backlight to 80% brightness via shell."""
     path = _find_backlight()
     if not path:
         return
     try:
         max_b = int(open(f"{path}/max_brightness").read().strip())
         val = int(max_b * 0.8)
-        with open(f"{path}/brightness", "w") as f:
-            f.write(str(val))
-    except PermissionError:
-        pass
-    except Exception:
+        subprocess.run(["sudo", "bash", "-c", f"echo {val} > {path}/brightness"],
+                       check=True, capture_output=True, timeout=5)
+        return
+    except:
         pass
 
 
@@ -354,19 +352,14 @@ class HomelabApp(App):
     Button        { min-width: 14; margin: 0 1; background: #002200;
                     color: #00ff00; border: solid green; }
     Button:focus  { background: #004400; border: solid #00ff00; }
-    Button.-stop  { border: solid red; color: #ff4444; }
+    Button.-stop    { border: solid red; color: #ff4444; }
+    Button.-screen  { border: solid #555; color: #888888; }
     DataTable     { background: #0a0a0a; color: green; }
     StatsWidget   { height: auto; }
     StorageWidget { height: auto; }
     NetworkWidget { height: auto; }
     """
-    BINDINGS = [
-        ("s", "act('start')",   "Start"),
-        ("x", "act('stop')",    "Stop"),
-        ("t", "act('restart')", "Restart"),
-        ("r", "refresh",        "Refresh"),
-        ("q", "quit",           "Quit"),
-    ]
+    BINDINGS = []
 
     _containers: list = []
     selected_id: reactive[str | None] = reactive(None)
@@ -386,6 +379,7 @@ class HomelabApp(App):
                     yield Button("■  STOP",    id="b-stop",    classes="-stop")
                     yield Button("↺  RESTART", id="b-restart")
                     yield Button("⟳  REFRESH", id="b-refresh")
+                    yield Button("⏻  SCREEN",  id="b-screen")
         yield Static(id="statusbar")
 
     def on_mount(self):
@@ -408,12 +402,13 @@ class HomelabApp(App):
         t.append("CTRL", style="bold bright_green")
         t.append(f"   ●  {host}  ●  {now}", style="dim green")
         self.query_one("#topbar").update(t)
-        keys = "  │  s:Start  x:Stop  t:Restart  r:Refresh  q:Quit"
+        keys = "  │  Use buttons below to control containers"
         self.query_one("#statusbar").update(
             Text(f" ► {self.status_msg}{keys}", style="dim green"))
         # Screen timeout
         if SCREEN_TIMEOUT > 0 and not self._screen_is_off:
-            if time.time() - self._last_activity > SCREEN_TIMEOUT:
+            idle_time = time.time() - self._last_activity
+            if idle_time > SCREEN_TIMEOUT:
                 self._screen_is_off = True
                 screen_off()
 
@@ -458,6 +453,10 @@ class HomelabApp(App):
     @on(Button.Pressed, "#b-refresh")
     def _btn_refresh(self): self.action_refresh()
 
+    @on(Button.Pressed, "#b-screen")
+    def _btn_screen(self):
+        self.action_screen()
+
 
     def action_act(self, verb: str):
         if not self.selected_id:
@@ -471,6 +470,14 @@ class HomelabApp(App):
 
     def action_refresh(self):
         self._do_refresh(); self.status_msg = "Refreshed."
+
+    def action_screen(self):
+        self._screen_is_off = True
+        self.status_msg = "Screen off — touch or press any key to wake"
+        screen_off()
+        # Don't call _bump_activity() here - it would turn screen back on!
+        # Just update timestamp so we don't timeout immediately
+        self._last_activity = time.time()
 
     # ── Touch screen via evdev ────────────────────────────────────
     def _touch_loop(self):
@@ -488,7 +495,10 @@ class HomelabApp(App):
                 if MT_X in abs_codes and MT_Y in abs_codes:
                     dev = d
                     break  # found multitouch finger device
-            if not dev: return
+            if not dev:
+                print(f"[TOUCH] No touch device found from {len(devs)} devices", file=sys.stderr)
+                return
+            print(f"[TOUCH] Found device: {dev.name}", file=sys.stderr)
             abs_map = dict(dev.capabilities()[evdev.ecodes.EV_ABS])
             max_x = abs_map[MT_X].max
             max_y = abs_map[MT_Y].max
@@ -498,11 +508,15 @@ class HomelabApp(App):
                     if ev.code == MT_X: cx = ev.value
                     elif ev.code == MT_Y: cy = ev.value
                     elif ev.code == MT_ID and ev.value != -1:
-                        # New finger touch down — fire action
-                        if max_x > 0 and max_y > 0:
-                            xf, yf = normalize_touch(cx, cy, self._cal, max_x, max_y)
-                            self.call_from_thread(self._on_touch, xf, yf)
-        except Exception: pass
+                        # New finger touch down — wake screen if off, else fire action
+                        if self._screen_is_off:
+                            self.call_from_thread(self._bump_activity)
+                        else:
+                            if max_x > 0 and max_y > 0:
+                                xf, yf = normalize_touch(cx, cy, self._cal, max_x, max_y)
+                                self.call_from_thread(self._on_touch, xf, yf)
+        except Exception:
+            pass
 
     def _on_touch(self, xf: float, yf: float):
         """Map normalised touch coords to UI actions using actual widget regions."""
@@ -520,11 +534,13 @@ class HomelabApp(App):
                                      ("b-stop",    "stop"),
                                      ("b-restart", "restart"),
                                      ("b-refresh", None),
+                                     ("b-screen",  "screen"),
 ]:
                     btn = self.query_one(f"#{btn_id}")
                     r   = btn.region
                     if r.x <= cx <= r.x + r.width and r.y <= cy <= r.y + r.height:
-                        if verb: self.action_act(verb)
+                        if verb == "screen": self.action_screen()
+                        elif verb: self.action_act(verb)
                         else:    self.action_refresh()
                         return
             except Exception:
