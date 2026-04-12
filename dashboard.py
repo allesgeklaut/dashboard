@@ -18,7 +18,7 @@ from textual.widgets import Static, DataTable, Button
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual import on
-import json, sys
+import json, argparse
 from secrets import PORTAINER_API_KEY
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -39,6 +39,7 @@ BACKLIGHT_PATH    = "/sys/class/backlight/intel_backlight"
 CAL_FILE          = os.path.expanduser("~/.homelab_cal.json")
 
 log = logging.getLogger("homelab")
+LOG_FILE = os.path.expanduser("~/.homelab_dashboard.log")
 
 # ── Calibration helpers ───────────────────────────────────────────
 
@@ -240,10 +241,12 @@ def _write_brightness(path: str, value: int) -> bool:
         log.warning("brightness write failed: %s", exc)
     return False
 
+BRIGHTNESS_OFF = 1   # >0 keeps the touch digitizer alive
+
 def screen_off() -> None:
     path = _find_backlight()
     if path:
-        _write_brightness(path, 1)
+        _write_brightness(path, BRIGHTNESS_OFF)
 
 def screen_on() -> None:
     path = _find_backlight()
@@ -720,8 +723,29 @@ class HomelabApp(App):
             log.debug("_on_touch error: %s", exc)
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="HOMELAB//CTRL v2")
+    p.add_argument("--calibrate", action="store_true",
+                   help="Run interactive touch calibration and exit")
+    p.add_argument("--log", action="store_true",
+                   help=f"Enable debug logging to {LOG_FILE}")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    if "--calibrate" in sys.argv:
+    args = _parse_args()
+
+    if args.log:
+        logging.basicConfig(
+            filename=LOG_FILE,
+            level=logging.DEBUG,
+            format="%(asctime)s %(levelname)s %(message)s",
+        )
+        log.info("Logging started — writing to %s", LOG_FILE)
+    else:
+        logging.disable(logging.CRITICAL)  # silence everything
+
+    if args.calibrate:
         run_calibration()
     else:
         # Warm up counters so first readings aren't 0
