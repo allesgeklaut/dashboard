@@ -34,6 +34,8 @@ PORTAINER_URL     = "https://192.168.0.43:9443"
 PORTAINER_API_KEY = PORTAINER_API_KEY
 NFS_MOUNTS        = ["/mnt/nas"]
 REFRESH_SECS      = 2
+SCREEN_TIMEOUT    = 60   # seconds until screen turns off (0 = disabled)
+BACKLIGHT_PATH    = "/sys/class/backlight/intel_backlight"
 CAL_FILE          = os.path.expanduser("~/.homelab_cal.json")
 
 def load_calibration():
@@ -231,6 +233,44 @@ class NetworkWidget(Static):
                           style="green", box=box.SIMPLE_HEAVY, padding=(0,0)))
 
 
+def _find_backlight():
+    """Return the first available backlight sysfs path."""
+    import glob
+    for path in [BACKLIGHT_PATH] + glob.glob("/sys/class/backlight/*"):
+        if os.path.exists(f"{path}/brightness"):
+            return path
+    return None
+
+def screen_off():
+    """Set backlight brightness to 0."""
+    path = _find_backlight()
+    if not path:
+        return
+    try:
+        with open(f"{path}/brightness", "w") as f:
+            f.write("0")
+    except PermissionError:
+        # User not in video group yet — silently skip
+        pass
+    except Exception:
+        pass
+
+def screen_on():
+    """Restore backlight to 80% brightness."""
+    path = _find_backlight()
+    if not path:
+        return
+    try:
+        max_b = int(open(f"{path}/max_brightness").read().strip())
+        val = int(max_b * 0.8)
+        with open(f"{path}/brightness", "w") as f:
+            f.write(str(val))
+    except PermissionError:
+        pass
+    except Exception:
+        pass
+
+
 def run_calibration():
     """Interactive 4-corner touch calibration. Saves to CAL_FILE."""
     if not EVDEV:
@@ -355,6 +395,8 @@ class HomelabApp(App):
         self.set_interval(REFRESH_SECS, self._do_refresh)
         self.set_interval(1, self._tick)
         self._cal = load_calibration()
+        self._last_activity = time.time()
+        self._screen_is_off = False
         if EVDEV: threading.Thread(target=self._touch_loop, daemon=True).start()
 
     def _tick(self):
@@ -369,6 +411,20 @@ class HomelabApp(App):
         keys = "  │  s:Start  x:Stop  t:Restart  r:Refresh  q:Quit"
         self.query_one("#statusbar").update(
             Text(f" ► {self.status_msg}{keys}", style="dim green"))
+        # Screen timeout
+        if SCREEN_TIMEOUT > 0 and not self._screen_is_off:
+            if time.time() - self._last_activity > SCREEN_TIMEOUT:
+                self._screen_is_off = True
+                screen_off()
+
+    def on_key(self, event) -> None:
+        self._bump_activity()
+
+    def _bump_activity(self):
+        self._last_activity = time.time()
+        if self._screen_is_off:
+            self._screen_is_off = False
+            screen_on()
 
     def _do_refresh(self):
         containers, src = get_containers()
@@ -399,8 +455,9 @@ class HomelabApp(App):
     def _btn_stop(self):    self.action_act("stop")
     @on(Button.Pressed, "#b-restart") 
     def _btn_restart(self): self.action_act("restart")
-    @on(Button.Pressed, "#b-refresh") 
+    @on(Button.Pressed, "#b-refresh")
     def _btn_refresh(self): self.action_refresh()
+
 
     def action_act(self, verb: str):
         if not self.selected_id:
@@ -462,7 +519,8 @@ class HomelabApp(App):
                 for btn_id, verb in [("b-start",   "start"),
                                      ("b-stop",    "stop"),
                                      ("b-restart", "restart"),
-                                     ("b-refresh", None)]:
+                                     ("b-refresh", None),
+]:
                     btn = self.query_one(f"#{btn_id}")
                     r   = btn.region
                     if r.x <= cx <= r.x + r.width and r.y <= cy <= r.y + r.height:
