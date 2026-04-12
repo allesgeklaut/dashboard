@@ -32,6 +32,7 @@ except ImportError:
 # ── CONFIG ────────────────────────────────────────────────────────
 PORTAINER_URL     = "https://192.168.0.43:9443"
 PORTAINER_API_KEY = PORTAINER_API_KEY
+PORTAINER_ENVS    = None   # None = auto-discover all; or restrict e.g. [1, 2]
 NFS_MOUNTS        = ["/mnt/nas"]
 REFRESH_SECS      = 2
 SCREEN_TIMEOUT    = 60   # seconds until screen turns off (0 = disabled)
@@ -65,15 +66,20 @@ def normalize_touch(
 
 # ── Portainer / Docker ────────────────────────────────────────────
 
-_HEADERS = {"X-API-Key": PORTAINER_API_KEY}
-_eid: int | None = None
+_HEADERS  = {"X-API-Key": PORTAINER_API_KEY}
+_eids: list[int] | None = None
+_env_names: dict[int, str] = {}
 _eid_lock = threading.Lock()
 
-def get_eid() -> int | None:
-    global _eid
+def get_eids() -> list[int]:
+    global _eids, _env_names
     with _eid_lock:
-        if _eid is not None:
-            return _eid
+        if _eids is not None:
+            return _eids
+    if PORTAINER_ENVS:
+        with _eid_lock:
+            _eids = PORTAINER_ENVS
+        return _eids
     try:
         r = requests.get(
             f"{PORTAINER_URL}/api/endpoints",
@@ -81,36 +87,41 @@ def get_eid() -> int | None:
         )
         if r.ok and r.json():
             with _eid_lock:
-                _eid = r.json()[0]["Id"]
-            return _eid
+                _eids = [e["Id"] for e in r.json()]
+                _env_names = {e["Id"]: e["Name"] for e in r.json()}
+            return _eids
     except Exception as exc:
-        log.debug("get_eid failed: %s", exc)
-    return None
+        log.debug("get_eids failed: %s", exc)
+    return []
 
 def get_containers() -> tuple[list[dict], str]:
-    eid = get_eid()
-    if eid is not None:
-        try:
-            r = requests.get(
-                f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/json?all=true",
-                headers=_HEADERS, timeout=3, verify=False,
-            )
-            if r.ok:
-                return (
-                    [
+    eids = get_eids()
+    if eids:
+        all_containers: list[dict] = []
+        for eid in eids:
+            try:
+                r = requests.get(
+                    f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/json?all=true",
+                    headers=_HEADERS, timeout=3, verify=False,
+                )
+                if r.ok:
+                    host = _env_names.get(eid, str(eid))
+                    all_containers += [
                         {
                             "id":     c["Id"][:12],
                             "name":   c["Names"][0].lstrip("/"),
                             "state":  c["State"],
                             "status": c["Status"],
                             "image":  c["Image"].split("/")[-1],
+                            "host":   host,
+                            "eid":    eid,
                         }
                         for c in r.json()
-                    ],
-                    "portainer",
-                )
-        except Exception as exc:
-            log.debug("get_containers via portainer failed: %s", exc)
+                    ]
+            except Exception as exc:
+                log.debug("get_containers eid=%s failed: %s", eid, exc)
+        if all_containers:
+            return all_containers, "portainer"
 
     # Fallback: local docker CLI
     try:
@@ -131,6 +142,8 @@ def get_containers() -> tuple[list[dict], str]:
                     "state":  p[2],
                     "status": p[3],
                     "image":  (p[4] if len(p) > 4 else "").split("/")[-1],
+                    "host":   "local",
+                    "eid":    None,
                 })
         return rows, "docker"
     except Exception as exc:
@@ -138,8 +151,10 @@ def get_containers() -> tuple[list[dict], str]:
 
     return [], "none"
 
-def container_action(cid: str, action: str) -> tuple[bool, str]:
-    eid = get_eid()
+def container_action(cid: str, action: str, eid: int | None = None) -> tuple[bool, str]:
+    if eid is None:
+        eids = get_eids()
+        eid = eids[0] if eids else None
     if eid is not None:
         try:
             r = requests.post(
@@ -222,15 +237,12 @@ def _find_backlight() -> str | None:
     return None
 
 def _write_brightness(path: str, value: int) -> bool:
-    """Write brightness value; returns True on success."""
-    # Try direct write first (works when user is in the 'video' group)
     try:
         with open(f"{path}/brightness", "w") as f:
             f.write(str(value))
         return True
     except PermissionError:
         pass
-    # Fallback: shell redirect (may work with udev rules / sudo)
     try:
         subprocess.run(
             ["bash", "-c", f"echo {value} > {path}/brightness"],
@@ -241,7 +253,7 @@ def _write_brightness(path: str, value: int) -> bool:
         log.warning("brightness write failed: %s", exc)
     return False
 
-BRIGHTNESS_OFF = 0   # >0 keeps the touch digitizer alive
+BRIGHTNESS_OFF = 0
 
 def screen_off() -> None:
     path = _find_backlight()
@@ -370,17 +382,24 @@ class NetworkWidget(Static):
         h, r = divmod(td.seconds, 3600)
         m   = r // 60
 
+        eids = get_eids()
+        env_count = len(eids)
+        env_names = list(_env_names.values()) if _env_names else []
+
         t = Table.grid(padding=(0, 2))
         t.add_column(width=12, style="dim green")
         t.add_column(style="green")
         t.add_row("IP",     get_ip())
         t.add_row("UPTIME", f"{td.days}d {h}h {m}m")
-        ok = get_eid() is not None
-        t.add_row(
-            "SOURCE",
-            Text("PORTAINER" if ok else "DOCKER CLI",
-                 style="bright_green" if ok else "yellow"),
-        )
+        if env_count > 0:
+            t.add_row(
+                "PORTAINER",
+                Text(f"{env_count} env{'s' if env_count != 1 else ''}", style="bright_green"),
+            )
+            for name in env_names:
+                t.add_row("", Text(f"· {name}", style="dim green"))
+        else:
+            t.add_row("SOURCE", Text("DOCKER CLI", style="yellow"))
 
         self.update(Panel(
             t,
@@ -506,7 +525,7 @@ class HomelabApp(App):
 
     def on_mount(self) -> None:
         tbl = self.query_one("#tbl", DataTable)
-        tbl.add_columns(" ", "NAME", "STATE", "STATUS", "IMAGE")
+        tbl.add_columns(" ", "HOST", "NAME", "STATE", "STATUS", "IMAGE")
         self._do_refresh()
         self.set_interval(REFRESH_SECS, self._do_refresh)
         self.set_interval(1, self._tick)
@@ -529,7 +548,6 @@ class HomelabApp(App):
             Text(f" ► {self.status_msg}  │  Use buttons below to control containers",
                  style="dim green")
         )
-        # Screen timeout
         if SCREEN_TIMEOUT > 0 and not self._screen_is_off:
             if time.monotonic() - self._last_activity > SCREEN_TIMEOUT:
                 self._screen_is_off = True
@@ -538,7 +556,6 @@ class HomelabApp(App):
     # ── Activity tracking ─────────────────────────────────────────
 
     def on_key(self, event) -> None:
-        """Any key press wakes the screen / resets the timeout."""
         self._bump_activity()
 
     def _bump_activity(self) -> None:
@@ -550,11 +567,9 @@ class HomelabApp(App):
     # ── Container table ───────────────────────────────────────────
 
     def _do_refresh(self) -> None:
-        """Fetch container data in a worker thread to keep UI responsive."""
         def _fetch():
             containers, _ = get_containers()
             self.call_from_thread(self._apply_containers, containers)
-
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _apply_containers(self, containers: list[dict]) -> None:
@@ -567,7 +582,8 @@ class HomelabApp(App):
             up   = c["state"] == "running"
             dot  = Text("● " if up else "✖ ", style="bright_green" if up else "bright_red")
             stat = Text(c["state"], style="bright_green" if up else "bright_red")
-            tbl.add_row(dot, c["name"], stat, c["status"][:22], c["image"][:26], key=c["id"])
+            host = Text(c.get("host", "")[:10], style="dim green")
+            tbl.add_row(dot, host, c["name"], stat, c["status"][:20], c["image"][:22], key=c["id"])
             if c["id"] == prev_id:
                 restore_row = i
         if tbl.row_count > 0:
@@ -575,10 +591,9 @@ class HomelabApp(App):
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self.selected_id = event.row_key.value
-        name = next(
-            (c["name"] for c in self._containers if c["id"] == self.selected_id), "?"
-        )
-        self.status_msg = f"Selected: {name}"
+        c = next((c for c in self._containers if c["id"] == self.selected_id), None)
+        if c:
+            self.status_msg = f"Selected: {c['name']}  [{c.get('host', '')}]"
 
     # ── Button handlers ───────────────────────────────────────────
 
@@ -604,14 +619,15 @@ class HomelabApp(App):
         if not self.selected_id:
             self.status_msg = "No container selected — use ↑↓ arrows first"
             return
-        name = next(
-            (c["name"] for c in self._containers if c["id"] == self.selected_id), "?"
-        )
-        self.status_msg = f"Running {verb} on {name}…"
-        # Run the blocking API call in a worker thread
+        c = next((c for c in self._containers if c["id"] == self.selected_id), None)
+        if not c:
+            return
+        name = c["name"]
+        eid  = c.get("eid")
+        self.status_msg = f"Running {verb} on {name}  [{c.get('host', '')}]…"
         cid = self.selected_id
         def _act():
-            ok, msg = container_action(cid, verb)
+            ok, msg = container_action(cid, verb, eid)
             def _done():
                 self.status_msg = f"{'✓' if ok else '✗'} {verb} {name}: {msg}"
                 self.set_timer(1.2, self._do_refresh)
@@ -656,7 +672,6 @@ class HomelabApp(App):
                 elif ev.code == MT_Y:
                     cy = ev.value
                 elif ev.code == MT_ID and ev.value != -1:
-                    # Finger touched down
                     if max_x > 0 and max_y > 0:
                         xf, yf = normalize_touch(cx, cy, self._cal, max_x, max_y)
                         self.call_from_thread(self._on_touch, xf, yf)
@@ -665,18 +680,10 @@ class HomelabApp(App):
             log.debug("_touch_loop exited: %s", exc)
 
     def _on_touch(self, xf: float, yf: float) -> None:
-        """
-        Called on the Textual event loop whenever a finger-down event fires.
-
-        *** KEY FIX ***
-        If the screen is currently off, the touch should ONLY wake the screen —
-        it must NOT fall through and accidentally trigger a button or row.
-        """
         if self._screen_is_off:
-            self._bump_activity()   # wake screen, consume event
+            self._bump_activity()
             return
 
-        # Reset timeout on any deliberate touch
         self._bump_activity()
 
         try:
@@ -684,11 +691,9 @@ class HomelabApp(App):
             if sz.width == 0 or sz.height == 0:
                 return
 
-            # Touch fraction → character cell
             cx = xf * sz.width
             cy = yf * sz.height
 
-            # ── Action bar buttons ────────────────────────────────
             btn_actions = [
                 ("b-start",   lambda: self.action_act("start")),
                 ("b-stop",    lambda: self.action_act("stop")),
@@ -705,17 +710,16 @@ class HomelabApp(App):
                 except Exception:
                     pass
 
-            # ── Container table rows ──────────────────────────────
             try:
                 tbl_w = self.query_one("#tbl")
                 r = tbl_w.region
                 if r.x <= cx <= r.x + r.width and r.y <= cy <= r.y + r.height:
-                    row_idx = max(0, int(cy - r.y - 2))  # subtract header + border
+                    row_idx = max(0, int(cy - r.y - 2))
                     if row_idx < len(self._containers):
                         c = self._containers[row_idx]
                         self.selected_id = c["id"]
                         self.query_one("#tbl", DataTable).move_cursor(row=row_idx)
-                        self.status_msg = f"Touch → {c['name']}"
+                        self.status_msg = f"Touch → {c['name']}  [{c.get('host', '')}]"
             except Exception:
                 pass
 
@@ -743,12 +747,11 @@ if __name__ == "__main__":
         )
         log.info("Logging started — writing to %s", LOG_FILE)
     else:
-        logging.disable(logging.CRITICAL)  # silence everything
+        logging.disable(logging.CRITICAL)
 
     if args.calibrate:
         run_calibration()
     else:
-        # Warm up counters so first readings aren't 0
         psutil.cpu_percent(interval=0.1)
         net_speed()
         HomelabApp().run()
