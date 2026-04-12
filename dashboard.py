@@ -144,7 +144,7 @@ def container_action(cid: str, action: str) -> tuple[bool, str]:
         try:
             r = requests.post(
                 f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/{cid}/{action}",
-                headers=_HEADERS, timeout=5, verify=False,
+                headers=_HEADERS, timeout=15, verify=False,
             )
             if r.status_code in (204, 304):
                 return True, f"{action} OK"
