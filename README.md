@@ -72,6 +72,13 @@ sudo usermod -a -G video $USER
 
 Log out and back in (or reboot) after adding groups.
 
+### Add udev rule:
+
+```bash
+echo 'SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/chmod a+w /sys/class/backlight/%k/brightness"' | sudo tee /etc/udev/rules.d/99-backlight.rules
+sudo udevadm trigger --action=add --subsystem-match=backlight
+```
+
 ***
 
 ## Running
