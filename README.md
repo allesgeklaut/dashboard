@@ -118,34 +118,34 @@ Touch each corner when prompted. Calibration is saved to `~/.homelab_cal.json` a
 ## Auto-start on boot
 
 ```bash
-sudo nano /etc/systemd/system/homelab-dashboard.service
+sudo systemctl edit getty@tty1
 ```
 
 ```ini
-[Unit]
-Description=Homelab Terminal Dashboard
-After=network.target docker.service
-
 [Service]
-User=johannes
+ExecStart=
+ExecStart=-/home/johannes/dashboard/venv/bin/python3 /home/johannes/dashboard/dashboard.py
 WorkingDirectory=/home/johannes/dashboard
-ExecStart=/home/johannes/dashboard/venv/bin/python3 homelab-term.py
-Restart=always
-RestartSec=5
-StandardInput=tty
-StandardOutput=tty
-TTYPath=/dev/tty1
-TTYReset=yes
-
-[Install]
-WantedBy=multi-user.target
+User=johannes
+Environment=TERM=linux
 ```
 
 ```bash
-sudo systemctl enable homelab-dashboard
-sudo systemctl start homelab-dashboard
+sudo systemctl daemon-reload
+sudo systemctl restart getty@tty1
+```
+Instead of login that starts the dashboard, if login is required do over ssh:
+```bash
+# Switch to another virtual terminal
+sudo chvt 2
 ```
 
+Control over ssh:
+```bash
+sudo systemctl stop getty@tty1      # stop dashboard
+sudo systemctl start getty@tty1     # start dashboard (appears on screen immediately)
+sudo systemctl restart getty@tty1   # restart after code change
+```
 ***
 
 ## Font size (TTY)
