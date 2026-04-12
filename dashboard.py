@@ -241,7 +241,7 @@ def _write_brightness(path: str, value: int) -> bool:
         log.warning("brightness write failed: %s", exc)
     return False
 
-BRIGHTNESS_OFF = 1   # >0 keeps the touch digitizer alive
+BRIGHTNESS_OFF = 0   # >0 keeps the touch digitizer alive
 
 def screen_off() -> None:
     path = _find_backlight()
