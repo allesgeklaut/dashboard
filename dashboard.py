@@ -534,6 +534,7 @@ class HomelabApp(App):
         self._screen_is_off = False
         if EVDEV:
             threading.Thread(target=self._touch_loop, daemon=True).start()
+            threading.Thread(target=self._windows_btn_loop, daemon=True).start()
 
     def _tick(self) -> None:
         now_str = datetime.now().strftime("%H:%M:%S")
@@ -726,6 +727,28 @@ class HomelabApp(App):
         except Exception as exc:
             log.debug("_on_touch error: %s", exc)
 
+    def _windows_btn_loop(self) -> None:
+        try:
+            devs = [evdev.InputDevice(p) for p in evdev.list_devices()]
+            dev = None
+            for d in devs:
+                caps = d.capabilities()
+                if evdev.ecodes.EV_KEY not in caps:
+                    continue
+                if evdev.ecodes.KEY_LEFTMETA in caps[evdev.ecodes.EV_KEY]:  # ← LEFT not RIGHT
+                    dev = d
+                    break
+            if not dev:
+                log.debug("Windows button device not found")
+                return
+            log.debug("Windows button on: %s", dev.name)
+            for ev in dev.read_loop():
+                if (ev.type == evdev.ecodes.EV_KEY
+                        and ev.code == evdev.ecodes.KEY_LEFTMETA  # ← LEFT not RIGHT
+                        and ev.value == 1):
+                    self.call_from_thread(self._bump_activity)
+        except Exception as exc:
+            log.debug("_windows_btn_loop exited: %s", exc)
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="HOMELAB//CTRL v2")
