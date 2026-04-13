@@ -275,7 +275,7 @@ def screen_on() -> None:
 class StatsWidget(Static):
     def on_mount(self) -> None:
         self._refresh()
-        self.set_interval(REFRESH_SECS, self._refresh)
+        self._timer = self.set_interval(REFRESH_SECS, self._refresh)
 
     def _refresh(self) -> None:
         cpu  = psutil.cpu_percent()
@@ -312,7 +312,7 @@ class StatsWidget(Static):
 class StorageWidget(Static):
     def on_mount(self) -> None:
         self._refresh()
-        self.set_interval(5, self._refresh)
+        self._timer = self.set_interval(5, self._refresh)
 
     def _refresh(self) -> None:
         t = Table.grid(padding=(0, 1))
@@ -375,7 +375,7 @@ class StorageWidget(Static):
 class NetworkWidget(Static):
     def on_mount(self) -> None:
         self._refresh()
-        self.set_interval(5, self._refresh)
+        self._timer = self.set_interval(5, self._refresh)
 
     def _refresh(self) -> None:
         td  = timedelta(seconds=int(time.time() - psutil.boot_time()))
@@ -412,7 +412,7 @@ class ProcessWidget(Static):
         for p in psutil.process_iter(["cpu_percent"]):
             pass  # prime counters so first refresh has real values
         self._refresh()
-        self.set_interval(REFRESH_SECS, self._refresh)
+        self._timer = self.set_interval(REFRESH_SECS, self._refresh)
 
     def _refresh(self) -> None:
         try:
@@ -569,8 +569,8 @@ class HomelabApp(App):
         tbl = self.query_one("#tbl", DataTable)
         tbl.add_columns(" ", "HOST", "NAME", "STATE", "STATUS", "IMAGE")
         self._do_refresh()
-        self.set_interval(REFRESH_SECS, self._do_refresh)
-        self.set_interval(1, self._tick)
+        self._refresh_timer = self.set_interval(REFRESH_SECS, self._do_refresh)
+        self._tick_timer =  self.set_interval(1, self._tick)
         self._cal = load_calibration()
         self._last_activity = time.monotonic()
         self._screen_is_off = False
@@ -595,6 +595,26 @@ class HomelabApp(App):
             if time.monotonic() - self._last_activity > SCREEN_TIMEOUT:
                 self._screen_is_off = True
                 screen_off()
+                self._pause_all()
+
+    def _pause_all(self) -> None:
+        self._refresh_timer.pause()
+        self._tick_timer.pause()
+        for cls in (StatsWidget, StorageWidget, NetworkWidget, ProcessWidget):
+            try:
+                self.query_one(cls)._timer.pause()
+            except Exception:
+                pass
+
+    def _resume_all(self) -> None:
+        self._refresh_timer.resume()
+        self._tick_timer.resume()
+        for cls in (StatsWidget, StorageWidget, NetworkWidget, ProcessWidget):
+            try:
+                self.query_one(cls)._timer.resume()
+            except Exception:
+                pass
+        self._do_refresh()
 
     # ── Activity tracking ─────────────────────────────────────────
 
@@ -606,6 +626,7 @@ class HomelabApp(App):
         if self._screen_is_off:
             self._screen_is_off = False
             screen_on()
+            self._resume_all()
 
     # ── Container table ───────────────────────────────────────────
 
@@ -657,6 +678,7 @@ class HomelabApp(App):
         self._screen_is_off = True
         self.status_msg = "Screen off — touch or press any key to wake"
         screen_off()
+        self._pause_all()
 
     def action_act(self, verb: str) -> None:
         if not self.selected_id:
