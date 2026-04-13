@@ -288,7 +288,7 @@ class StatsWidget(Static):
         t = Table.grid(expand=True, padding=(0, 1))
         t.add_column(width=7, style="dim green")
         t.add_column(width=14)
-        t.add_column(width=18, justify="right")
+        t.add_column(width=28, justify="right")
 
         def row(label: str, pct: float, val: str) -> None:
             colour = "bright_red" if pct > 85 else "yellow" if pct > 65 else "bright_green"
@@ -407,6 +407,46 @@ class NetworkWidget(Static):
             style="green", box=box.SIMPLE_HEAVY, padding=(0, 0),
         ))
 
+class ProcessWidget(Static):
+    def on_mount(self) -> None:
+        for p in psutil.process_iter(["cpu_percent"]):
+            pass  # prime counters so first refresh has real values
+        self._refresh()
+        self.set_interval(REFRESH_SECS, self._refresh)
+
+    def _refresh(self) -> None:
+        try:
+            procs = []
+            for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
+                try:
+                    info = p.info
+                    if info["cpu_percent"] is not None:
+                        procs.append(info)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            procs.sort(key=lambda x: x["cpu_percent"] or 0, reverse=True)
+            procs = procs[:11]
+        except Exception:
+            procs = []
+
+        t = Table.grid(padding=(0, 1))
+        t.add_column(width=16, style="green")
+        t.add_column(width=7,  justify="right")
+        t.add_column(width=6,  justify="right")
+        t.add_row(Text("PROCESS", style="dim green"),
+                  Text("CPU",     style="dim green"),
+                  Text("MEM",     style="dim green"))
+        for p in procs:
+            cpu = p.get("cpu_percent") or 0.0
+            mem = p.get("memory_percent") or 0.0
+            cpu_style = "bright_red" if cpu > 50 else "yellow" if cpu > 20 else "bright_green"
+            t.add_row(
+                Text((p.get("name") or "?")[:16], style="green"),
+                Text(f"{cpu:.0f}%", style=cpu_style),
+                Text(f"{mem:.1f}%", style="dim green"),
+            )
+        self.update(Panel(t, title=Text("► TOP PROCESSES", style="green"),
+                          style="green", box=box.SIMPLE_HEAVY, padding=(0, 0)))
 
 # ── Calibration ───────────────────────────────────────────────────
 
@@ -485,7 +525,8 @@ class HomelabApp(App):
     CSS = """
     Screen        { background: #0a0a0a; }
     #topbar       { height: 1; background: #001800; color: #00ff00; padding: 0 1; }
-    #left         { width: 36; }
+    #left         { width: 48; }
+    ProcessWidget { height: auto; }
     #right        { width: 1fr; }
     #tbl          { height: 1fr; }
     #actionbar    { height: 3; background: #001800; align: center middle; padding: 0 1; }
@@ -513,6 +554,7 @@ class HomelabApp(App):
                 yield StatsWidget()
                 yield StorageWidget()
                 yield NetworkWidget()
+                yield ProcessWidget() 
             with Vertical(id="right"):
                 yield DataTable(id="tbl", cursor_type="row")
                 with Horizontal(id="actionbar"):
