@@ -35,7 +35,7 @@ PORTAINER_API_KEY = PORTAINER_API_KEY
 PORTAINER_ENVS    = None   # None = auto-discover all; or restrict e.g. [1, 2]
 NFS_MOUNTS        = ["/mnt/nas"]
 REFRESH_SECS      = 2
-SCREEN_TIMEOUT    = 60   # seconds until screen turns off (0 = disabled)
+SCREEN_TIMEOUT    = 300   # seconds until screen turns off (0 = disabled)
 BACKLIGHT_PATH    = "/sys/class/backlight/intel_backlight"
 CAL_FILE          = os.path.expanduser("~/.homelab_cal.json")
 
