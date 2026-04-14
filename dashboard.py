@@ -295,7 +295,7 @@ class StatsWidget(Static):
             t.add_row(label, pbar(pct), Text(val, style=colour))
 
         row("CPU",  cpu,         f"{cpu:.0f}%")
-        row("RAM",  mem.percent, f"{mem.percent:.0f}% {mem.used/1e9:.1f}/{mem.total/1e9:.1f}GB")
+        row("RAM",  mem.percent, f"{mem.percent:.0f}% {mem.used/1024**3:.1f}/{mem.total/1024**3:.1f}GB")
         row("SWAP", swp.percent, f"{swp.percent:.0f}%")
         if tmp:
             row("TEMP", min(tmp, 100), f"{tmp:.0f}°C")
@@ -333,7 +333,7 @@ class StorageWidget(Static):
                     Text(mp[:12], style="green"),
                     pbar(pct, 10),
                     Text(
-                        f"{u.used/1e9:.0f}/{u.total/1e9:.0f}G NFS",
+                        f"{u.used/1024**3:.0f}/{u.total/1024**3:.0f}G NFS",
                         style="bright_red" if pct > 85 else "yellow" if pct > 65 else "green",
                     ),
                 )
@@ -356,7 +356,7 @@ class StorageWidget(Static):
                     Text(p.mountpoint[:12], style="dim green"),
                     pbar(pct, 10),
                     Text(
-                        f"{u.used/1e9:.0f}/{u.total/1e9:.0f}G",
+                        f"{u.used/1024**3:.0f}/{u.total/1024**3:.0f}G",
                         style="bright_red" if pct > 85 else "yellow" if pct > 65 else "green",
                     ),
                 )
