@@ -794,10 +794,6 @@ class HomelabApp(App):
             log.debug("_touch_loop exited: %s", exc)
 
     def _on_touch(self, xf: float, yf: float) -> None:
-        if self._screen_is_off:
-            self._bump_activity()
-            return
-
         self._bump_activity()
 
         try:
