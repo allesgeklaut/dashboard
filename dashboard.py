@@ -248,7 +248,7 @@ def _write_brightness(path: str, value: int) -> bool:
         with open(f"{path}/brightness", "w") as f:
             f.write(str(value))
         return True
-    except {PermissionError, OSError}:
+    except:
         pass
     return False
 
