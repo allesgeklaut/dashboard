@@ -19,7 +19,13 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual import on
 import json, argparse
-from secrets import PORTAINER_API_KEY, ADGUARD_USER, ADGUARD_PASS
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+PORTAINER_API_KEY = os.environ["PORTAINER_API_KEY"]
+ADGUARD_USER      = os.environ["ADGUARD_USER"]
+ADGUARD_PASS      = os.environ["ADGUARD_PASS"]
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 

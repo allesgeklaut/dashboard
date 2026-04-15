@@ -128,7 +128,10 @@ ExecStart=-/home/johannes/dashboard/venv/bin/python3 /home/johannes/dashboard/da
 WorkingDirectory=/home/johannes/dashboard
 User=johannes
 Environment=TERM=linux
+EnvironmentFile=/home/johannes/dashboard/.env
 ```
+
+and `chmod 600 /home/johannes/dashboard/.env` so only I have access to the env file.
 
 ```bash
 sudo systemctl daemon-reload
@@ -146,6 +149,12 @@ sudo systemctl stop getty@tty1      # stop dashboard
 sudo systemctl start getty@tty1     # start dashboard (appears on screen immediately)
 sudo systemctl restart getty@tty1   # restart after code change
 ```
+
+Start the dockerfile with:
+```bash
+docker compose up -d --build
+```
+--build if changes to the app where made.
 ***
 
 ## Font size (TTY)

@@ -1,0 +1,13 @@
+services:
+  homelab-ctrl:
+    build: .
+    container_name: homelab-ctrl
+    restart: unless-stopped
+    network_mode: host
+    pid: host              # ← gives psutil visibility of all host processes
+    env_file:
+      - .env
+    environment:
+      - TERM=xterm-256color
+    volumes:
+      - ${HOME}/.homelab_cal.json:/root/.homelab_cal.json:ro
