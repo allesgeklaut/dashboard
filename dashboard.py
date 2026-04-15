@@ -773,18 +773,22 @@ class HomelabApp(App):
             max_x   = abs_map[MT_X].max
             max_y   = abs_map[MT_Y].max
             cx = cy = 0
+            finger_down = False
 
             for ev in dev.read_loop():
-                if ev.type != evdev.ecodes.EV_ABS:
-                    continue
-                if ev.code == MT_X:
-                    cx = ev.value
-                elif ev.code == MT_Y:
-                    cy = ev.value
-                elif ev.code == MT_ID and ev.value != -1:
-                    if max_x > 0 and max_y > 0:
+                if ev.type == evdev.ecodes.EV_ABS:
+                    if ev.code == MT_X:
+                        cx = ev.value
+                    elif ev.code == MT_Y:
+                        cy = ev.value
+                    elif ev.code == MT_ID:
+                        finger_down = ev.value != -1  # -1 = finger up
+                elif ev.type == evdev.ecodes.EV_SYN:
+                    # Full packet received — fire only on finger down
+                    if finger_down and max_x > 0 and max_y > 0:
                         xf, yf = normalize_touch(cx, cy, self._cal, max_x, max_y)
                         self.call_from_thread(self._on_touch, xf, yf)
+                        finger_down = False  # consume, don't repeat until next MT_ID
 
         except Exception as exc:
             log.debug("_touch_loop exited: %s", exc)
