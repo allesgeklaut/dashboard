@@ -721,7 +721,7 @@ class HomelabApp(App):
     @on(Button.Pressed, "#b-screen")
     def _btn_screen(self):
         self._screen_is_off = True
-        self.status_msg = "Screen off — touch or press any key to wake"
+        self.status_msg = "Screen off - touch windows logo to wake"
         screen_off()
         self._pause_all()
 
