@@ -248,16 +248,8 @@ def _write_brightness(path: str, value: int) -> bool:
         with open(f"{path}/brightness", "w") as f:
             f.write(str(value))
         return True
-    except PermissionError:
+    except {PermissionError, OSError}:
         pass
-    try:
-        subprocess.run(
-            ["bash", "-c", f"echo {value} > {path}/brightness"],
-            check=True, capture_output=True, timeout=2,
-        )
-        return True
-    except Exception as exc:
-        log.warning("brightness write failed: %s", exc)
     return False
 
 BRIGHTNESS_OFF = 0
