@@ -19,7 +19,7 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual import on
 import json, argparse
-from secrets import PORTAINER_API_KEY
+from secrets import PORTAINER_API_KEY, ADGUARD_USER, ADGUARD_PASS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -38,6 +38,7 @@ REFRESH_SECS      = 2
 SCREEN_TIMEOUT    = 300   # seconds until screen turns off (0 = disabled)
 BACKLIGHT_PATH    = "/sys/class/backlight/intel_backlight"
 CAL_FILE          = os.path.expanduser("~/.homelab_cal.json")
+ADGUARD_URL       = "http://192.168.0.2"
 
 log = logging.getLogger("homelab")
 LOG_FILE = os.path.expanduser("~/.homelab_dashboard.log")
@@ -407,6 +408,48 @@ class NetworkWidget(Static):
             style="green", box=box.SIMPLE_HEAVY, padding=(0, 0),
         ))
 
+class AdGuardWidget(Static):
+    def on_mount(self) -> None:
+        self._refresh()
+        self._timer = self.set_interval(10, self._refresh)
+
+    def _refresh(self) -> None:
+        def _fetch():
+            try:
+                r = requests.get(
+                    f"{ADGUARD_URL}/control/stats",
+                    auth=(ADGUARD_USER, ADGUARD_PASS),
+                    timeout=3,
+                )
+                if r.ok:
+                    self.app.call_from_thread(self._apply, r.json())  # ← self.app
+                else:
+                    self.app.call_from_thread(self._error, f"HTTP {r.status_code}")
+            except Exception as exc:
+                self.app.call_from_thread(self._error, str(exc))
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _apply(self, d: dict) -> None:
+        avg_ms   = d.get("avg_processing_time", 0) * 1000  # seconds → ms
+        total    = d.get("num_dns_queries", 0)
+        blocked  = d.get("num_blocked_filtering", 0)
+        blocked_pct = (blocked / total * 100) if total else 0
+
+        avg_style = "bright_red" if avg_ms > 200 else "yellow" if avg_ms > 50 else "bright_green"
+
+        t = Table.grid(padding=(0, 2))
+        t.add_column(width=12, style="dim green")
+        t.add_column(style="green")
+        t.add_row("AVG RESP",  Text(f"{avg_ms:.1f} ms", style=avg_style))
+        t.add_row("QUERIES",   Text(f"{total:,}",       style="bright_green"))
+        t.add_row("BLOCKED",   Text(f"{blocked:,}  ({blocked_pct:.1f}%)", style="bright_green"))
+
+        self.update(Panel(
+            t,
+            title=Text("► ADGUARD", style="green"),
+            style="green", box=box.SIMPLE_HEAVY, padding=(0, 0),
+        ))
+
 class ProcessWidget(Static):
     def on_mount(self) -> None:
         for p in psutil.process_iter(["cpu_percent"]):
@@ -540,6 +583,7 @@ class HomelabApp(App):
     StatsWidget   { height: auto; }
     StorageWidget { height: auto; }
     NetworkWidget { height: auto; }
+    AdGuardWidget { height: auto; }
     """
     BINDINGS = []
 
@@ -554,7 +598,8 @@ class HomelabApp(App):
                 yield StatsWidget()
                 yield StorageWidget()
                 yield NetworkWidget()
-                yield ProcessWidget() 
+                yield AdGuardWidget()
+                yield ProcessWidget()
             with Vertical(id="right"):
                 yield DataTable(id="tbl", cursor_type="row")
                 with Horizontal(id="actionbar"):
@@ -600,7 +645,7 @@ class HomelabApp(App):
     def _pause_all(self) -> None:
         self._refresh_timer.pause()
         self._tick_timer.pause()
-        for cls in (StatsWidget, StorageWidget, NetworkWidget, ProcessWidget):
+        for cls in (StatsWidget, StorageWidget, NetworkWidget, ProcessWidget, AdGuardWidget):
             try:
                 self.query_one(cls)._timer.pause()
             except Exception:
@@ -609,7 +654,7 @@ class HomelabApp(App):
     def _resume_all(self) -> None:
         self._refresh_timer.resume()
         self._tick_timer.resume()
-        for cls in (StatsWidget, StorageWidget, NetworkWidget, ProcessWidget):
+        for cls in (StatsWidget, StorageWidget, NetworkWidget, ProcessWidget, AdGuardWidget):
             try:
                 self.query_one(cls)._timer.resume()
             except Exception:
