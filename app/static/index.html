@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>HOMELAB//CTRL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:        #0a0a0a;
+  --bg-card:   #0e0e0e;
+  --bg-sel:    rgba(0,204,68,0.07);
+  --g:         #00cc44;
+  --g-bright:  #00ff55;
+  --g-dim:     rgba(0,204,68,0.45);
+  --g-faint:   rgba(0,204,68,0.12);
+  --border:    rgba(0,204,68,0.18);
+  --border-hi: rgba(0,204,68,0.55);
+  --red:       #ff4040;
+  --red-dim:   rgba(255,64,64,0.55);
+  --yellow:    #ffaa00;
+  --blue:      #44aaff;
+  --font:      'JetBrains Mono', 'Fira Code', monospace;
+  --hdr-h:     48px;
+  --bar-h:     60px;
+}
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+html { -webkit-text-size-adjust:none; scroll-behavior:smooth; }
+body {
+  background:var(--bg);
+  color:var(--g);
+  font-family:var(--font);
+  font-size:13px;
+  line-height:1.5;
+  min-height:100dvh;
+  padding-top:var(--hdr-h);
+  padding-bottom:calc(var(--bar-h) + env(safe-area-inset-bottom));
+  -webkit-font-smoothing:antialiased;
+}
+button { cursor:pointer; font-family:var(--font); }
+/* ── scrollbar ── */
+::-webkit-scrollbar { width:4px; height:4px; }
+::-webkit-scrollbar-track { background:var(--bg); }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+
+/* ── HEADER ── */
+header {
+  position:fixed; top:0; left:0; right:0; z-index:100;
+  height:var(--hdr-h);
+  background:rgba(10,10,10,0.95);
+  border-bottom:1px solid var(--border);
+  backdrop-filter:blur(8px);
+  display:flex; align-items:center;
+  padding:0 12px;
+  gap:10px;
+}
+.logo {
+  font-size:14px; font-weight:700; letter-spacing:0.04em;
+  color:var(--g-bright); flex-shrink:0;
+}
+.logo span { color:var(--g-dim); }
+.hdr-meta { display:flex; gap:8px; margin-left:auto; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+.hdr-chip {
+  font-size:11px; color:var(--g-dim);
+  border:1px solid var(--g-faint);
+  padding:1px 6px; border-radius:2px;
+}
+#hdr-time { color:var(--g); font-weight:500; }
+#hdr-up   { display:none; }
+@media(min-width:480px){ #hdr-up { display:inline; } }
+
+/* ── CONTENT ── */
+main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
+
+/* ── SECTION LABEL ── */
+.sec-label {
+  font-size:10px; font-weight:700; letter-spacing:0.12em;
+  color:var(--g-dim); text-transform:uppercase;
+  margin:14px 0 6px; display:flex; align-items:center; gap:8px;
+}
+.sec-label::after {
+  content:''; flex:1; height:1px; background:var(--g-faint);
+}
+
+/* ── STAT GRID ── */
+.stat-grid {
+  display:grid;
+  grid-template-columns:repeat(2, 1fr);
+  gap:6px;
+}
+@media(min-width:560px){ .stat-grid { grid-template-columns:repeat(3, 1fr); } }
+@media(min-width:800px){ .stat-grid { grid-template-columns:repeat(6, 1fr); } }
+
+.stat-card {
+  background:var(--bg-card);
+  border:1px solid var(--border);
+  border-radius:3px;
+  padding:8px 10px;
+}
+.stat-label { font-size:10px; color:var(--g-dim); letter-spacing:0.08em; }
+.stat-val {
+  font-size:18px; font-weight:700; color:var(--g-bright);
+  line-height:1.2; margin:2px 0 4px;
+}
+.stat-val.warn  { color:var(--yellow); }
+.stat-val.alert { color:var(--red); }
+.stat-sub { font-size:10px; color:var(--g-dim); }
+
+/* ── PROGRESS BAR ── */
+.pbar {
+  height:3px; border-radius:2px;
+  background:var(--g-faint);
+  margin-top:5px; overflow:hidden;
+}
+.pbar-fill {
+  height:100%; border-radius:2px;
+  transition:width 0.6s ease, background-color 0.3s;
+  background:var(--g);
+}
+.pbar-fill.warn  { background:var(--yellow); }
+.pbar-fill.alert { background:var(--red); }
+
+/* ── NET ROW ── */
+.net-row {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 10px;
+  display:grid; grid-template-columns:1fr 1fr;
+  gap:4px;
+}
+.net-item { display:flex; flex-direction:column; }
+.net-label { font-size:10px; color:var(--g-dim); letter-spacing:0.06em; }
+.net-val { font-size:15px; font-weight:600; color:var(--g); }
+.net-arrow { color:var(--g-dim); margin-right:3px; }
+
+/* ── ADGUARD ROW ── */
+.ag-row {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 10px;
+  display:flex; gap:16px; flex-wrap:wrap;
+}
+.ag-item { display:flex; flex-direction:column; }
+.ag-label { font-size:10px; color:var(--g-dim); }
+.ag-val { font-size:15px; font-weight:600; color:var(--g); }
+
+/* ── STORAGE ROWS ── */
+.stor-list { display:flex; flex-direction:column; gap:5px; }
+.stor-row {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:7px 10px;
+}
+.stor-top {
+  display:flex; justify-content:space-between; align-items:baseline;
+  margin-bottom:4px;
+}
+.stor-mount { font-size:11px; color:var(--g); }
+.stor-info  { font-size:10px; color:var(--g-dim); }
+.stor-error { font-size:11px; color:var(--red); }
+
+/* ── CONTAINER LIST ── */
+.ctr-filter {
+  display:flex; gap:5px; margin-bottom:6px; flex-wrap:wrap;
+}
+.filter-btn {
+  font-family:var(--font); font-size:10px; letter-spacing:0.06em;
+  padding:3px 8px; border-radius:2px; border:1px solid var(--border);
+  background:transparent; color:var(--g-dim);
+  transition:all 0.15s;
+}
+.filter-btn.active {
+  background:var(--g-faint); color:var(--g); border-color:var(--border-hi);
+}
+.filter-btn:active { opacity:0.7; }
+
+.ctr-list { display:flex; flex-direction:column; gap:5px; }
+
+.ctr-card {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:9px 12px;
+  cursor:pointer; user-select:none;
+  transition:border-color 0.15s, background 0.15s;
+  -webkit-tap-highlight-color:transparent;
+  display:flex; align-items:center; gap:10px;
+}
+.ctr-card:active { opacity:0.8; }
+.ctr-card.selected {
+  background:var(--bg-sel);
+  border-color:var(--border-hi);
+}
+.ctr-dot {
+  width:8px; height:8px; border-radius:50%; flex-shrink:0;
+  box-shadow:0 0 6px currentColor;
+}
+.ctr-dot.running { color:var(--g);      background:var(--g); }
+.ctr-dot.exited  { color:var(--red);    background:var(--red); }
+.ctr-dot.paused  { color:var(--yellow); background:var(--yellow); }
+.ctr-dot.created { color:var(--blue);   background:var(--blue); }
+.ctr-dot.restarting { color:var(--yellow); background:var(--yellow);
+  animation:pulse 0.8s ease-in-out infinite; }
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.ctr-info { flex:1; min-width:0; }
+.ctr-name {
+  font-size:13px; font-weight:600; color:var(--g);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.ctr-meta { font-size:10px; color:var(--g-dim); margin-top:1px; }
+.ctr-badge {
+  font-size:9px; letter-spacing:0.1em; font-weight:700;
+  padding:2px 6px; border-radius:2px; flex-shrink:0;
+  text-transform:uppercase;
+}
+.ctr-badge.running { background:rgba(0,204,68,0.12); color:var(--g); border:1px solid rgba(0,204,68,0.25); }
+.ctr-badge.exited  { background:rgba(255,64,64,0.1);  color:var(--red); border:1px solid rgba(255,64,64,0.2); }
+.ctr-badge.paused  { background:rgba(255,170,0,0.1);  color:var(--yellow); border:1px solid rgba(255,170,0,0.2); }
+.ctr-badge.created { background:rgba(68,170,255,0.1); color:var(--blue); border:1px solid rgba(68,170,255,0.2); }
+
+/* ── BOTTOM BAR ── */
+.action-bar {
+  position:fixed; bottom:0; left:0; right:0; z-index:100;
+  height:var(--bar-h);
+  background:rgba(10,10,10,0.97);
+  border-top:1px solid var(--border);
+  backdrop-filter:blur(8px);
+  padding:0 10px;
+  padding-bottom:env(safe-area-inset-bottom);
+  display:flex; align-items:center; gap:6px;
+}
+.sel-label {
+  font-size:10px; color:var(--g-dim); flex:1; min-width:0;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.sel-label b { color:var(--g); }
+.act-btn {
+  font-family:var(--font); font-size:11px; font-weight:700;
+  letter-spacing:0.08em; text-transform:uppercase;
+  padding:0 12px; height:36px; border-radius:3px;
+  border:1px solid var(--border); background:var(--bg-card);
+  color:var(--g-dim); flex-shrink:0;
+  transition:all 0.15s;
+}
+.act-btn:hover { border-color:var(--border-hi); color:var(--g); background:var(--g-faint); }
+.act-btn:active { opacity:0.7; transform:scale(0.97); }
+.act-btn:disabled { opacity:0.25; cursor:not-allowed; }
+.act-btn.start  { color:var(--g);      border-color:rgba(0,204,68,0.3); }
+.act-btn.stop   { color:var(--red);    border-color:rgba(255,64,64,0.3); }
+.act-btn.restart{ color:var(--yellow); border-color:rgba(255,170,0,0.3); }
+.act-btn.start:hover  { background:rgba(0,204,68,0.1); }
+.act-btn.stop:hover   { background:rgba(255,64,64,0.1); }
+.act-btn.restart:hover{ background:rgba(255,170,0,0.1); }
+
+/* ── TOAST ── */
+#toast {
+  position:fixed; top:calc(var(--hdr-h) + 8px); left:50%;
+  transform:translateX(-50%) translateY(-8px);
+  background:var(--bg-card); border:1px solid var(--border);
+  color:var(--g); font-size:11px; padding:6px 14px; border-radius:3px;
+  white-space:nowrap; opacity:0; pointer-events:none;
+  transition:opacity 0.2s, transform 0.2s;
+  z-index:200;
+}
+#toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+#toast.err  { border-color:var(--red-dim); color:var(--red); }
+
+/* ── EMPTY STATE ── */
+.empty { text-align:center; padding:32px; color:var(--g-dim); font-size:12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">HOMELAB<span>//</span>CTRL</div>
+  <div class="hdr-meta">
+    <span class="hdr-chip" id="hdr-host">—</span>
+    <span class="hdr-chip" id="hdr-ip">—</span>
+    <span class="hdr-chip" id="hdr-up">—</span>
+    <span class="hdr-chip" id="hdr-time">—</span>
+  </div>
+</header>
+
+<main>
+  <!-- Stats -->
+  <div class="sec-label">system</div>
+  <div class="stat-grid" id="stat-grid">
+    <!-- filled by JS -->
+  </div>
+
+  <!-- Network -->
+  <div class="sec-label">network</div>
+  <div class="net-row">
+    <div class="net-item">
+      <span class="net-label">TX<span class="net-arrow"> ▲</span></span>
+      <span class="net-val" id="net-tx">—</span>
+    </div>
+    <div class="net-item">
+      <span class="net-label">RX<span class="net-arrow"> ▼</span></span>
+      <span class="net-val" id="net-rx">—</span>
+    </div>
+  </div>
+
+  <!-- AdGuard -->
+  <div class="sec-label" id="ag-label" style="display:none">adguard</div>
+  <div class="ag-row" id="ag-row" style="display:none"></div>
+
+  <!-- Storage -->
+  <div class="sec-label">storage</div>
+  <div class="stor-list" id="stor-list"></div>
+
+  <!-- Containers -->
+  <div class="sec-label" style="margin-top:16px">
+    containers <span id="ctr-count" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
+  </div>
+  <div class="ctr-filter">
+    <button class="filter-btn active" data-filter="all"  onclick="setFilter('all',this)">ALL</button>
+    <button class="filter-btn"        data-filter="running" onclick="setFilter('running',this)">RUNNING</button>
+    <button class="filter-btn"        data-filter="exited"  onclick="setFilter('exited',this)">STOPPED</button>
+  </div>
+  <div class="ctr-list" id="ctr-list"></div>
+</main>
+
+<!-- Bottom action bar -->
+<div class="action-bar">
+  <div class="sel-label" id="sel-label">tap a container to select</div>
+  <button class="act-btn start"   id="btn-start"   disabled onclick="doAction('start')">▶ Start</button>
+  <button class="act-btn stop"    id="btn-stop"    disabled onclick="doAction('stop')">■ Stop</button>
+  <button class="act-btn restart" id="btn-restart" disabled onclick="doAction('restart')">↺ Restart</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── state ────────────────────────────────────────────────────────────────────
+let selected = null;      // { id, eid, name, state }
+let containers = [];
+let ctrFilter = 'all';
+let busy = false;
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+const fmtBytes = b => {
+  if (b < 1024)     return b.toFixed(0)  + ' B/s';
+  if (b < 1048576)  return (b/1024).toFixed(1) + ' KB/s';
+  return (b/1048576).toFixed(1) + ' MB/s';
+};
+
+const pctClass = p => p >= 85 ? 'alert' : p >= 65 ? 'warn' : '';
+
+function bar(pct) {
+  const cls = pctClass(pct);
+  return `<div class="pbar"><div class="pbar-fill ${cls}" style="width:${pct}%"></div></div>`;
+}
+
+let toastTimer;
+function toast(msg, isErr=false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 2400);
+}
+
+// ── clock ────────────────────────────────────────────────────────────────────
+function tick() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2,'0');
+  const mm = String(now.getMinutes()).padStart(2,'0');
+  const ss = String(now.getSeconds()).padStart(2,'0');
+  document.getElementById('hdr-time').textContent = `${hh}:${mm}:${ss}`;
+}
+setInterval(tick, 1000); tick();
+
+// ── fetch stats ───────────────────────────────────────────────────────────────
+async function fetchStats() {
+  try {
+    const d = await fetch('/api/stats').then(r=>r.json());
+    document.getElementById('hdr-host').textContent = d.hostname;
+    document.getElementById('hdr-ip').textContent   = d.ip;
+    document.getElementById('hdr-up').textContent   = d.uptime;
+    document.getElementById('net-tx').textContent   = fmtBytes(d.net_tx);
+    document.getElementById('net-rx').textContent   = fmtBytes(d.net_rx);
+
+    const items = [
+      { label:'CPU',  val: d.cpu.toFixed(1)+'%',   pct: d.cpu,      sub: `load ${d.load1}` },
+      { label:'RAM',  val: d.ram_pct.toFixed(1)+'%', pct: d.ram_pct, sub: `${d.ram_used_gb}/${d.ram_total_gb} GB` },
+      { label:'SWAP', val: d.swap_pct.toFixed(1)+'%', pct: d.swap_pct, sub: '' },
+      { label:'LOAD', val: d.load1,                  pct: null,       sub: `${d.load5} · ${d.load15}` },
+    ];
+    if (d.temp !== null) {
+      const tCls = d.temp >= 80 ? 'alert' : d.temp >= 65 ? 'warn' : '';
+      items.splice(3, 0, { label:'TEMP', val: d.temp+'°C', pct:null, cls:tCls, sub:'' });
+    }
+
+    const grid = document.getElementById('stat-grid');
+    grid.innerHTML = items.map(it => {
+      const cls = it.cls || (it.pct !== null ? pctClass(it.pct) : '');
+      return `<div class="stat-card">
+        <div class="stat-label">${it.label}</div>
+        <div class="stat-val ${cls}">${it.val}</div>
+        ${it.pct !== null ? bar(it.pct) : ''}
+        <div class="stat-sub">${it.sub}</div>
+      </div>`;
+    }).join('');
+  } catch(e) { /* ignore */ }
+}
+
+// ── fetch storage ─────────────────────────────────────────────────────────────
+async function fetchStorage() {
+  try {
+    const data = await fetch('/api/storage').then(r=>r.json());
+    const list = document.getElementById('stor-list');
+    list.innerHTML = data.map(s => {
+      if (s.error) return `<div class="stor-row">
+        <div class="stor-top">
+          <span class="stor-mount">${s.mount}</span>
+          <span class="stor-error">${s.error}</span>
+        </div></div>`;
+      const cls = pctClass(s.percent);
+      return `<div class="stor-row">
+        <div class="stor-top">
+          <span class="stor-mount">${s.mount}</span>
+          <span class="stor-info">${s.used_gb} / ${s.total_gb} GB — ${s.percent}%</span>
+        </div>
+        <div class="pbar"><div class="pbar-fill ${cls}" style="width:${s.percent}%"></div></div>
+      </div>`;
+    }).join('');
+  } catch(e) { /* ignore */ }
+}
+
+// ── fetch adguard ─────────────────────────────────────────────────────────────
+async function fetchAdGuard() {
+  try {
+    const d = await fetch('/api/adguard').then(r=>r.json());
+    const row = document.getElementById('ag-row');
+    const lbl = document.getElementById('ag-label');
+    if (d.error) { row.style.display='none'; lbl.style.display='none'; return; }
+    row.style.display='flex'; lbl.style.display='flex';
+    row.innerHTML = [
+      { label:'AVG', val: d.avg_ms+'ms' },
+      { label:'QUERIES', val: d.queries.toLocaleString() },
+      { label:'BLOCKED', val: d.blocked.toLocaleString() },
+      { label:'BLOCK%', val: d.blocked_pct+'%' },
+    ].map(i=>`<div class="ag-item"><span class="ag-label">${i.label}</span><span class="ag-val">${i.val}</span></div>`).join('');
+  } catch(e) { /* ignore */ }
+}
+
+// ── fetch containers ──────────────────────────────────────────────────────────
+async function fetchContainers() {
+  try {
+    const data = await fetch('/api/containers').then(r=>r.json());
+    containers = data;
+
+    // keep selected valid
+    if (selected) {
+      const still = containers.find(c => c.id === selected.id);
+      if (still) { selected = still; } else { selected = null; }
+    }
+
+    renderContainers();
+    updateActionBar();
+
+    const cnt = containers.filter(c=>c.state==='running').length;
+    document.getElementById('ctr-count').textContent =
+      `— ${containers.length} total · ${cnt} running`;
+  } catch(e) { /* ignore */ }
+}
+
+function renderContainers() {
+  const list = document.getElementById('ctr-list');
+  const filtered = ctrFilter === 'all' ? containers :
+    containers.filter(c => {
+      if (ctrFilter==='running') return c.state==='running';
+      if (ctrFilter==='exited')  return c.state!=='running';
+      return true;
+    });
+
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty">no containers found</div>';
+    return;
+  }
+
+  // sort: running first, then alpha
+  const sorted = [...filtered].sort((a,b) => {
+    if (a.state==='running' && b.state!=='running') return -1;
+    if (a.state!=='running' && b.state==='running') return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  list.innerHTML = sorted.map(c => {
+    const dotCls  = c.state==='running'?'running': c.state==='exited'?'exited': c.state==='paused'?'paused':c.state==='created'?'created':'exited';
+    const badgeCls = dotCls;
+    const isSel   = selected && selected.id === c.id;
+    return `<div class="ctr-card ${isSel?'selected':''}" onclick="selectContainer('${c.id}')">
+      <span class="ctr-dot ${dotCls}"></span>
+      <div class="ctr-info">
+        <div class="ctr-name">${escHtml(c.name)}</div>
+        <div class="ctr-meta">${escHtml(c.host)} · ${escHtml(c.status)}</div>
+      </div>
+      <span class="ctr-badge ${badgeCls}">${c.state==='running'?'UP':c.state==='exited'?'DOWN':c.state.toUpperCase()}</span>
+    </div>`;
+  }).join('');
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function setFilter(f, btn) {
+  ctrFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderContainers();
+}
+
+function selectContainer(id) {
+  const c = containers.find(x=>x.id===id);
+  if (!c) return;
+  selected = (selected && selected.id===id) ? null : c;
+  renderContainers();
+  updateActionBar();
+}
+
+function updateActionBar() {
+  const lbl = document.getElementById('sel-label');
+  const btnStart   = document.getElementById('btn-start');
+  const btnStop    = document.getElementById('btn-stop');
+  const btnRestart = document.getElementById('btn-restart');
+
+  if (!selected) {
+    lbl.innerHTML = 'tap a container to select';
+    btnStart.disabled = btnStop.disabled = btnRestart.disabled = true;
+    return;
+  }
+  const running = selected.state === 'running';
+  lbl.innerHTML = `<b>${escHtml(selected.name)}</b> · ${selected.host}`;
+  btnStart.disabled   = running   || busy;
+  btnStop.disabled    = !running  || busy;
+  btnRestart.disabled = !running  || busy;
+}
+
+async function doAction(action) {
+  if (!selected || busy) return;
+  busy = true;
+  updateActionBar();
+  const eid = selected.eid ?? 'null';
+  try {
+    const r = await fetch(`/api/containers/${eid}/${selected.id}/${action}`, { method:'POST' });
+    if (r.ok) {
+      toast(`${action} → ${selected.name}`);
+    } else {
+      const err = await r.json().catch(()=>({}));
+      toast(`error: ${err.detail || r.status}`, true);
+    }
+  } catch(e) {
+    toast(`network error`, true);
+  }
+  busy = false;
+  // refresh containers quickly
+  setTimeout(fetchContainers, 600);
+  setTimeout(fetchContainers, 2000);
+}
+
+// ── polling ───────────────────────────────────────────────────────────────────
+fetchStats();
+fetchStorage();
+fetchAdGuard();
+fetchContainers();
+
+setInterval(fetchStats,      2000);
+setInterval(fetchContainers, 3000);
+setInterval(fetchStorage,    8000);
+setInterval(fetchAdGuard,   15000);
+</script>
+</body>
+</html>

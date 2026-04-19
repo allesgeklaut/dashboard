@@ -1,19 +1,23 @@
-FROM ubuntu:24.04
+FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y \
-    python3 python3-pip ttyd \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install --no-cache-dir --break-system-packages \
-    textual psutil requests urllib3 python-dotenv
+# Install only what's needed (no ttyd!)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      docker.io \
+      gcc \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY dashboard.py ./
 
-ENV TERM=xterm-256color
-ENV PYTHONUNBUFFERED=1
+RUN pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    psutil \
+    requests \
+    urllib3
+
+COPY app/ .
 
 EXPOSE 7681
 
-CMD ["ttyd", "--port", "7681", "--writable", "--max-clients", "3", \
-     "/usr/bin/python3", "-u", "dashboard.py"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7681", "--workers", "1"]

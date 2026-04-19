@@ -3,13 +3,12 @@ services:
     build: .
     container_name: homelab-ctrl
     restart: unless-stopped
-    network_mode: host
-    pid: host              # ← gives psutil visibility of all host processes
-    env_file:
-      - .env
+    network_mode: host        # required — psutil reads host network stats
+    pid: host                 # required — psutil reads host CPU / process list
+    privileged: false
     environment:
-      - TERM=xterm-256color
       - TZ=Europe/Vienna
     volumes:
-      - ${HOME}/.homelab_cal.json:/root/.homelab_cal.json:ro
-
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # CLI fallback
+      - /mnt/nas:/mnt/nas:ro                           # NFS mounts visible
+    env_file: .env
