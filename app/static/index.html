@@ -306,6 +306,16 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .cpu-val.alert { color:var(--red); }
 .mem-val { color:var(--g-dim); }
 
+
+/* ── LOAD TRIO ── */
+.load-trio {
+  display:flex; gap:10px; margin:2px 0 4px; align-items:baseline;
+}
+.load-val {
+  font-size:18px; font-weight:700; color:var(--g-bright);
+  line-height:1.2;
+}
+
 </style>
 </head>
 <body>
@@ -440,10 +450,10 @@ async function fetchStats() {
     document.getElementById('net-rx').textContent   = fmtBytes(d.net_rx);
 
     const items = [
-      { label:'CPU',  val: d.cpu.toFixed(1)+'%',   pct: d.cpu,      sub: `load ${d.load1}` },
+      { label:'CPU',  val: d.cpu.toFixed(1)+'%',   pct: d.cpu,      sub: '' },
       { label:'RAM',  val: d.ram_pct.toFixed(1)+'%', pct: d.ram_pct, sub: `${d.ram_used_gb}/${d.ram_total_gb} GB` },
       { label:'SWAP', val: d.swap_pct.toFixed(1)+'%', pct: d.swap_pct, sub: '' },
-      { label:'LOAD', val: d.load1,                  pct: null,       sub: `${d.load5} · ${d.load15}` },
+      { label:'LOAD', val: null, load: [d.load1, d.load5, d.load15], pct: null, sub: '' },
     ];
     if (d.temp !== null) {
       const tCls = d.temp >= 80 ? 'alert' : d.temp >= 65 ? 'warn' : '';
@@ -452,6 +462,17 @@ async function fetchStats() {
 
     const grid = document.getElementById('stat-grid');
     grid.innerHTML = items.map(it => {
+      if (it.load) {
+        return `<div class="stat-card">
+          <div class="stat-label">${it.label}</div>
+          <div class="load-trio">
+            <span class="load-val">${it.load[0]}</span>
+            <span class="load-val">${it.load[1]}</span>
+            <span class="load-val">${it.load[2]}</span>
+          </div>
+          <div class="stat-sub">1m &nbsp; 5m &nbsp; 15m</div>
+        </div>`;
+      }
       const cls = it.cls || (it.pct !== null ? pctClass(it.pct) : '');
       return `<div class="stat-card">
         <div class="stat-label">${it.label}</div>
@@ -468,7 +489,8 @@ async function fetchStorage() {
   try {
     const data = await fetch('/api/storage').then(r=>r.json());
     const list = document.getElementById('stor-list');
-    list.innerHTML = data.map(s => {
+    const nfsOnly = data.filter(s => s.type === 'NFS');
+    list.innerHTML = nfsOnly.map(s => {
       if (s.error) return `<div class="stor-row">
         <div class="stor-top">
           <span class="stor-mount">${s.mount}</span>
