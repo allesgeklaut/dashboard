@@ -9,5 +9,7 @@ services:
       - .env
     environment:
       - TERM=xterm-256color
+      - TZ=Europe/Vienna
     volumes:
       - ${HOME}/.homelab_cal.json:/root/.homelab_cal.json:ro
+
