@@ -9,6 +9,6 @@ services:
     environment:
       - TZ=Europe/Vienna
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro   # CLI fallback
-      - /mnt/nas:/mnt/nas:ro                           # NFS mounts visible
+      - /var/run/docker.sock:/var/run/docker.sock:ro           # CLI fallback
+      - /mnt/nas:/mnt/nas:ro                                   # NFS mounts visible
     env_file: .env
