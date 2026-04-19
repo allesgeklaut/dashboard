@@ -269,6 +269,43 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 
 /* ── EMPTY STATE ── */
 .empty { text-align:center; padding:32px; color:var(--g-dim); font-size:12px; }
+
+/* ── PROCESS TABLE ── */
+.proc-table-wrap {
+  background:var(--bg-card);
+  border:1px solid var(--border);
+  border-radius:3px;
+  overflow:hidden;
+}
+.proc-table {
+  width:100%; border-collapse:collapse;
+  font-size:11px; font-family:var(--font);
+}
+.proc-table thead tr {
+  background:rgba(0,204,68,0.06);
+  border-bottom:1px solid var(--border);
+}
+.proc-table th {
+  padding:5px 10px; text-align:left;
+  font-size:9px; letter-spacing:0.1em; font-weight:700;
+  color:var(--g-dim); text-transform:uppercase;
+}
+.proc-table td {
+  padding:5px 10px;
+  border-bottom:1px solid rgba(0,204,68,0.05);
+  color:var(--g);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.proc-table tbody tr:last-child td { border-bottom:none; }
+.proc-table tbody tr:hover { background:var(--g-faint); }
+.col-pid  { width:52px; color:var(--g-dim) !important; }
+.col-name { max-width:140px; }
+.col-cpu, .col-mem { width:60px; text-align:right; }
+.cpu-val { font-weight:600; }
+.cpu-val.warn  { color:var(--yellow); }
+.cpu-val.alert { color:var(--red); }
+.mem-val { color:var(--g-dim); }
+
 </style>
 </head>
 <body>
@@ -310,6 +347,25 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <!-- Storage -->
   <div class="sec-label">storage</div>
   <div class="stor-list" id="stor-list"></div>
+
+  
+  <!-- Processes -->
+  <div class="sec-label">top processes</div>
+  <div class="proc-table-wrap">
+    <table class="proc-table" id="proc-table">
+      <thead>
+        <tr>
+          <th class="col-pid">PID</th>
+          <th class="col-name">NAME</th>
+          <th class="col-cpu">CPU%</th>
+          <th class="col-mem">MEM%</th>
+        </tr>
+      </thead>
+      <tbody id="proc-tbody">
+        <tr><td colspan="4" class="empty">loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
 
   <!-- Containers -->
   <div class="sec-label" style="margin-top:16px">
@@ -563,16 +619,42 @@ async function doAction(action) {
   setTimeout(fetchContainers, 2000);
 }
 
+
+// ── fetch processes ───────────────────────────────────────────────────────────
+async function fetchProcesses() {
+  try {
+    const data = await fetch('/api/processes').then(r=>r.json());
+    const tbody = document.getElementById('proc-tbody');
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">no data</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(p => {
+      const cpu = (p.cpu_percent || 0).toFixed(1);
+      const mem = (p.memory_percent || 0).toFixed(1);
+      const cpuCls = p.cpu_percent >= 50 ? 'alert' : p.cpu_percent >= 20 ? 'warn' : '';
+      return `<tr>
+        <td class="col-pid" style="color:var(--g-dim)">${p.pid}</td>
+        <td class="col-name">${escHtml(p.name)}</td>
+        <td class="col-cpu"><span class="cpu-val ${cpuCls}">${cpu}</span></td>
+        <td class="col-mem"><span class="mem-val">${mem}</span></td>
+      </tr>`;
+    }).join('');
+  } catch(e) { /* ignore */ }
+}
+
 // ── polling ───────────────────────────────────────────────────────────────────
 fetchStats();
 fetchStorage();
 fetchAdGuard();
 fetchContainers();
+fetchProcesses();
 
 setInterval(fetchStats,      2000);
 setInterval(fetchContainers, 3000);
 setInterval(fetchStorage,    8000);
 setInterval(fetchAdGuard,   15000);
+setInterval(fetchProcesses,  3000);
 </script>
 </body>
 </html>
