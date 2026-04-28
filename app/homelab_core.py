@@ -19,7 +19,8 @@ PORTAINER_ENVS: list[int] | None = None  # None = auto-discover; or e.g. [1, 2]
 ADGUARD_URL  = os.getenv("ADGUARD_URL", "http://192.168.0.2")
 ADGUARD_USER = os.getenv("ADGUARD_USER", "")
 ADGUARD_PASS = os.getenv("ADGUARD_PASS", "")
-NFS_MOUNTS   = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",") if m.strip()]
+NFS_MOUNTS    = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",") if m.strip()]
+SHELLY_PLUG_URL = os.getenv("SHELLY_PLUG_URL", "http://192.168.0.61")
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
@@ -275,6 +276,33 @@ def get_adguard_stats() -> dict:
                 "queries":     total,
                 "blocked":     blocked,
                 "blocked_pct": round(blocked / total * 100 if total else 0, 1),
+            }
+    except Exception:
+        pass
+    return {"error": "unavailable"}
+
+
+# ── Shelly Plus Plug ──────────────────────────────────────────────────────────
+
+def get_shelly_stats() -> dict:
+    """Return power stats from a Shelly Plus Plug (Gen2) via local REST API.
+
+    Endpoint: GET /rpc/Switch.GetStatus?id=0
+    Returns keys: output (bool), apower (W), voltage (V), current (A),
+    or {'error': ...} on failure.
+    """
+    try:
+        r = requests.get(
+            f"{SHELLY_PLUG_URL}/rpc/Switch.GetStatus?id=0",
+            timeout=3,
+        )
+        if r.ok:
+            d = r.json()
+            return {
+                "output":  d.get("output", False),
+                "apower":  round(d.get("apower",  0.0), 1),
+                "voltage": round(d.get("voltage", 0.0), 1),
+                "current": round(d.get("current", 0.0), 3),
             }
     except Exception:
         pass

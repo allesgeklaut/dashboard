@@ -39,6 +39,11 @@ def api_action(eid: str, cid: str, action: str):
         raise HTTPException(500, msg)
     return {"ok": True}
 
+
+@app.get("/api/shelly")
+def api_shelly():
+    return core.get_shelly_stats()
+
 @app.get("/api/processes")
 def api_processes():
     try:
