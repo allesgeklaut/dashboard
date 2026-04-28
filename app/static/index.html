@@ -147,6 +147,16 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .ag-label { font-size:10px; color:var(--g-dim); }
 .ag-val { font-size:15px; font-weight:600; color:var(--g); }
 
+
+/* ── SHELLY PLUG ROW ── */
+.shelly-row {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 10px;
+  display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;
+}
+.shelly-power { display:flex; flex-direction:column; min-width:90px; }
+.shelly-power .pbar { margin-top:6px; width:100%; }
+
 /* ── STORAGE ROWS ── */
 .stor-list { display:flex; flex-direction:column; gap:5px; }
 .stor-row {
@@ -354,6 +364,11 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <div class="sec-label" id="ag-label" style="display:none">adguard</div>
   <div class="ag-row" id="ag-row" style="display:none"></div>
 
+
+  <!-- Shelly Plug -->
+  <div class="sec-label" id="shelly-label" style="display:none">shelly plug</div>
+  <div class="shelly-row" id="shelly-row" style="display:none"></div>
+
   <!-- Storage -->
   <div class="sec-label">storage</div>
   <div class="stor-list" id="stor-list"></div>
@@ -525,6 +540,37 @@ async function fetchAdGuard() {
   } catch(e) { /* ignore */ }
 }
 
+// ── fetch shelly plug ─────────────────────────────────────────────────────────
+async function fetchShelly() {
+  try {
+    const d = await fetch('/api/shelly').then(r=>r.json());
+    const row = document.getElementById('shelly-row');
+    const lbl = document.getElementById('shelly-label');
+    if (d.error) { row.style.display='none'; lbl.style.display='none'; return; }
+    row.style.display='flex'; lbl.style.display='flex';
+    const pwrPct = Math.min(100, (d.apower / 2300) * 100).toFixed(1);
+    const pwrCls = d.apower >= 2000 ? 'alert' : d.apower >= 1000 ? 'warn' : '';
+    row.innerHTML = `
+      <div class="ag-item">
+        <span class="ag-label">STATE</span>
+        <span class="ag-val" style="color:${d.output ? 'var(--g-bright)' : 'var(--red)'}">${d.output ? 'ON' : 'OFF'}</span>
+      </div>
+      <div class="shelly-power">
+        <span class="ag-label">POWER</span>
+        <span class="ag-val ${pwrCls}">${d.apower} W</span>
+        <div class="pbar"><div class="pbar-fill ${pwrCls}" style="width:${pwrPct}%"></div></div>
+      </div>
+      <div class="ag-item">
+        <span class="ag-label">VOLTAGE</span>
+        <span class="ag-val">${d.voltage} V</span>
+      </div>
+      <div class="ag-item">
+        <span class="ag-label">CURRENT</span>
+        <span class="ag-val">${d.current} A</span>
+      </div>`;
+  } catch(e) { /* ignore */ }
+}
+
 // ── fetch containers ──────────────────────────────────────────────────────────
 async function fetchContainers() {
   try {
@@ -651,7 +697,7 @@ async function fetchProcesses() {
       tbody.innerHTML = '<tr><td colspan="4" class="empty">no data</td></tr>';
       return;
     }
-    tbody.innerHTML = data.map(p => {
+    tbody.innerHTML = data.slice(0, 5).map(p => {
       const cpu = (p.cpu_percent || 0).toFixed(1);
       const mem = (p.memory_percent || 0).toFixed(1);
       const cpuCls = p.cpu_percent >= 50 ? 'alert' : p.cpu_percent >= 20 ? 'warn' : '';
@@ -669,6 +715,7 @@ async function fetchProcesses() {
 fetchStats();
 fetchStorage();
 fetchAdGuard();
+fetchShelly();
 fetchContainers();
 fetchProcesses();
 
@@ -676,6 +723,7 @@ setInterval(fetchStats,      2000);
 setInterval(fetchContainers, 3000);
 setInterval(fetchStorage,    8000);
 setInterval(fetchAdGuard,   15000);
+setInterval(fetchShelly,     5000);
 setInterval(fetchProcesses,  3000);
 </script>
 </body>

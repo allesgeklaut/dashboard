@@ -254,6 +254,48 @@ class AdGuardWidget(Static):
         ))
 
 
+
+
+class ShellyWidget(Static):
+    def on_mount(self) -> None:
+        self._refresh()
+        self._timer = self.set_interval(5, self._refresh)
+
+    def _refresh(self) -> None:
+        def _fetch():
+            d = core.get_shelly_stats()
+            if "error" in d:
+                self.app.call_from_thread(self._error, d["error"])
+            else:
+                self.app.call_from_thread(self._apply, d)
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _apply(self, d: dict) -> None:
+        on      = d["output"]
+        pwr     = d["apower"]
+        pwr_style = "bright_red" if pwr > 2000 else "yellow" if pwr > 1000 else "bright_green"
+        state_text = Text("ON",  style="bright_green") if on else Text("OFF", style="bright_red")
+
+        t = Table.grid(padding=(0, 2))
+        t.add_column(width=12, style="dim green")
+        t.add_column(style="green")
+        t.add_row("STATE",   state_text)
+        t.add_row("POWER",   Text(f"{pwr:.1f} W",   style=pwr_style))
+        t.add_row("VOLTAGE", Text(f"{d['voltage']:.1f} V", style="green"))
+        t.add_row("CURRENT", Text(f"{d['current']:.3f} A", style="dim green"))
+        self.update(Panel(
+            t,
+            title=Text("► SHELLY PLUG", style="green"),
+            style="green", box=box.SIMPLE_HEAVY, padding=(0, 0),
+        ))
+
+    def _error(self, msg: str) -> None:
+        self.update(Panel(
+            Text(f"unavailable: {msg}", style="dim red"),
+            title=Text("► SHELLY PLUG", style="green"),
+            style="green", box=box.SIMPLE_HEAVY, padding=(0, 0),
+        ))
+
 class ProcessWidget(Static):
     def on_mount(self) -> None:
         for p in psutil.process_iter(["cpu_percent"]):
@@ -272,7 +314,7 @@ class ProcessWidget(Static):
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             procs.sort(key=lambda x: x["cpu_percent"] or 0, reverse=True)
-            procs = procs[:11]
+            procs = procs[:5]
         except Exception:
             procs = []
 
@@ -388,6 +430,7 @@ StatsWidget   { height: auto; }
 StorageWidget { height: auto; }
 NetworkWidget { height: auto; }
 AdGuardWidget { height: auto; }
+ShellyWidget  { height: auto; }
 """
     BINDINGS = []
 
@@ -403,6 +446,7 @@ AdGuardWidget { height: auto; }
                 yield StorageWidget()
                 yield NetworkWidget()
                 yield AdGuardWidget()
+                yield ShellyWidget()
                 yield ProcessWidget()
             with Vertical(id="right"):
                 yield DataTable(id="tbl", cursor_type="row")
@@ -448,7 +492,7 @@ AdGuardWidget { height: auto; }
     def _pause_all(self) -> None:
         self._refresh_timer.pause()
         self._tick_timer.pause()
-        for cls in (StatsWidget, StorageWidget, NetworkWidget, ProcessWidget, AdGuardWidget):
+        for cls in (StatsWidget, StorageWidget, NetworkWidget, AdGuardWidget, ShellyWidget, ProcessWidget):
             try:
                 self.query_one(cls)._timer.pause()
             except Exception:
@@ -457,7 +501,7 @@ AdGuardWidget { height: auto; }
     def _resume_all(self) -> None:
         self._refresh_timer.resume()
         self._tick_timer.resume()
-        for cls in (StatsWidget, StorageWidget, NetworkWidget, ProcessWidget, AdGuardWidget):
+        for cls in (StatsWidget, StorageWidget, NetworkWidget, AdGuardWidget, ShellyWidget, ProcessWidget):
             try:
                 self.query_one(cls)._timer.resume()
             except Exception:
