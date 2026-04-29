@@ -259,7 +259,7 @@ class AdGuardWidget(Static):
 class ShellyWidget(Static):
     def on_mount(self) -> None:
         self._refresh()
-        self._timer = self.set_interval(30, self._refresh)
+        self._timer = self.set_interval(5, self._refresh)
 
     def _refresh(self) -> None:
         def _fetch():
