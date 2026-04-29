@@ -431,7 +431,7 @@ Button { min-width: 14; margin: 0 1; background: #002200;
 Button:focus { background: #004400; border: solid #00ff00; }
 Button.-stop { border: solid red; color: #ff4444; }
 Button.-screen  { border: solid #555;  color: #888888; }
-Button.-cycle   { min-width: 16; margin: 0 1 1 1; background: #001a00; color: #00cc00; border: solid #004400; width: 44; }
+Button.-cycle        { border: solid #004400; color: #00cc00; }
 Button.-cycle.-armed { background: #220000; color: #ff4444; border: solid red; }
 DataTable { background: #0a0a0a; color: green; }
 StatsWidget   { height: auto; }
@@ -455,7 +455,6 @@ ShellyWidget  { height: auto; }
                 yield NetworkWidget()
                 yield AdGuardWidget()
                 yield ShellyWidget()
-                yield Button("⟳ POWER CYCLE", id="b-shelly-cycle", classes="-cycle")
                 yield ProcessWidget()
             with Vertical(id="right"):
                 yield DataTable(id="tbl", cursor_type="row")
@@ -465,6 +464,7 @@ ShellyWidget  { height: auto; }
             yield Button("↺ RESTART", id="b-restart")
             yield Button("⟳ REFRESH", id="b-refresh")
             yield Button("⏻ SCREEN",  id="b-screen",  classes="-screen")
+            yield Button("⟳ CYCLE",   id="b-shelly-cycle", classes="-cycle")
         yield Static(id="statusbar")
 
     def on_mount(self) -> None:
@@ -700,6 +700,7 @@ ShellyWidget  { height: auto; }
                 ("b-restart", lambda: self.action_act("restart")),
                 ("b-refresh", self.action_refresh),
                 ("b-screen",  self._btn_screen),
+                ("b-shelly-cycle", self._btn_shelly_cycle),
             ]
             for btn_id, handler in btn_actions:
                 try:
