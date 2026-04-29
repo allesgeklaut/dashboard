@@ -157,6 +157,20 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .shelly-power { display:flex; flex-direction:column; min-width:90px; }
 .shelly-power .pbar { margin-top:6px; width:100%; }
 
+
+/* ── POWER CYCLE BUTTON ── */
+.btn-cycle {
+  margin-top: 8px;
+  padding: 5px 14px;
+  background: #001a00; color: var(--g); border: 1px solid #004400;
+  border-radius: 3px; cursor: pointer; font: inherit;
+  font-size: var(--text-xs); letter-spacing: 0.05em; transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-cycle:hover  { background: #002800; border-color: var(--g); }
+.btn-cycle.armed  { background: #220000; color: #ff4444; border-color: #880000; animation: pulse-red 0.6s ease-in-out infinite alternate; }
+.btn-cycle:disabled { opacity: 0.5; cursor: not-allowed; }
+@keyframes pulse-red { from { border-color: #880000; } to { border-color: #ff4444; } }
+
 /* ── STORAGE ROWS ── */
 .stor-list { display:flex; flex-direction:column; gap:5px; }
 .stor-row {
@@ -368,6 +382,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <!-- Shelly Plug -->
   <div class="sec-label" id="shelly-label" style="display:none">shelly plug</div>
   <div class="shelly-row" id="shelly-row" style="display:none"></div>
+  <button class="btn-cycle" id="btn-cycle" style="display:none" onclick="shellyCycle()">⟳ POWER CYCLE</button>
 
   <!-- Storage -->
   <div class="sec-label">storage</div>
@@ -415,6 +430,38 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 <div id="toast"></div>
 
 <script>
+// ── power cycle ────────────────────────────────────────────────────────────────
+let _cycleArmed = false, _cycleTimeout = null;
+function shellyCycle() {
+  const btn = document.getElementById('btn-cycle');
+  if (!_cycleArmed) {
+    _cycleArmed = true;
+    btn.textContent = '⚠ CONFIRM? (8 s)';
+    btn.classList.add('armed');
+    _cycleTimeout = setTimeout(() => {
+      _cycleArmed = false;
+      btn.textContent = '⟳ POWER CYCLE';
+      btn.classList.remove('armed');
+    }, 8000);
+  } else {
+    clearTimeout(_cycleTimeout);
+    _cycleArmed = false;
+    btn.classList.remove('armed');
+    btn.disabled = true;
+    btn.textContent = 'Cycling…';
+    fetch('/api/shelly/powercycle', { method: 'POST' })
+      .then(r => r.json())
+      .then(d => {
+        btn.textContent = d.ok ? '✓ on in 10 s' : ('✗ ' + (d.detail || 'failed'));
+        setTimeout(() => { btn.textContent = '⟳ POWER CYCLE'; btn.disabled = false; }, 15000);
+      })
+      .catch(() => {
+        btn.textContent = '✗ error';
+        setTimeout(() => { btn.textContent = '⟳ POWER CYCLE'; btn.disabled = false; }, 3000);
+      });
+  }
+}
+
 // ── state ────────────────────────────────────────────────────────────────────
 let selected = null;      // { id, eid, name, state }
 let containers = [];
@@ -529,8 +576,9 @@ async function fetchAdGuard() {
     const d = await fetch('/api/adguard').then(r=>r.json());
     const row = document.getElementById('ag-row');
     const lbl = document.getElementById('ag-label');
-    if (d.error) { row.style.display='none'; lbl.style.display='none'; return; }
+    if (d.error) { row.style.display='none'; lbl.style.display='none'; document.getElementById('btn-cycle').style.display='none'; return; }
     row.style.display='flex'; lbl.style.display='flex';
+    document.getElementById('btn-cycle').style.display='inline-block';
     row.innerHTML = [
       { label:'AVG', val: d.avg_ms+'ms' },
       { label:'QUERIES', val: d.queries.toLocaleString() },
@@ -546,10 +594,17 @@ async function fetchShelly() {
     const d = await fetch('/api/shelly').then(r=>r.json());
     const row = document.getElementById('shelly-row');
     const lbl = document.getElementById('shelly-label');
-    if (d.error) { row.style.display='none'; lbl.style.display='none'; return; }
+    if (d.error) { row.style.display='none'; lbl.style.display='none'; document.getElementById('btn-cycle').style.display='none'; return; }
     row.style.display='flex'; lbl.style.display='flex';
+    document.getElementById('btn-cycle').style.display='inline-block';
     const pwrPct = Math.min(100, (d.apower / 2300) * 100).toFixed(1);
     const pwrCls = d.apower >= 2000 ? 'alert' : d.apower >= 1000 ? 'warn' : '';
+    const todayRow = d.today_kwh !== null
+      ? `<div class="ag-item"><span class="ag-label">TODAY</span><span class="ag-val" style="color:var(--g-bright)">${d.today_kwh.toFixed(4)} kWh</span></div>`
+      : '';
+    const ydayRow = (d.yesterday_kwh !== null && d.yesterday_date)
+      ? `<div class="ag-item"><span class="ag-label">YDAY (${d.yesterday_date.slice(-5)})</span><span class="ag-val" style="color:var(--g-dim)">${d.yesterday_kwh.toFixed(4)} kWh</span></div>`
+      : '';
     row.innerHTML = `
       <div class="ag-item">
         <span class="ag-label">STATE</span>
@@ -567,7 +622,8 @@ async function fetchShelly() {
       <div class="ag-item">
         <span class="ag-label">CURRENT</span>
         <span class="ag-val">${d.current} A</span>
-      </div>`;
+      </div>
+      ${todayRow}${ydayRow}`;
   } catch(e) { /* ignore */ }
 }
 
@@ -723,7 +779,7 @@ setInterval(fetchStats,      2000);
 setInterval(fetchContainers, 3000);
 setInterval(fetchStorage,    8000);
 setInterval(fetchAdGuard,   15000);
-setInterval(fetchShelly,     5000);
+setInterval(fetchShelly,    30000);
 setInterval(fetchProcesses,  3000);
 </script>
 </body>

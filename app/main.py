@@ -44,6 +44,13 @@ def api_action(eid: str, cid: str, action: str):
 def api_shelly():
     return core.get_shelly_stats()
 
+@app.post("/api/shelly/powercycle")
+def api_shelly_powercycle():
+    ok, msg = core.shelly_power_cycle()
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"ok": True, "msg": msg}
+
 @app.get("/api/processes")
 def api_processes():
     try:
@@ -62,5 +69,6 @@ def api_processes():
 def root():
     return (Path(__file__).parent / "static" / "index.html").read_text()
 
-# prime rolling counters on startup
+# prime rolling counters and start background Shelly energy tracking
 core.prime_counters()
+core.start_energy_tracker()
