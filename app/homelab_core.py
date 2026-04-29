@@ -283,10 +283,11 @@ def get_adguard_stats() -> dict:
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────
-# The background tracker polls every 180 s, reads Switch.GetStatus once,
-# sums all 3 by_minute values (mWh each → covers exactly the last 3 min),
-# accumulates into a daily Wh total, and caches the live readings.
-# get_shelly_stats() only reads the cache — the UI never hits the plug directly.
+# Energy tracker (180 s loop):  accumulates by_minute kWh into _energy_data
+#                                and persists to disk — nothing else.
+# get_shelly_stats():            always fetches live data fresh from the plug,
+#                                then merges today/yesterday kWh from memory.
+# This keeps the live display snappy while energy bookkeeping stays accurate.
 
 import json
 import datetime as _dt
@@ -294,15 +295,12 @@ import datetime as _dt
 _ENERGY_FILE  = os.path.expanduser("~/.homelab_energy.json")
 _energy_lock  = threading.Lock()
 _energy_data: dict = {
-    "today":          "",    # YYYY-MM-DD
-    "today_wh":       0.0,
-    "yesterday":      "",    # YYYY-MM-DD
-    "yesterday_wh":   0.0,
-    "_last_minute_ts": 0,    # unix ts of last processed minute
+    "today":           "",    # YYYY-MM-DD
+    "today_wh":        0.0,
+    "yesterday":       "",    # YYYY-MM-DD
+    "yesterday_wh":    0.0,
+    "_last_minute_ts": 0,     # unix ts of last processed minute
 }
-
-_shelly_cache: dict       = {}
-_shelly_cache_lock        = threading.Lock()
 
 
 def _load_energy() -> None:
@@ -360,56 +358,32 @@ def _accumulate(by_minute: list, minute_ts: int) -> None:
 
 
 def _energy_tracker_loop() -> None:
+    """Background loop: poll every 180 s purely for energy accumulation."""
     _load_energy()
     while True:
+        time.sleep(180)
         try:
             r = requests.get(
                 f"{SHELLY_PLUG_URL}/rpc/Switch.GetStatus?id=0",
                 timeout=5,
             )
             if r.ok:
-                d  = r.json()
-                ae = d.get("aenergy", {})
+                ae = r.json().get("aenergy", {})
                 _accumulate(ae.get("by_minute", []), ae.get("minute_ts", 0))
                 _save_energy()
-
-                with _energy_lock:
-                    today_kwh     = round(_energy_data["today_wh"]     / 1000, 4)
-                    yesterday_kwh = round(_energy_data["yesterday_wh"] / 1000, 4)
-                    yesterday_str = _energy_data["yesterday"]
-
-                live = {
-                    "output":        d.get("output", False),
-                    "apower":        round(d.get("apower",  0.0), 1),
-                    "voltage":       round(d.get("voltage", 0.0), 1),
-                    "current":       round(d.get("current", 0.0), 3),
-                    "today_kwh":     today_kwh,
-                    "yesterday_kwh": yesterday_kwh,
-                    "yesterday_date": yesterday_str,
-                }
-                with _shelly_cache_lock:
-                    _shelly_cache.clear()
-                    _shelly_cache.update(live)
         except Exception:
             pass
-        time.sleep(180)
 
 
 def start_energy_tracker() -> None:
-    """Start the background Shelly polling + energy accumulation thread.
-    Call once at startup (main.py and/or dashboard.py).
+    """Start the background energy accumulation thread.
+    Call once at startup in main.py and/or dashboard.py.
     """
     threading.Thread(target=_energy_tracker_loop, daemon=True).start()
 
 
 def get_shelly_stats() -> dict:
-    """Return cached Shelly live stats + today/yesterday kWh.
-    Falls back to a single direct request if the cache is empty (pre-first-poll).
-    """
-    with _shelly_cache_lock:
-        if _shelly_cache:
-            return dict(_shelly_cache)
-    # Cache not yet populated — do one direct fetch (returns no energy data yet)
+    """Fetch live Shelly stats and merge in today/yesterday kWh from memory."""
     try:
         r = requests.get(
             f"{SHELLY_PLUG_URL}/rpc/Switch.GetStatus?id=0",
@@ -417,14 +391,18 @@ def get_shelly_stats() -> dict:
         )
         if r.ok:
             d = r.json()
+            with _energy_lock:
+                today_kwh     = round(_energy_data["today_wh"]     / 1000, 4)
+                yesterday_kwh = round(_energy_data["yesterday_wh"] / 1000, 4)
+                yesterday_str = _energy_data["yesterday"]
             return {
                 "output":         d.get("output", False),
                 "apower":         round(d.get("apower",  0.0), 1),
                 "voltage":        round(d.get("voltage", 0.0), 1),
                 "current":        round(d.get("current", 0.0), 3),
-                "today_kwh":      None,   # not yet computed
-                "yesterday_kwh":  None,
-                "yesterday_date": "",
+                "today_kwh":      today_kwh,
+                "yesterday_kwh":  yesterday_kwh if yesterday_str else None,
+                "yesterday_date": yesterday_str,
             }
     except Exception:
         pass
