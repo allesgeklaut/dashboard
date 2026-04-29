@@ -3,7 +3,7 @@ homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
 Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
-import os, socket, subprocess, threading, time, json
+import os, socket, subprocess, threading, time, json, tempfile
 from datetime import timedelta
 
 import psutil, requests, urllib3
@@ -320,8 +320,11 @@ def _save_energy() -> None:
     try:
         with _energy_lock:
             snapshot = dict(_energy_data)
-        with open(_ENERGY_FILE, "w") as f:
-            json.dump(snapshot, f, indent=2)
+        dir_ = os.path.dirname(_ENERGY_FILE) or "."
+        with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False, suffix=".tmp") as tmp:
+            json.dump(snapshot, tmp, indent=2)
+            tmpname = tmp.name
+        os.replace(tmpname, _ENERGY_FILE)   # atomic on POSIX — safe across processes
     except Exception:
         pass
 
