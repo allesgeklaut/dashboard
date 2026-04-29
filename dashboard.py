@@ -20,7 +20,7 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual import on
 
-import app.homelab_core as core
+import homelab_core as core
 
 try:
     import evdev
@@ -259,7 +259,7 @@ class AdGuardWidget(Static):
 class ShellyWidget(Static):
     def on_mount(self) -> None:
         self._refresh()
-        self._timer = self.set_interval(5, self._refresh)
+        self._timer = self.set_interval(30, self._refresh)
 
     def _refresh(self) -> None:
         def _fetch():
@@ -271,18 +271,24 @@ class ShellyWidget(Static):
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _apply(self, d: dict) -> None:
-        on      = d["output"]
-        pwr     = d["apower"]
+        on        = d["output"]
+        pwr       = d["apower"]
         pwr_style = "bright_red" if pwr > 2000 else "yellow" if pwr > 1000 else "bright_green"
-        state_text = Text("ON",  style="bright_green") if on else Text("OFF", style="bright_red")
 
         t = Table.grid(padding=(0, 2))
         t.add_column(width=12, style="dim green")
         t.add_column(style="green")
-        t.add_row("STATE",   state_text)
-        t.add_row("POWER",   Text(f"{pwr:.1f} W",   style=pwr_style))
-        t.add_row("VOLTAGE", Text(f"{d['voltage']:.1f} V", style="green"))
-        t.add_row("CURRENT", Text(f"{d['current']:.3f} A", style="dim green"))
+        t.add_row("STATE",   Text("ON",  style="bright_green") if on else Text("OFF", style="bright_red"))
+        t.add_row("POWER",   Text(f"{pwr:.1f} W",          style=pwr_style))
+        t.add_row("VOLTAGE", Text(f"{d['voltage']:.1f} V",    style="green"))
+        t.add_row("CURRENT", Text(f"{d['current']:.3f} A",    style="dim green"))
+
+        if d.get("today_kwh") is not None:
+            t.add_row("TODAY",   Text(f"{d['today_kwh']:.4f} kWh",     style="bright_green"))
+        if d.get("yesterday_kwh") is not None:
+            yday_label = f"YDAY ({d.get('yesterday_date', '')[-5:]})" if d.get("yesterday_date") else "YDAY"
+            t.add_row(yday_label, Text(f"{d['yesterday_kwh']:.4f} kWh", style="dim green"))
+
         self.update(Panel(
             t,
             title=Text("► SHELLY PLUG", style="green"),
@@ -424,7 +430,9 @@ Button { min-width: 14; margin: 0 1; background: #002200;
          color: #00ff00; border: solid green; }
 Button:focus { background: #004400; border: solid #00ff00; }
 Button.-stop { border: solid red; color: #ff4444; }
-Button.-screen { border: solid #555; color: #888888; }
+Button.-screen  { border: solid #555;  color: #888888; }
+Button.-cycle   { min-width: 16; margin: 0 1 1 1; background: #001a00; color: #00cc00; border: solid #004400; width: 44; }
+Button.-cycle.-armed { background: #220000; color: #ff4444; border: solid red; }
 DataTable { background: #0a0a0a; color: green; }
 StatsWidget   { height: auto; }
 StorageWidget { height: auto; }
@@ -447,6 +455,7 @@ ShellyWidget  { height: auto; }
                 yield NetworkWidget()
                 yield AdGuardWidget()
                 yield ShellyWidget()
+                yield Button("⟳ POWER CYCLE", id="b-shelly-cycle", classes="-cycle")
                 yield ProcessWidget()
             with Vertical(id="right"):
                 yield DataTable(id="tbl", cursor_type="row")
@@ -465,6 +474,8 @@ ShellyWidget  { height: auto; }
         self._refresh_timer = self.set_interval(REFRESH_SECS, self._do_refresh)
         self._tick_timer    = self.set_interval(1, self._tick)
         self._cal           = load_calibration()
+        self._cycle_armed   = False
+        self._cycle_timer   = None
         self._last_activity = time.monotonic()
         self._screen_is_off = False
         if EVDEV:
@@ -595,6 +606,41 @@ ShellyWidget  { height: auto; }
     def action_refresh(self) -> None:
         self._do_refresh()
         self.status_msg = "Refreshed."
+
+
+    @on(Button.Pressed, "#b-shelly-cycle")
+    def _btn_shelly_cycle(self) -> None:
+        if not self._cycle_armed:
+            self._cycle_armed = True
+            btn = self.query_one("#b-shelly-cycle", Button)
+            btn.label = "⚠ CONFIRM CYCLE?"
+            btn.add_class("-armed")
+            self._cycle_timer = self.set_timer(8, self._disarm_cycle)
+            self.status_msg = "Power cycle armed — press again within 8 s to confirm"
+        else:
+            self._disarm_cycle()
+            self.status_msg = "Power cycling… restores in 10 s"
+            def _do():
+                ok, msg = core.shelly_power_cycle(10)
+                def _done():
+                    self.status_msg = f"{'✓' if ok else '✗'} Shelly: {msg}"
+                self.call_from_thread(_done)
+            threading.Thread(target=_do, daemon=True).start()
+
+    def _disarm_cycle(self) -> None:
+        self._cycle_armed = False
+        try:
+            btn = self.query_one("#b-shelly-cycle", Button)
+            btn.label = "⟳ POWER CYCLE"
+            btn.remove_class("-armed")
+        except Exception:
+            pass
+        if self._cycle_timer:
+            try:
+                self._cycle_timer.stop()
+            except Exception:
+                pass
+            self._cycle_timer = None
 
     # ── Touch screen via evdev ─────────────────────────────────────────────────
 
@@ -731,4 +777,5 @@ if __name__ == "__main__":
         run_calibration()
     else:
         core.prime_counters()
+        core.start_energy_tracker()
         HomelabApp().run()

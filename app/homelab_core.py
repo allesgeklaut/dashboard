@@ -3,7 +3,7 @@ homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
 Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
-import os, socket, subprocess, threading, time
+import os, socket, subprocess, threading, time, json
 from datetime import timedelta
 
 import psutil, requests, urllib3
@@ -283,14 +283,130 @@ def get_adguard_stats() -> dict:
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────
+# The background tracker polls every 180 s, reads Switch.GetStatus once,
+# sums all 3 by_minute values (mWh each → covers exactly the last 3 min),
+# accumulates into a daily Wh total, and caches the live readings.
+# get_shelly_stats() only reads the cache — the UI never hits the plug directly.
+
+import json
+import datetime as _dt
+
+_ENERGY_FILE  = os.path.expanduser("~/.homelab_energy.json")
+_energy_lock  = threading.Lock()
+_energy_data: dict = {
+    "today":          "",    # YYYY-MM-DD
+    "today_wh":       0.0,
+    "yesterday":      "",    # YYYY-MM-DD
+    "yesterday_wh":   0.0,
+    "_last_minute_ts": 0,    # unix ts of last processed minute
+}
+
+_shelly_cache: dict       = {}
+_shelly_cache_lock        = threading.Lock()
+
+
+def _load_energy() -> None:
+    global _energy_data
+    try:
+        with open(_ENERGY_FILE) as f:
+            saved = json.load(f)
+        with _energy_lock:
+            _energy_data.update(saved)
+    except Exception:
+        pass
+
+
+def _save_energy() -> None:
+    try:
+        with _energy_lock:
+            snapshot = dict(_energy_data)
+        with open(_ENERGY_FILE, "w") as f:
+            json.dump(snapshot, f, indent=2)
+    except Exception:
+        pass
+
+
+def _accumulate(by_minute: list, minute_ts: int) -> None:
+    """Add newly seen per-minute mWh values to today's Wh accumulator."""
+    if not by_minute or not minute_ts:
+        return
+    today_str = _dt.date.today().isoformat()
+    with _energy_lock:
+        last_ts = _energy_data["_last_minute_ts"]
+
+        # How many fresh minutes does this payload contain?
+        if last_ts:
+            new_mins = min(len(by_minute), round((minute_ts - last_ts) / 60))
+        else:
+            new_mins = len(by_minute)   # first ever poll — use all 3
+        if new_mins <= 0:
+            return
+
+        # Midnight rollover
+        if _energy_data["today"] != today_str:
+            if _energy_data["today"]:   # not the very first run
+                _energy_data["yesterday"]    = _energy_data["today"]
+                _energy_data["yesterday_wh"] = _energy_data["today_wh"]
+            _energy_data["today"]    = today_str
+            _energy_data["today_wh"] = 0.0
+
+        # by_minute[0] = most recent complete minute, [1] = one before, etc.
+        added_wh = sum(by_minute[:new_mins]) / 1000.0   # mWh → Wh
+        _energy_data["today_wh"]        = round(_energy_data["today_wh"] + added_wh, 3)
+        _energy_data["_last_minute_ts"] = minute_ts
+
+
+def _energy_tracker_loop() -> None:
+    _load_energy()
+    while True:
+        try:
+            r = requests.get(
+                f"{SHELLY_PLUG_URL}/rpc/Switch.GetStatus?id=0",
+                timeout=5,
+            )
+            if r.ok:
+                d  = r.json()
+                ae = d.get("aenergy", {})
+                _accumulate(ae.get("by_minute", []), ae.get("minute_ts", 0))
+                _save_energy()
+
+                with _energy_lock:
+                    today_kwh     = round(_energy_data["today_wh"]     / 1000, 4)
+                    yesterday_kwh = round(_energy_data["yesterday_wh"] / 1000, 4)
+                    yesterday_str = _energy_data["yesterday"]
+
+                live = {
+                    "output":        d.get("output", False),
+                    "apower":        round(d.get("apower",  0.0), 1),
+                    "voltage":       round(d.get("voltage", 0.0), 1),
+                    "current":       round(d.get("current", 0.0), 3),
+                    "today_kwh":     today_kwh,
+                    "yesterday_kwh": yesterday_kwh,
+                    "yesterday_date": yesterday_str,
+                }
+                with _shelly_cache_lock:
+                    _shelly_cache.clear()
+                    _shelly_cache.update(live)
+        except Exception:
+            pass
+        time.sleep(180)
+
+
+def start_energy_tracker() -> None:
+    """Start the background Shelly polling + energy accumulation thread.
+    Call once at startup (main.py and/or dashboard.py).
+    """
+    threading.Thread(target=_energy_tracker_loop, daemon=True).start()
+
 
 def get_shelly_stats() -> dict:
-    """Return power stats from a Shelly Plus Plug (Gen2) via local REST API.
-
-    Endpoint: GET /rpc/Switch.GetStatus?id=0
-    Returns keys: output (bool), apower (W), voltage (V), current (A),
-    or {'error': ...} on failure.
+    """Return cached Shelly live stats + today/yesterday kWh.
+    Falls back to a single direct request if the cache is empty (pre-first-poll).
     """
+    with _shelly_cache_lock:
+        if _shelly_cache:
+            return dict(_shelly_cache)
+    # Cache not yet populated — do one direct fetch (returns no energy data yet)
     try:
         r = requests.get(
             f"{SHELLY_PLUG_URL}/rpc/Switch.GetStatus?id=0",
@@ -299,14 +415,37 @@ def get_shelly_stats() -> dict:
         if r.ok:
             d = r.json()
             return {
-                "output":  d.get("output", False),
-                "apower":  round(d.get("apower",  0.0), 1),
-                "voltage": round(d.get("voltage", 0.0), 1),
-                "current": round(d.get("current", 0.0), 3),
+                "output":         d.get("output", False),
+                "apower":         round(d.get("apower",  0.0), 1),
+                "voltage":        round(d.get("voltage", 0.0), 1),
+                "current":        round(d.get("current", 0.0), 3),
+                "today_kwh":      None,   # not yet computed
+                "yesterday_kwh":  None,
+                "yesterday_date": "",
             }
     except Exception:
         pass
     return {"error": "unavailable"}
+
+
+
+def shelly_power_cycle(delay_s: int = 10) -> tuple[bool, str]:
+    """Turn the Shelly plug off then back on after delay_s seconds.
+
+    Uses Switch.Set with toggle_after so the timer runs ON the device itself —
+    it will restore power even if the network (e.g. the router) is rebooting.
+    """
+    try:
+        r = requests.get(
+            f"{SHELLY_PLUG_URL}/rpc/Switch.Set",
+            params={"id": 0, "on": "false", "toggle_after": delay_s},
+            timeout=5,
+        )
+        if r.ok:
+            return True, f"off → on in {delay_s}s"
+        return False, f"HTTP {r.status_code}"
+    except Exception as exc:
+        return False, str(exc)
 
 # ── Startup helper ────────────────────────────────────────────────────────────
 
