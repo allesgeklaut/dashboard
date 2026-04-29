@@ -20,7 +20,7 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual import on
 
-import homelab_core as core
+import app.homelab_core as core
 
 try:
     import evdev
