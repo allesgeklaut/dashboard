@@ -8,7 +8,9 @@ services:
     privileged: false
     environment:
       - TZ=Europe/Vienna
+      - HOMELAB_ENERGY_FILE=/root/.homelab_energy.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro           # CLI fallback
       - /mnt/nas:/mnt/nas:ro                                   # NFS mounts visible
+      - ${HOME}/.homelab_energy.json:/root/.homelab_energy.json  # energy tracking
     env_file: .env
