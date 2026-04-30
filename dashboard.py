@@ -256,40 +256,48 @@ class AdGuardWidget(Static):
 
 
 
-class ShellyWidget(Static):
+class ShellyWidgetServer(Static):
     def on_mount(self) -> None:
         self._refresh()
         self._timer = self.set_interval(5, self._refresh)
 
     def _refresh(self) -> None:
         def _fetch():
-            d = core.get_shelly_stats()
-            if "error" in d:
-                self.app.call_from_thread(self._error, d["error"])
-            else:
-                self.app.call_from_thread(self._apply, d)
+            d_server = core.get_shelly_stats()
+            if "error" in d_server:
+                self.app.call_from_thread(self._error, d_server["error"])
+                return
+            
+            d_hdd = core.get_shelly2_state()
+            if "error" in d_hdd:
+                self.app.call_from_thread(self._error, d_hdd["error"])
+                return
+
+            self.app.call_from_thread(self._apply, d_server, d_hdd)
+
         threading.Thread(target=_fetch, daemon=True).start()
 
-    def _apply(self, d: dict) -> None:
-        on        = d["output"]
-        pwr       = d["apower"]
+    def _apply(self, d_server: dict, d_hdd: dict) -> None:
+        on        = d_server["output"]
+        pwr       = d_server["apower"]
         pwr_style = "bright_red" if pwr > 2000 else "yellow" if pwr > 1000 else "bright_green"
 
         t = Table.grid(padding=(0, 2))
         t.add_column(width=12, style="dim green")
         t.add_column(style="green")
-        t.add_row("STATE",   Text("ON",  style="bright_green") if on else Text("OFF", style="bright_red"))
-        t.add_row("POWER",   Text(f"{pwr:.1f} W",          style=pwr_style))
+        t.add_row("STATE HDD", Text("ON",  style="bright_green") if d_hdd["output"] else Text("OFF", style="bright_red"))
+        t.add_row("STATE SERVER",   Text("ON",  style="bright_green") if on else Text("OFF", style="bright_red"))
+        t.add_row("POWER SERVER",   Text(f"{pwr:.1f} W",          style=pwr_style))
 
-        if d.get("today_kwh") is not None:
-            t.add_row("TODAY",   Text(f"{d['today_kwh']:.4f} kWh",     style="bright_green"))
-        if d.get("yesterday_kwh") is not None:
-            yday_label = f"YDAY ({d.get('yesterday_date', '')[-5:]})" if d.get("yesterday_date") else "YDAY"
-            t.add_row(yday_label, Text(f"{d['yesterday_kwh']:.4f} kWh", style="dim green"))
+        if d_server.get("today_kwh") is not None:
+            t.add_row("TODAY",   Text(f"{d_server['today_kwh']:.4f} kWh",     style="bright_green"))
+        if d_server.get("yesterday_kwh") is not None:
+            yday_label = f"YDAY ({d_server.get('yesterday_date', '')[-5:]})" if d_server.get("yesterday_date") else "YDAY"
+            t.add_row(yday_label, Text(f"{d_server['yesterday_kwh']:.4f} kWh", style="dim green"))
 
         self.update(Panel(
             t,
-            title=Text("► SHELLY PLUG", style="green"),
+            title=Text("► SHELLY PLUG SERVER", style="green"),
             style="green", box=box.SIMPLE_HEAVY, padding=(0, 0),
         ))
 
@@ -435,7 +443,7 @@ StatsWidget   { height: auto; }
 StorageWidget { height: auto; }
 NetworkWidget { height: auto; }
 AdGuardWidget { height: auto; }
-ShellyWidget  { height: auto; }
+ShellyWidgetServer { height: auto; }
 """
     BINDINGS = []
 
@@ -451,7 +459,7 @@ ShellyWidget  { height: auto; }
                 yield StorageWidget()
                 yield NetworkWidget()
                 yield AdGuardWidget()
-                yield ShellyWidget()
+                yield ShellyWidgetServer()
                 yield ProcessWidget()
             with Vertical(id="right"):
                 yield DataTable(id="tbl", cursor_type="row")
@@ -462,6 +470,7 @@ ShellyWidget  { height: auto; }
             yield Button("⟳ REFRESH", id="b-refresh")
             yield Button("⏻ SCREEN",  id="b-screen",  classes="-screen")
             yield Button("⟳ CYCLE",   id="b-shelly-cycle", classes="-cycle")
+            yield Button("⏻ PLUG HDD", id="b-shelly-hdd")
         yield Static(id="statusbar")
 
     def on_mount(self) -> None:
@@ -500,7 +509,7 @@ ShellyWidget  { height: auto; }
     def _pause_all(self) -> None:
         self._refresh_timer.pause()
         self._tick_timer.pause()
-        for cls in (StatsWidget, StorageWidget, NetworkWidget, AdGuardWidget, ShellyWidget, ProcessWidget):
+        for cls in (StatsWidget, StorageWidget, NetworkWidget, AdGuardWidget, ShellyWidgetServer, ProcessWidget):
             try:
                 self.query_one(cls)._timer.pause()
             except Exception:
@@ -509,7 +518,7 @@ ShellyWidget  { height: auto; }
     def _resume_all(self) -> None:
         self._refresh_timer.resume()
         self._tick_timer.resume()
-        for cls in (StatsWidget, StorageWidget, NetworkWidget, AdGuardWidget, ShellyWidget, ProcessWidget):
+        for cls in (StatsWidget, StorageWidget, NetworkWidget, AdGuardWidget, ShellyWidgetServer, ProcessWidget):
             try:
                 self.query_one(cls)._timer.resume()
             except Exception:
@@ -624,6 +633,22 @@ ShellyWidget  { height: auto; }
                 self.call_from_thread(_done)
             threading.Thread(target=_do, daemon=True).start()
 
+
+    @on(Button.Pressed, "#b-shelly-hdd")
+    def _btn_shelly_hdd_toggle(self) -> None:
+        self.status_msg = "Toggling plug HDD..."
+        def _do():
+            ok, msg = core.shelly2_toggle()
+            def _done():
+                self.status_msg = f"{'✓' if ok else '✗'} {msg}"
+                try:
+                    self.query_one(ShellyWidgetServer)._refresh()
+                    pass
+                except Exception:
+                    pass
+            self.call_from_thread(_done)
+        threading.Thread(target=_do, daemon=True).start()
+
     def _disarm_cycle(self) -> None:
         self._cycle_armed = False
         try:
@@ -697,7 +722,8 @@ ShellyWidget  { height: auto; }
                 ("b-restart", lambda: self.action_act("restart")),
                 ("b-refresh", self.action_refresh),
                 ("b-screen",  self._btn_screen),
-                ("b-shelly-cycle", self._btn_shelly_cycle),
+                ("b-shelly-cycle",   self._btn_shelly_cycle),
+                ("b-shelly-hdd", self._btn_shelly_hdd_toggle),
             ]
             for btn_id, handler in btn_actions:
                 try:
