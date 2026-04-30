@@ -293,7 +293,7 @@ def get_adguard_stats() -> dict:
 import json
 import datetime as _dt
 
-_ENERGY_FILE  = os.path.expanduser("~/.homelab_energy.json")
+_ENERGY_FILE  = os.getenv("HOMELAB_ENERGY_FILE", os.path.expanduser("~/.homelab_energy.json"))
 _energy_lock  = threading.Lock()
 _energy_data: dict = {
     "today":           "",    # YYYY-MM-DD
