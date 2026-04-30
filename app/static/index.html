@@ -171,6 +171,20 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .btn-cycle:disabled { opacity: 0.5; cursor: not-allowed; }
 @keyframes pulse-red { from { border-color: #880000; } to { border-color: #ff4444; } }
 
+
+/* ── SHELLY 2 TOGGLE BUTTON ── */
+.btn-toggle {
+  margin-top: 8px;
+  padding: 5px 14px;
+  background: #001a00; color: var(--g); border: 1px solid #004400;
+  border-radius: 3px; cursor: pointer; font: inherit;
+  font-size: 11px; letter-spacing: 0.05em;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-toggle:hover     { background: #002800; border-color: var(--g); }
+.btn-toggle.is-on     { border-color: var(--g-bright); color: var(--g-bright); }
+.btn-toggle:disabled  { opacity: 0.5; cursor: not-allowed; }
+
 /* ── STORAGE ROWS ── */
 .stor-list { display:flex; flex-direction:column; gap:5px; }
 .stor-row {
@@ -384,6 +398,12 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <div class="shelly-row" id="shelly-row" style="display:none"></div>
   <button class="btn-cycle" id="btn-cycle" style="display:none" onclick="shellyCycle()">⟳ POWER CYCLE</button>
 
+
+  <!-- Shelly Plug 2 -->
+  <div class="sec-label" id="shelly2-label" style="display:none">shelly plug 2</div>
+  <div class="ag-row" id="shelly2-row" style="display:none"></div>
+  <button class="btn-toggle" id="btn-toggle2" style="display:none" onclick="shellyToggle2()">⏻ TOGGLE</button>
+
   <!-- Storage -->
   <div class="sec-label">storage</div>
   <div class="stor-list" id="stor-list"></div>
@@ -430,6 +450,52 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 <div id="toast"></div>
 
 <script>
+
+// ── shelly plug 2 ──────────────────────────────────────────────────────────────
+async function fetchShelly2() {
+  try {
+    const d = await fetch('/api/shelly2').then(r => r.json());
+    const row = document.getElementById('shelly2-row');
+    const lbl = document.getElementById('shelly2-label');
+    const btn = document.getElementById('btn-toggle2');
+    if (d.error) {
+      row.style.display = 'none'; lbl.style.display = 'none'; btn.style.display = 'none';
+      return;
+    }
+    row.style.display = 'flex'; lbl.style.display = 'flex'; btn.style.display = 'inline-block';
+    btn.disabled = false;
+    btn.classList.toggle('is-on', d.output);
+    btn.textContent = d.output ? '⏻ TURN OFF' : '⏻ TURN ON';
+    row.innerHTML = `
+      <div class="ag-item">
+        <span class="ag-label">STATE</span>
+        <span class="ag-val" style="color:${d.output ? 'var(--g-bright)' : 'var(--red)'}">
+          ${d.output ? 'ON' : 'OFF'}
+        </span>
+      </div>`;
+  } catch(e) { /* ignore */ }
+}
+
+async function shellyToggle2() {
+  const btn = document.getElementById('btn-toggle2');
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await fetch('/api/shelly2/toggle', { method: 'POST' });
+    if (!r.ok) {
+      btn.textContent = '✗ failed';
+      setTimeout(() => { btn.disabled = false; fetchShelly2(); }, 2000);
+      return;
+    }
+  } catch(e) {
+    btn.textContent = '✗ error';
+    setTimeout(() => { btn.disabled = false; fetchShelly2(); }, 2000);
+    return;
+  }
+  // Re-fetch after short delay to show new state (fetchShelly2 re-enables the button)
+  setTimeout(fetchShelly2, 800);
+}
+
 // ── power cycle ────────────────────────────────────────────────────────────────
 let _cycleArmed = false, _cycleTimeout = null;
 function shellyCycle() {
@@ -576,9 +642,8 @@ async function fetchAdGuard() {
     const d = await fetch('/api/adguard').then(r=>r.json());
     const row = document.getElementById('ag-row');
     const lbl = document.getElementById('ag-label');
-    if (d.error) { row.style.display='none'; lbl.style.display='none'; document.getElementById('btn-cycle').style.display='none'; return; }
+    if (d.error) { row.style.display='none'; lbl.style.display='none'; return; }
     row.style.display='flex'; lbl.style.display='flex';
-    document.getElementById('btn-cycle').style.display='inline-block';
     row.innerHTML = [
       { label:'AVG', val: d.avg_ms+'ms' },
       { label:'QUERIES', val: d.queries.toLocaleString() },
@@ -772,6 +837,7 @@ fetchStats();
 fetchStorage();
 fetchAdGuard();
 fetchShelly();
+fetchShelly2();
 fetchContainers();
 fetchProcesses();
 
@@ -780,6 +846,7 @@ setInterval(fetchContainers, 3000);
 setInterval(fetchStorage,    8000);
 setInterval(fetchAdGuard,   15000);
 setInterval(fetchShelly,     5000);
+setInterval(fetchShelly2,    5000);
 setInterval(fetchProcesses,  3000);
 </script>
 </body>

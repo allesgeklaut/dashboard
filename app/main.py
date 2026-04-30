@@ -51,6 +51,17 @@ def api_shelly_powercycle():
         raise HTTPException(500, msg)
     return {"ok": True, "msg": msg}
 
+@app.get("/api/shelly2")
+def api_shelly2():
+    return core.get_shelly2_state()
+
+@app.post("/api/shelly2/toggle")
+def api_shelly2_toggle():
+    ok, msg = core.shelly2_toggle()
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"ok": True, "msg": msg}
+
 @app.get("/api/processes")
 def api_processes():
     try:
