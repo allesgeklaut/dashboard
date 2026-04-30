@@ -280,8 +280,6 @@ class ShellyWidget(Static):
         t.add_column(style="green")
         t.add_row("STATE",   Text("ON",  style="bright_green") if on else Text("OFF", style="bright_red"))
         t.add_row("POWER",   Text(f"{pwr:.1f} W",          style=pwr_style))
-        t.add_row("VOLTAGE", Text(f"{d['voltage']:.1f} V",    style="green"))
-        t.add_row("CURRENT", Text(f"{d['current']:.3f} A",    style="dim green"))
 
         if d.get("today_kwh") is not None:
             t.add_row("TODAY",   Text(f"{d['today_kwh']:.4f} kWh",     style="bright_green"))
@@ -431,7 +429,6 @@ Button { min-width: 14; margin: 0 1; background: #002200;
 Button:focus { background: #004400; border: solid #00ff00; }
 Button.-stop { border: solid red; color: #ff4444; }
 Button.-screen  { border: solid #555;  color: #888888; }
-Button.-cycle        { border: solid #004400; color: #00cc00; }
 Button.-cycle.-armed { background: #220000; color: #ff4444; border: solid red; }
 DataTable { background: #0a0a0a; color: green; }
 StatsWidget   { height: auto; }
