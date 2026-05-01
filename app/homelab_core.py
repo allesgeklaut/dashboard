@@ -21,7 +21,7 @@ ADGUARD_USER = os.getenv("ADGUARD_USER", "")
 ADGUARD_PASS = os.getenv("ADGUARD_PASS", "")
 NFS_MOUNTS    = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",") if m.strip()]
 SHELLY_PLUG_URL = os.getenv("SHELLY_PLUG_URL", "http://192.168.0.61")
-SHELLY_PLUG_HDD_URL = os.getenv("SHELLY_PLUG_HDD_URL", "http://192.168.0.62")
+SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL", "http://192.168.0.62")
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
@@ -411,7 +411,7 @@ def get_shelly_stats() -> dict:
 
 
 
-def shelly_power_cycle(delay_s: int = 10) -> tuple[bool, str]:
+def shelly_power_cycle(shelly_url: str, delay_s: int = 10) -> tuple[bool, str]:
     """Turn the Shelly plug off then back on after delay_s seconds.
 
     Uses Switch.Set with toggle_after so the timer runs ON the device itself —
@@ -419,7 +419,7 @@ def shelly_power_cycle(delay_s: int = 10) -> tuple[bool, str]:
     """
     try:
         r = requests.get(
-            f"{SHELLY_PLUG_URL}/rpc/Switch.Set",
+            f"{shelly_url}/rpc/Switch.Set",
             params={"id": 0, "on": "false", "toggle_after": delay_s},
             timeout=5,
         )
@@ -436,7 +436,7 @@ def get_shelly2_state() -> dict:
     """Return {output: bool} for the second Shelly plug, or {error: ...}."""
     try:
         r = requests.get(
-            f"{SHELLY_PLUG_HDD_URL}/rpc/Switch.GetStatus?id=0",
+            f"{SHELLY_PLUG_2_URL}/rpc/Switch.GetStatus?id=0",
             timeout=3,
         )
         if r.ok:
@@ -450,7 +450,7 @@ def shelly2_toggle() -> tuple[bool, str]:
     """Toggle the second Shelly plug on/off."""
     try:
         r = requests.get(
-            f"{SHELLY_PLUG_HDD_URL}/rpc/Switch.Toggle?id=0",
+            f"{SHELLY_PLUG_2_URL}/rpc/Switch.Toggle?id=0",
             timeout=5,
         )
         if r.ok:
