@@ -46,7 +46,7 @@ def api_shelly():
 
 @app.post("/api/shelly/powercycle")
 def api_shelly_powercycle():
-    ok, msg = core.shelly_power_cycle()
+    ok, msg = core.shelly_power_cycle(core.SHELLY_PLUG_URL, 10)
     if not ok:
         raise HTTPException(500, msg)
     return {"ok": True, "msg": msg}
@@ -55,9 +55,9 @@ def api_shelly_powercycle():
 def api_shelly2():
     return core.get_shelly2_state()
 
-@app.post("/api/shelly2/toggle")
-def api_shelly2_toggle():
-    ok, msg = core.shelly2_toggle()
+@app.post("/api/shelly2/powercycle")
+def api_shelly2_powercycle():
+    ok, msg = core.shelly_power_cycle(core.SHELLY_PLUG_2_URL, 10)
     if not ok:
         raise HTTPException(500, msg)
     return {"ok": True, "msg": msg}

@@ -164,7 +164,8 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   padding: 5px 14px;
   background: #001a00; color: var(--g); border: 1px solid #004400;
   border-radius: 3px; cursor: pointer; font: inherit;
-  font-size: var(--text-xs); letter-spacing: 0.05em; transition: background 0.15s, border-color 0.15s, color 0.15s;
+  font-size: var(--text-xs); letter-spacing: 0.05em; 
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .btn-cycle:hover  { background: #002800; border-color: var(--g); }
 .btn-cycle.armed  { background: #220000; color: #ff4444; border-color: #880000; animation: pulse-red 0.6s ease-in-out infinite alternate; }
@@ -173,7 +174,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 
 
 /* ── SHELLY 2 TOGGLE BUTTON ── */
-.btn-toggle {
+.btn-cycle2 {
   margin-top: 8px;
   padding: 5px 14px;
   background: #001a00; color: var(--g); border: 1px solid #004400;
@@ -181,9 +182,10 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   font-size: 11px; letter-spacing: 0.05em;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.btn-toggle:hover     { background: #002800; border-color: var(--g); }
-.btn-toggle.is-on     { border-color: var(--g-bright); color: var(--g-bright); }
-.btn-toggle:disabled  { opacity: 0.5; cursor: not-allowed; }
+.btn-cycle2:hover     { background: #002800; border-color: var(--g); }
+.btn-cycle2.armed  { background: #220000; color: #ff4444; border-color: #880000; animation: pulse-red 0.6s ease-in-out infinite alternate; }
+.btn-cycle2:disabled  { opacity: 0.5; cursor: not-allowed; }
+@keyframes pulse-red { from { border-color: #880000; } to { border-color: #ff4444; } }
 
 /* ── STORAGE ROWS ── */
 .stor-list { display:flex; flex-direction:column; gap:5px; }
@@ -397,12 +399,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <div class="sec-label" id="shelly-label" style="display:none">shelly plug</div>
   <div class="shelly-row" id="shelly-row" style="display:none"></div>
   <button class="btn-cycle" id="btn-cycle" style="display:none" onclick="shellyCycle()">⟳ POWER CYCLE</button>
-
-
-  <!-- Shelly Plug 2 -->
-  <div class="sec-label" id="shelly2-label" style="display:none">shelly plug 2</div>
-  <div class="ag-row" id="shelly2-row" style="display:none"></div>
-  <button class="btn-toggle" id="btn-toggle2" style="display:none" onclick="shellyToggle2()">⏻ TOGGLE</button>
+  <button class="btn-cycle2" id="btn-cycle-2" style="display:none" onclick="shellyCycle2()">⏻ ROUTER CYCLE</button>
 
   <!-- Storage -->
   <div class="sec-label">storage</div>
@@ -457,7 +454,7 @@ async function fetchShelly2() {
     const d = await fetch('/api/shelly2').then(r => r.json());
     const row = document.getElementById('shelly2-row');
     const lbl = document.getElementById('shelly2-label');
-    const btn = document.getElementById('btn-toggle2');
+    const btn = document.getElementById('btn-cycle-2');
     if (d.error) {
       row.style.display = 'none'; lbl.style.display = 'none'; btn.style.display = 'none';
       return;
@@ -476,27 +473,38 @@ async function fetchShelly2() {
   } catch(e) { /* ignore */ }
 }
 
-async function shellyToggle2() {
-  const btn = document.getElementById('btn-toggle2');
-  btn.disabled = true;
-  btn.textContent = '…';
-  try {
-    const r = await fetch('/api/shelly2/toggle', { method: 'POST' });
-    if (!r.ok) {
-      btn.textContent = '✗ failed';
-      setTimeout(() => { btn.disabled = false; fetchShelly2(); }, 2000);
-      return;
-    }
-  } catch(e) {
-    btn.textContent = '✗ error';
-    setTimeout(() => { btn.disabled = false; fetchShelly2(); }, 2000);
-    return;
+// ── power cycle ────────────────────────────────────────────────────────────────
+let _cycleArmed2 = false, _cycleTimeout2 = null;
+async function shellyCycle2() {
+  const btn = document.getElementById('btn-cycle-2');
+  if (!_cycleArmed2) {
+    _cycleArmed2 = true;
+    btn.textContent = '⚠ CONFIRM? (8 s)';
+    btn.classList.add('armed');
+    _cycleTimeout2 = setTimeout(() => {
+      _cycleArmed2 = false;
+      btn.textContent = '⏻ ROUTER CYCLE';
+      btn.classList.remove('armed');
+    }, 8000);
+  } else {
+    clearTimeout(_cycleTimeout2);
+    _cycleArmed2 = false;
+    btn.classList.remove('armed');
+    btn.disabled = true;
+    btn.textContent = 'Cycling…';
+    fetch('/api/shelly2/powercycle', { method: 'POST' })
+      .then(r => r.json())
+      .then(d => {
+        btn.textContent = d.ok ? '✓ on in 10 s' : ('✗ ' + (d.detail || 'failed'));
+        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; }, 15000);
+      })
+      .catch(() => {
+        btn.textContent = '✗ error';
+        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; }, 3000);
+      });
   }
-  // Re-fetch after short delay to show new state (fetchShelly2 re-enables the button)
-  setTimeout(fetchShelly2, 800);
 }
 
-// ── power cycle ────────────────────────────────────────────────────────────────
 let _cycleArmed = false, _cycleTimeout = null;
 function shellyCycle() {
   const btn = document.getElementById('btn-cycle');
@@ -659,9 +667,10 @@ async function fetchShelly() {
     const d = await fetch('/api/shelly').then(r=>r.json());
     const row = document.getElementById('shelly-row');
     const lbl = document.getElementById('shelly-label');
-    if (d.error) { row.style.display='none'; lbl.style.display='none'; document.getElementById('btn-cycle').style.display='none'; return; }
+    if (d.error) { row.style.display='none'; lbl.style.display='none'; document.getElementById('btn-cycle').style.display='none'; document.getElementById('btn-cycle-2').style.display='none'; return; }
     row.style.display='flex'; lbl.style.display='flex';
     document.getElementById('btn-cycle').style.display='inline-block';
+    document.getElementById('btn-cycle-2').style.display='inline-block';
     const pwrPct = Math.min(100, (d.apower / 2300) * 100).toFixed(1);
     const pwrCls = d.apower >= 2000 ? 'alert' : d.apower >= 1000 ? 'warn' : '';
     const todayRow = d.today_kwh !== null
