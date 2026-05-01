@@ -470,7 +470,7 @@ ShellyWidgetServer { height: auto; }
             yield Button("⟳ REFRESH", id="b-refresh")
             yield Button("⏻ SCREEN",  id="b-screen",  classes="-screen")
             yield Button("⟳ CYCLE",   id="b-shelly-cycle", classes="-cycle")
-            yield Button("⏻ PLUG HDD", id="b-shelly-hdd")
+            yield Button("⏻ PLUG 2",  id="b-shelly-2", classes="-cycle")
         yield Static(id="statusbar")
 
     def on_mount(self) -> None:
@@ -616,44 +616,47 @@ ShellyWidgetServer { height: auto; }
 
     @on(Button.Pressed, "#b-shelly-cycle")
     def _btn_shelly_cycle(self) -> None:
+        btn = self.query_one("#b-shelly-cycle", Button)
         if not self._cycle_armed:
             self._cycle_armed = True
-            btn = self.query_one("#b-shelly-cycle", Button)
-            btn.label = "⚠ CONFIRM CYCLE?"
+            btn.label = "⚠ CONFIRM?"
             btn.add_class("-armed")
-            self._cycle_timer = self.set_timer(8, self._disarm_cycle)
-            self.status_msg = "Power cycle armed — press again within 8 s to confirm"
+            self._cycle_timer = self.set_timer(8, lambda: self._disarm_cycle(btn, "⟳ CYCLE"))
+            self.status_msg = "Power cycle armed - press again within 8 s to confirm"
         else:
-            self._disarm_cycle()
-            self.status_msg = "Power cycling… restores in 10 s"
+            self._disarm_cycle(btn, "⟳ CYCLE")
+            self.status_msg = "Power cycling... restores in 10 s"
             def _do():
-                ok, msg = core.shelly_power_cycle(10)
+                ok, msg = core.shelly_power_cycle(core.SHELLY_PLUG_URL, 10)
                 def _done():
                     self.status_msg = f"{'✓' if ok else '✗'} Shelly: {msg}"
                 self.call_from_thread(_done)
             threading.Thread(target=_do, daemon=True).start()
 
 
-    @on(Button.Pressed, "#b-shelly-hdd")
-    def _btn_shelly_hdd_toggle(self) -> None:
-        self.status_msg = "Toggling plug HDD..."
-        def _do():
-            ok, msg = core.shelly2_toggle()
-            def _done():
-                self.status_msg = f"{'✓' if ok else '✗'} {msg}"
-                try:
-                    self.query_one(ShellyWidgetServer)._refresh()
-                    pass
-                except Exception:
-                    pass
-            self.call_from_thread(_done)
-        threading.Thread(target=_do, daemon=True).start()
+    @on(Button.Pressed, "#b-shelly-2")
+    def _btn_shelly_2_cycle(self) -> None:
+        btn = self.query_one("#b-shelly-2", Button)
+        if not self._cycle_armed:
+            self._cycle_armed = True
+            btn.label = "⚠ CONFIRM?"
+            btn.add_class("-armed")
+            self._cycle_timer = self.set_timer(8, lambda: self._disarm_cycle(btn, "⏻ PLUG 2"))
+            self.status_msg = "Power cycle armed for router - press again within 8 s to confirm"
+        else:
+            self._disarm_cycle(btn, "⏻ PLUG 2")
+            self.status_msg = "Power cycling router... restores in 10 s"
+            def _do():
+                ok, msg = core.shelly_power_cycle(core.SHELLY_PLUG_2_URL, 10)
+                def _done():
+                    self.status_msg = f"{'✓' if ok else '✗'} Shelly: {msg}"
+                self.call_from_thread(_done)
+            threading.Thread(target=_do, daemon=True).start()
 
-    def _disarm_cycle(self) -> None:
+    def _disarm_cycle(self, btn: Button, label: str) -> None:
         self._cycle_armed = False
         try:
-            btn = self.query_one("#b-shelly-cycle", Button)
-            btn.label = "⟳ POWER CYCLE"
+            btn.label = label
             btn.remove_class("-armed")
         except Exception:
             pass
@@ -663,6 +666,7 @@ ShellyWidgetServer { height: auto; }
             except Exception:
                 pass
             self._cycle_timer = None
+        self.status_msg = "Power cycle cancelled."
 
     # ── Touch screen via evdev ─────────────────────────────────────────────────
 
@@ -723,7 +727,7 @@ ShellyWidgetServer { height: auto; }
                 ("b-refresh", self.action_refresh),
                 ("b-screen",  self._btn_screen),
                 ("b-shelly-cycle",   self._btn_shelly_cycle),
-                ("b-shelly-hdd", self._btn_shelly_hdd_toggle),
+                ("b-shelly-2", self._btn_shelly_2_cycle),
             ]
             for btn_id, handler in btn_actions:
                 try:
