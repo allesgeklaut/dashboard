@@ -423,6 +423,42 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     </table>
   </div>
 
+  <!-- Wake-on-LAN -->
+  <div class="sec-label" style="margin-top:16px; display:flex; align-items:center;">
+    <span>wake on LAN</span>
+    <button id="btn-wol-toggle" onclick="toggleWOL()" disabled title="Click to wake target machine">⚡ WAKE TARGET</button>
+  </div>
+  <div class="wol-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:3px; padding:8px 10px;">
+    <div class="ag-item">
+      <span class="ag-label">TARGET MAC</span>
+      <span id="wol-mac" style="color:var(--g-dim)">— not configured —</span>
+    </div>
+    <div class="ag-item">
+      <span class="ag-label">BROADCAST IP</span>
+      <span id="wol-broadcast-ip" style="color:var(--g)"></span>
+    </div>
+    <div class="ag-item">
+      <span class="ag-label">PORT</span>
+      <span id="wol-port" style="color:var(--g-dim)">—</span>
+    </div>
+  </div>
+  <!-- <div class="sec-label">wake on lan</div>
+<div class="wol-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:3px; padding:8px 10px;">
+  <div class="ag-item">
+    <span class="ag-label">TARGET MAC</span>
+    <span id="wol-mac" style="color:var(--g-dim)">— not configured —</span>
+  </div>
+  <div class="ag-item">
+    <span class="ag-label">BROADCAST IP</span>
+    <span id="wol-broadcast-ip" style="color:var(--g)"></span>
+  </div>
+  <div class="ag-item">
+    <span class="ag-label">PORT</span>
+    <span id="wol-port" style="color:var(--g-dim)">—</span>
+  </div>
+</div>
+<button class="btn-cycle" id="btn-wol-toggle" disabled onclick="toggleWOL()" title="Click to wake target machine">⚡ WAKE TARGET</button> -->
+
   <!-- Containers -->
   <div class="sec-label" style="margin-top:16px">
     containers <span id="ctr-count" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
@@ -504,6 +540,93 @@ async function shellyCycle2() {
   }
 }
 
+
+// ── wake-on-LAN (WoL) ───────────────────────────────────────────────────────
+let _wolBusy = false;
+
+async function toggleWOL() {
+  const btn = document.getElementById('btn-wol-toggle');
+  
+  if (_wolBusy || !core.WOL_TARGET_MAC) {
+    return;
+  }
+  
+  // Toggle button state for confirmation (like Shelly cycle buttons)
+  _wolBusy = true;
+  btn.textContent = '⏳ WAKING…';
+  btn.disabled = true;
+  
+  try {
+    const r = await fetch(`/api/wol/${core.WOL_TARGET_MAC}`, { method: 'POST' });
+    
+    if (r.ok) {
+      const d = await r.json();
+      toast(`WoL sent to ${d.msg}`);
+      
+      // Visual feedback - pulse the button briefly
+      btn.style.animation = 'pulse-green 0.6s ease-in-out';
+      setTimeout(() => { btn.style.animation = ''; }, 1200);
+    } else {
+      const err = await r.json().catch(() => ({}));
+      toast(`error: ${err.detail || r.status}`, true);
+    }
+    
+  } catch(e) {
+    toast('network error', true);
+  } finally {
+    _wolBusy = false;
+    btn.disabled = false;
+    // Reset to original text based on config state
+    if (core.WOL_TARGET_MAC && core.WOL_BROADCAST_IP) {
+      btn.textContent = '⚡ WAKE TARGET';
+    } else {
+      btn.textContent = '⚠ NOT CONFIGURED';
+    }
+  }
+}
+
+// Initialize WoL UI on page load and refresh periodically
+async function initWoL() {
+  try {
+    const config = await fetch('/api/wol/config').then(r => r.json());
+    
+    // Update display elements with WOL configuration from backend
+    document.getElementById('wol-mac').textContent = 
+      (config.target_mac ? formatMac(config.target_mac) : '— not configured —');
+    document.getElementById('wol-broadcast-ip').textContent = config.broadcast_ip || '';
+    document.getElementById('wol-port').textContent = config.port;
+    
+    // Enable/disable button based on configuration state
+    const btn = document.getElementById('btn-wol-toggle');
+    if (config.target_mac && config.broadcast_ip) {
+      btn.disabled = false;
+      btn.textContent = '⚡ WAKE TARGET';
+      core.WOL_TARGET_MAC = config.target_mac; // Sync with JS variable for toggleWOL() check
+      core.WOL_BROADCAST_IP = config.broadcast_ip;
+    } else {
+      btn.disabled = true;
+      btn.textContent = '⚠ NOT CONFIGURED';
+    }
+  } catch(e) {
+    console.error('Failed to load WoL config:', e);
+  }
+}
+
+// Helper: format MAC address for display (e.g., "aa:bb:cc:dd:ee:ff")
+function formatMac(macStr) {
+  return macStr.replace(/([a-fA-F0-9])([a-fA-F0-9]{2})/g, '$1:$2'); // Add colons every 2 chars from end
+}
+
+// Initialize WoL UI on page load and refresh periodically  
+initWoL();
+setInterval(initWoL, 5000);
+
+
+// ── state ────────────────────────────────────────────────────────────────────
+const core = { WOL_TARGET_MAC: null, WOL_BROADCAST_IP: null };
+let selected = null, containers = [], ctrFilter = 'all', busy = false;
+let wolConfig = { mac: '', broadcastIp: '', port: 9000 }; // WOL configuration from backend
+
 let _cycleArmed = false, _cycleTimeout = null;
 function shellyCycle() {
   const btn = document.getElementById('btn-cycle');
@@ -534,12 +657,6 @@ function shellyCycle() {
       });
   }
 }
-
-// ── state ────────────────────────────────────────────────────────────────────
-let selected = null;      // { id, eid, name, state }
-let containers = [];
-let ctrFilter = 'all';
-let busy = false;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const fmtBytes = b => {

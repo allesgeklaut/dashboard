@@ -51,6 +51,15 @@ def api_shelly_powercycle():
         raise HTTPException(500, msg)
     return {"ok": True, "msg": msg}
 
+@app.get("/api/wol/config")
+def api_wol_config():
+    """Return WOL configuration for frontend display."""
+    return {
+        "target_mac": core.WOL_TARGET_MAC or "",
+        "broadcast_ip": core.WOL_BROADCAST_IP,
+        "port": core.WOL_PORT,
+    }
+
 @app.get("/api/shelly2")
 def api_shelly2():
     return core.get_shelly2_state()
@@ -75,6 +84,18 @@ def api_processes():
         return procs[:12]
     except Exception:
         return []
+
+@app.post("/api/wol/{hostname}")
+def api_wol(hostname: str):
+    """Send Wake-on-LAN packet to wake up a target machine.
+    
+    hostname is used for display purposes; the actual MAC address comes from WOL_TARGET_MAC config.
+    Returns status of the WoL send attempt.
+    """
+    ok, msg = core.wol_send(None)  # None means use default WOL_TARGET_MAC from homelab_core.py
+    if not ok:
+        raise HTTPException(500, detail=msg)
+    return {"ok": True, "msg": msg}
 
 @app.get("/", response_class=HTMLResponse)
 def root():

@@ -23,6 +23,11 @@ NFS_MOUNTS    = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",
 SHELLY_PLUG_URL = os.getenv("SHELLY_PLUG_URL", "http://192.168.0.61")
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL", "http://192.168.0.62")
 
+# ── Wake-on-LAN Config ───────────────────────────────────────────────────────
+WOL_TARGET_MAC    = os.getenv("WOL_TARGET_MAC", "").lower()  # MAC address of target machine (e.g., "aa:bb:cc:dd:ee:ff")
+WOL_BROADCAST_IP  = os.getenv("WOL_BROADCAST_IP", "255.255.255.255")  # Broadcast IP for magic packet
+WOL_PORT          = int(os.getenv("WOL_PORT", "9000"))  # UDP port for WOL packets (typically 7 or 9000)
+
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
 # ── Net speed ─────────────────────────────────────────────────────────────────
@@ -460,6 +465,57 @@ def shelly2_toggle() -> tuple[bool, str]:
         return False, f"HTTP {r.status_code}"
     except Exception as exc:
         return False, str(exc)
+
+
+# ── Wake-on-LAN (WoL) ───────────────────────────────────────────────────────
+
+def _pack_mac(mac_str):
+    """Convert MAC string like 'aa:bb:cc:dd:ee:ff' to bytes."""
+    if not mac_str or len(mac_str.replace(":", "")) != 12:
+        return None
+    try:
+        # Remove any separators and convert to hex bytes
+        clean = mac_str.replace(":", "").replace("-", "")
+        return bytes.fromhex(clean)
+    except Exception:
+        return None
+
+def _build_magic_packet(mac_bytes):
+    """Build magic packet: 6 bytes of broadcast + 1598 repetitions (273 packets total)."""
+    if not mac_bytes or len(mac_bytes) != 6:
+        return b""
+    
+    packet = b"\xff" * 6 + mac_bytes * 16
+    return packet
+
+def wol_send(mac_str):
+    """Send Wake-on-LAN magic packet to wake up a target machine.
+    
+    Returns: tuple[bool, str] — (success, message)
+    """
+    if not WOL_TARGET_MAC or not WOL_BROADCAST_IP:
+        return False, "WOL not configured: set WOL_TARGET_MAC and optionally WOL_BROADCAST_IP"
+    
+    mac_bytes = _pack_mac(WOL_TARGET_MAC.upper())
+    if not mac_bytes:
+        return False, f"Invalid MAC address format for target machine: {WOL_TARGET_MAC}"
+    
+    packet = _build_magic_packet(mac_bytes)
+    if not packet:
+        return False, "Failed to build magic packet"
+    
+    try:
+        # Send UDP broadcast packet (1500 bytes max is fine; ours is ~162 bytes)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        
+        # Send the packet
+        sock.sendto(packet, (WOL_BROADCAST_IP, WOL_PORT))
+        
+        return True, f"Wake-on-LAN sent to {WOL_TARGET_MAC} via {WOL_BROADCAST_IP}:{WOL_PORT}"
+    except Exception as exc:
+        return False, f"Failed to send WoL packet: {exc}"
+
 
 # ── Startup helper ────────────────────────────────────────────────────────────
 
