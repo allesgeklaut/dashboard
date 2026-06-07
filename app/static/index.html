@@ -519,21 +519,48 @@ async function fetchShelly2() {
   } catch(e) { /* ignore */ }
 }
 
-// ── power cycle ────────────────────────────────────────────────────────────────
-let _cycleArmed2 = false, _cycleTimeout2 = null;
+// ── power cycle (router) ───────────────────────────────────────────────────────
+let _cycleArmed2 = false,
+    _cycleTimeout2 = null,
+    _cycleRemaining2 = 8,
+    _cycleTimerInterval2 = null;
+
 async function shellyCycle2() {
   const btn = document.getElementById('btn-cycle-2');
   if (!_cycleArmed2) {
+    // First press – arm and start countdown
     _cycleArmed2 = true;
-    btn.textContent = '⚠ CONFIRM? (8 s)';
+    _cycleRemaining2 = 8;
+    btn.textContent = `⚠ CONFIRM? (${_cycleRemaining2}s)`;
     btn.classList.add('armed');
+
+    _cycleTimerInterval2 = setInterval(() => {
+      _cycleRemaining2--;
+      if (_cycleRemaining2 <= 0) {
+        clearInterval(_cycleTimerInterval2);
+        _cycleTimerInterval2 = null;
+        _cycleArmed2 = false;
+        btn.textContent = '⏻ ROUTER CYCLE';
+        btn.classList.remove('armed');
+      } else {
+        btn.textContent = `⚠ CONFIRM? (${_cycleRemaining2}s)`;
+      }
+    }, 1000);
+
     _cycleTimeout2 = setTimeout(() => {
+      clearInterval(_cycleTimerInterval2);
+      _cycleTimerInterval2 = null;
       _cycleArmed2 = false;
       btn.textContent = '⏻ ROUTER CYCLE';
       btn.classList.remove('armed');
     }, 8000);
   } else {
+    // Second press – cancel countdown and perform action
     clearTimeout(_cycleTimeout2);
+    if (_cycleTimerInterval2) {
+      clearInterval(_cycleTimerInterval2);
+      _cycleTimerInterval2 = null;
+    }
     _cycleArmed2 = false;
     btn.classList.remove('armed');
     btn.disabled = true;
@@ -735,20 +762,49 @@ const core = { WOL_TARGET_MAC: null, WOL_BROADCAST_IP: null };
 let selected = null, containers = [], ctrFilter = 'all', busy = false;
 let wolConfig = { mac: '', broadcastIp: '', port: 9000 }; // WOL configuration from backend
 
-let _cycleArmed = false, _cycleTimeout = null;
+// Power‑cycle button state
+let _cycleArmed = false,
+    _cycleTimeout = null,
+    _cycleRemaining = 8,          // seconds left for confirmation
+    _cycleTimerInterval = null;   // interval id for live countdown
 function shellyCycle() {
   const btn = document.getElementById('btn-cycle');
   if (!_cycleArmed) {
+    // First press – arm the button and start countdown
     _cycleArmed = true;
-    btn.textContent = '⚠ CONFIRM? (8 s)';
+    _cycleRemaining = 8;
+    btn.textContent = `⚠ CONFIRM? (${_cycleRemaining}s)`;
     btn.classList.add('armed');
+
+    // Update every second
+    _cycleTimerInterval = setInterval(() => {
+      _cycleRemaining--;
+      if (_cycleRemaining <= 0) {
+        clearInterval(_cycleTimerInterval);
+        _cycleTimerInterval = null;
+        _cycleArmed = false;
+        btn.textContent = '⟳ POWER CYCLE';
+        btn.classList.remove('armed');
+      } else {
+        btn.textContent = `⚠ CONFIRM? (${_cycleRemaining}s)`;
+      }
+    }, 1000);
+
+    // Also keep the original timeout to reset after 8 s
     _cycleTimeout = setTimeout(() => {
+      clearInterval(_cycleTimerInterval);
+      _cycleTimerInterval = null;
       _cycleArmed = false;
       btn.textContent = '⟳ POWER CYCLE';
       btn.classList.remove('armed');
     }, 8000);
   } else {
+    // Second press – cancel countdown and perform action
     clearTimeout(_cycleTimeout);
+    if (_cycleTimerInterval) {
+      clearInterval(_cycleTimerInterval);
+      _cycleTimerInterval = null;
+    }
     _cycleArmed = false;
     btn.classList.remove('armed');
     btn.disabled = true;
