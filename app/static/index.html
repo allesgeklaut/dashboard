@@ -632,19 +632,74 @@ async function initWoL() {
   }
 }
 
+// Utility to show a modal password prompt that masks input with '*'
+async function askPassword(message) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.top = '0';
+    overlay.style.left = '0';
+    overlay.style.width = '100%';
+    overlay.style.height = '100%';
+    overlay.style.backgroundColor = 'rgba(0,0,0,0.5)';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+
+    const box = document.createElement('div');
+    box.style.background = '#222';
+    box.style.padding = '20px';
+    box.style.borderRadius = '4px';
+    box.style.color = '#fff';
+    box.style.minWidth = '300px';
+
+    const label = document.createElement('label');
+    label.textContent = message;
+    label.style.display = 'block';
+    label.style.marginBottom = '8px';
+
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.style.width = '100%';
+    input.style.padding = '6px';
+    input.style.boxSizing = 'border-box';
+
+    const btnOk = document.createElement('button');
+    btnOk.textContent = 'OK';
+    btnOk.style.marginRight = '10px';
+    const btnCancel = document.createElement('button');
+    btnCancel.textContent = 'Cancel';
+
+    box.appendChild(label);
+    box.appendChild(input);
+    box.appendChild(btnOk);
+    box.appendChild(btnCancel);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    input.focus();
+
+    function cleanup() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+
+    btnOk.onclick = () => { cleanup(); resolve(input.value); };
+    btnCancel.onclick = () => { cleanup(); resolve(null); };
+  });
+}
+
 // Power off the current host via API
 async function powerOff() {
   const btn = document.getElementById('btn-shutdown');
   if (!window.currentHost) return;
-    const pwd = prompt('Enter sudo password for shutdown:', '');
-    if (pwd === null) return; // cancelled
+  const pwd = await askPassword('Enter sudo password for shutdown:');
+  if (pwd === null) return; // cancelled
   btn.disabled = true;
   try {
-      const r = await fetch(`/api/shutdown/${window.targetIP}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pwd })
-      });
+    const r = await fetch(`/api/shutdown/${window.targetIP}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd })
+    });
     if (r.ok) {
       toast('Shutdown command sent');
     } else {
