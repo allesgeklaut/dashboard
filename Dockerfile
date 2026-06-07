@@ -14,7 +14,9 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]" \
     psutil \
     requests \
-    urllib3
+    urllib3 \
+    paramiko \
+    python-dotenv
 
 COPY app/ .
 

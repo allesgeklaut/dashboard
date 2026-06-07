@@ -429,17 +429,23 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <button id="btn-wol-toggle" onclick="toggleWOL()" disabled title="Click to wake target machine">⚡ WAKE TARGET</button>
   </div>
   <div class="wol-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:3px; padding:8px 10px;">
-    <div class="ag-item">
-      <span class="ag-label">TARGET MAC</span>
-      <span id="wol-mac" style="color:var(--g-dim)">— not configured —</span>
+      <div class="ag-item">
+        <span class="ag-label">TARGET MAC</span>
+        <span id="wol-mac" style="color:var(--g-dim)">— not configured —</span>
+      </div>
+      <div class="ag-item">
+        <span class="ag-label">BROADCAST IP</span>
+        <span id="wol-broadcast-ip" style="color:var(--g)"></span>
+      </div>
+      <div class="ag-item">
+        <span class="ag-label">PORT</span>
+        <span id="wol-port" style="color:var(--g-dim)">—</span>
+      </div>
     </div>
-    <div class="ag-item">
-      <span class="ag-label">BROADCAST IP</span>
-      <span id="wol-broadcast-ip" style="color:var(--g)"></span>
-    </div>
-    <div class="ag-item">
-      <span class="ag-label">PORT</span>
-      <span id="wol-port" style="color:var(--g-dim)">—</span>
+    <!-- Status message and power off button -->
+    <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
+      <span id="wol-status" style="color:var(--g-dim)"></span>
+      <button class="btn-cycle2" id="btn-shutdown" onclick="powerOff()" disabled>POWER OFF</button>
     </div>
   </div>
   <!-- <div class="sec-label">wake on lan</div>
@@ -556,33 +562,38 @@ async function toggleWOL() {
   btn.textContent = '⏳ WAKING…';
   btn.disabled = true;
   
-  try {
-    const r = await fetch(`/api/wol/${core.WOL_TARGET_MAC}`, { method: 'POST' });
-    
-    if (r.ok) {
-      const d = await r.json();
-      toast(`WoL sent to ${d.msg}`);
-      
-      // Visual feedback - pulse the button briefly
-      btn.style.animation = 'pulse-green 0.6s ease-in-out';
-      setTimeout(() => { btn.style.animation = ''; }, 1200);
-    } else {
-      const err = await r.json().catch(() => ({}));
-      toast(`error: ${err.detail || r.status}`, true);
-    }
-    
-  } catch(e) {
-    toast('network error', true);
-  } finally {
-    _wolBusy = false;
-    btn.disabled = false;
-    // Reset to original text based on config state
-    if (core.WOL_TARGET_MAC && core.WOL_BROADCAST_IP) {
-      btn.textContent = '⚡ WAKE TARGET';
-    } else {
-      btn.textContent = '⚠ NOT CONFIGURED';
-    }
-  }
+    let d; // response data
+    try {
+      const r = await fetch(`/api/wol/${core.WOL_TARGET_MAC}`, { method: 'POST' });
+
+      if (r.ok) {
+        d = await r.json();
+        toast(`WoL sent to ${d.msg}`);
+
+        // Update button text based on whether the target is online
+        btn.textContent = d.target_on ? 'TARGET ON' : '⚡ WAKE TARGET';
+        document.getElementById('wol-status').textContent = d.target_on ? 'ONLINE' : 'OFFLINE';
+        btn.style.animation = 'pulse-green 0.6s ease-in-out';
+        setTimeout(() => { btn.style.animation = ''; }, 1200);
+        } else {
+          const err = await r.json().catch(() => ({}));
+          toast(`error: ${err.detail || r.status}`, true);
+        }
+
+      } catch(e) {
+        toast('network error', true);
+      } finally {
+        _wolBusy = false;
+        btn.disabled = false;
+        // Reset to original text based on config state if not already updated
+        if (!d || !('target_on' in d)) {
+          if (core.WOL_TARGET_MAC && core.WOL_BROADCAST_IP) {
+            btn.textContent = '⚡ WAKE TARGET';
+          } else {
+            btn.textContent = '⚠ NOT CONFIGURED';
+          }
+        }
+      }
 }
 
 // Initialize WoL UI on page load and refresh periodically
@@ -609,6 +620,26 @@ async function initWoL() {
     }
   } catch(e) {
     console.error('Failed to load WoL config:', e);
+  }
+}
+
+// Power off the current host via API
+async function powerOff() {
+  const btn = document.getElementById('btn-shutdown');
+  if (!window.currentHost) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/shutdown/${window.currentHost}`, { method: 'POST' });
+    if (r.ok) {
+      toast('Shutdown command sent');
+    } else {
+      const err = await r.json().catch(() => ({}));
+      toast(`error: ${err.detail || r.status}`, true);
+    }
+  } catch(e) {
+    toast('network error', true);
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -696,6 +727,9 @@ async function fetchStats() {
   try {
     const d = await fetch('/api/stats').then(r=>r.json());
     document.getElementById('hdr-host').textContent = d.hostname;
+    // Store current host for shutdown
+    window.currentHost = d.hostname;
+    document.getElementById('btn-shutdown').disabled = false;
     document.getElementById('hdr-ip').textContent   = d.ip;
     document.getElementById('hdr-up').textContent   = d.uptime;
     document.getElementById('net-tx').textContent   = fmtBytes(d.net_tx);

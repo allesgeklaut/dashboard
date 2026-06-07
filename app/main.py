@@ -2,7 +2,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import psutil
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
+import os
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -95,7 +96,20 @@ def api_wol(hostname: str):
     ok, msg = core.wol_send(None)  # None means use default WOL_TARGET_MAC from homelab_core.py
     if not ok:
         raise HTTPException(500, detail=msg)
-    return {"ok": True, "msg": msg}
+    # Give the NIC a moment to wake up before probing.
+    import time
+    time.sleep(5)
+    on, status_msg = core.is_target_on(hostname)
+    return {"ok": True, "msg": msg, "target_on": on, "status_message": status_msg}
+
+@app.post("/api/shutdown/{hostname}")
+def api_shutdown(hostname: str, api_key: str = Header(None)):
+    # Simple API key protection
+    expected = os.getenv("API_KEY", "")
+    if not expected or api_key != expected:
+        raise HTTPException(403, detail="Forbidden")
+    ok, msg = core.remote_shutdown(hostname)
+    return {"ok": ok, "msg": msg}
 
 @app.get("/", response_class=HTMLResponse)
 def root():
