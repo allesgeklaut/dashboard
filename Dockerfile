@@ -2,10 +2,12 @@ FROM python:3.12-slim
 
 # Install only what's needed (no ttyd!)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      docker.io \
-      gcc \
- && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends \
+    docker.io \
+    gcc \
+    iputils-ping \
+    openssh-client \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

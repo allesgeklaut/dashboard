@@ -3,14 +3,15 @@ services:
     build: .
     container_name: homelab-ctrl
     restart: unless-stopped
-    network_mode: host        # required — psutil reads host network stats
-    pid: host                 # required — psutil reads host CPU / process list
+    network_mode: host # required — psutil reads host network stats
+    pid: host # required — psutil reads host CPU / process list
     privileged: false
     environment:
       - TZ=Europe/Vienna
       - HOMELAB_ENERGY_FILE=/root/.homelab_energy.json
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro           # CLI fallback
-      - /mnt/nas:/mnt/nas:ro                                   # NFS mounts visible
-      - ${HOME}/.homelab_energy.json:/root/.homelab_energy.json  # energy tracking
+      - /var/run/docker.sock:/var/run/docker.sock:ro # CLI fallback
+      - /mnt/nas:/mnt/nas:ro # NFS mounts visible
+      - ${HOME}/.homelab_energy.json:/root/.homelab_energy.json # energy tracking
+      - /home/johannes/.ssh/:/home/johannes/.ssh/:ro # use host's SSH keys for WOL and SSH actions
     env_file: .env
