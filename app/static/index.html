@@ -426,7 +426,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <!-- Wake-on-LAN -->
   <div class="sec-label" style="margin-top:16px; display:flex; align-items:center;">
     <span>wake on LAN</span>
-    <button id="btn-wol-toggle" onclick="toggleWOL()" disabled title="Click to wake target machine">⚡ WAKE TARGET</button>
   </div>
   <div class="wol-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:3px; padding:8px 10px;">
       <div class="ag-item">
@@ -449,6 +448,8 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <!-- Status message and power off button -->
     <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
       <span id="wol-status" style="color:var(--g-dim)"></span>
+      <!-- Place the wake button next to the power‑off button for a unified look -->
+      <button class="btn-cycle2" id="btn-wol-toggle" onclick="toggleWOL()" disabled title="Click to wake target machine">⚡ WAKE TARGET</button>
       <button class="btn-cycle2" id="btn-shutdown" onclick="powerOff()" disabled>POWER OFF</button>
     </div>
   </div>
