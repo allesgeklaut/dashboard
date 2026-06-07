@@ -511,6 +511,12 @@ def remote_shutdown(host: str) -> tuple[bool, str]:
     Returns ``(True, "OK")`` on success or ``(False, error_message)``.
     """
 
+def remote_shutdown(host: str, password: str | None = None) -> tuple[bool, str]:
+    """SSH into *host* and run ``sudo shutdown -h now``.
+
+    Requires that the SSH user has password‑less sudo rights for shutdown.
+    Returns ``(True, "OK")`` on success or ``(False, error_message)``.
+    """
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -519,7 +525,11 @@ def remote_shutdown(host: str) -> tuple[bool, str]:
             key = paramiko.RSAKey.from_private_key_file(SSH_KEY_PATH)
         client.connect(hostname=host, username=SSH_USER, pkey=key,
                        timeout=5, banner_timeout=5)
-        cmd = "sudo shutdown -h now"
+        # Build command with optional password
+        if password:
+            cmd = f'echo "{password}" | sudo -S shutdown -h now'
+        else:
+            cmd = 'sudo shutdown -h now'
         stdin, stdout, stderr = client.exec_command(cmd, timeout=3)
         err = stderr.read().decode()
         out = stdout.read().decode()

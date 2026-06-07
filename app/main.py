@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import psutil
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Body
 import os
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -104,9 +104,10 @@ def api_wol(target_ip: str):
     return {"ok": True, "msg": msg, "target_on": on, "status_message": status_msg}
 
 @app.post("/api/shutdown/{hostname}")
-def api_shutdown(hostname: str):
-    # Removed API key protection for simplicity; ensure your environment is secure.
-    ok, msg = core.remote_shutdown(hostname)
+def api_shutdown(hostname: str, payload: dict = Body(...)):
+    # Payload may contain a sudo password for the shutdown command.
+    pwd = payload.get('password') if isinstance(payload, dict) else None
+    ok, msg = core.remote_shutdown(hostname, pwd)
     return {"ok": ok, "msg": msg}
 
 @app.get("/", response_class=HTMLResponse)

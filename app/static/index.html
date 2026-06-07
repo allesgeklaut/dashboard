@@ -635,9 +635,15 @@ async function initWoL() {
 async function powerOff() {
   const btn = document.getElementById('btn-shutdown');
   if (!window.currentHost) return;
+    const pwd = prompt('Enter sudo password for shutdown:', '');
+    if (pwd === null) return; // cancelled
   btn.disabled = true;
   try {
-    const r = await fetch(`/api/shutdown/${window.targetIP}`, { method: 'POST' });
+      const r = await fetch(`/api/shutdown/${window.targetIP}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd })
+      });
     if (r.ok) {
       toast('Shutdown command sent');
     } else {
