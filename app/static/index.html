@@ -675,8 +675,15 @@ async function askPassword(message) {
     box.appendChild(btnOk);
     box.appendChild(btnCancel);
     overlay.appendChild(box);
+    overlay.style.zIndex = 1000;
     document.body.appendChild(overlay);
     input.focus();
+
+    // Allow Enter to submit and Escape to cancel
+    input.addEventListener('keyup', e => {
+      if (e.key === 'Enter') btnOk.click();
+      if (e.key === 'Escape') btnCancel.click();
+    });
 
     function cleanup() {
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
