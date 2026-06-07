@@ -4,6 +4,7 @@ Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
 import os, socket, subprocess, threading, time, json, tempfile
+import paramiko
 from datetime import timedelta
 
 import psutil, requests, urllib3
@@ -23,10 +24,14 @@ NFS_MOUNTS    = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",
 SHELLY_PLUG_URL = os.getenv("SHELLY_PLUG_URL", "http://192.168.0.61")
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL", "http://192.168.0.62")
 
-# ── Wake-on-LAN Config ───────────────────────────────────────────────────────
+# ── Wake‑on‑LAN Config ───────────────────────────────────────────────────────
 WOL_TARGET_MAC    = os.getenv("WOL_TARGET_MAC", "").lower()  # MAC address of target machine (e.g., "aa:bb:cc:dd:ee:ff")
 WOL_BROADCAST_IP  = os.getenv("WOL_BROADCAST_IP", "255.255.255.255")  # Broadcast IP for magic packet
 WOL_PORT          = int(os.getenv("WOL_PORT", "9000"))  # UDP port for WOL packets (typically 7 or 9000)
+
+# ── SSH Config ───────────────────────────────────────────────────────────────
+SSH_USER = os.getenv("SSH_USER", "woladmin")
+SSH_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "")
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
@@ -487,6 +492,67 @@ def _build_magic_packet(mac_bytes):
     
     packet = b"\xff" * 6 + mac_bytes * 16
     return packet
+
+def is_target_on(host: str) -> tuple[bool, str]:
+    """Check if *host* is reachable and accepts SSH.
+
+    Returns a tuple ``(True, "OK")`` when both ping and an SSH command succeed,
+    otherwise ``(False, error_message)``.
+    """
+
+    if not _ping(host):
+        return False, f"{host} did not respond to ping"
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        key = None
+        if SSH_KEY_PATH and os.path.exists(SSH_KEY_PATH):
+            key = paramiko.RSAKey.from_private_key_file(SSH_KEY_PATH)
+        client.connect(hostname=host, username=SSH_USER, pkey=key,
+                       timeout=5, banner_timeout=5)
+        stdin, stdout, stderr = client.exec_command("uptime", timeout=3)
+        _ = stdout.read()
+        client.close()
+        return True, "online"
+    except Exception as exc:
+        return False, str(exc)
+
+def remote_shutdown(host: str) -> tuple[bool, str]:
+    """SSH into *host* and run ``sudo shutdown -h now``.
+
+    Requires that the SSH user has password‑less sudo rights for shutdown.
+    Returns ``(True, "OK")`` on success or ``(False, error_message)``.
+    """
+
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        key = None
+        if SSH_KEY_PATH and os.path.exists(SSH_KEY_PATH):
+            key = paramiko.RSAKey.from_private_key_file(SSH_KEY_PATH)
+        client.connect(hostname=host, username=SSH_USER, pkey=key,
+                       timeout=5, banner_timeout=5)
+        cmd = "sudo shutdown -h now"
+        stdin, stdout, stderr = client.exec_command(cmd, timeout=3)
+        err = stderr.read().decode()
+        out = stdout.read().decode()
+        client.close()
+        if err:
+            return False, err.strip()
+        return True, "shutdown command sent"
+    except Exception as exc:
+        return False, str(exc)
+
+def _ping(host: str, timeout: int = 2) -> bool:
+    """Return True if host responds to ICMP ping within *timeout* seconds."""
+    try:
+        # Use system ping; works on Linux/macOS. Windows requires -n.
+        cmd = ["ping", "-c", str(timeout), host]
+        subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+    
 
 def wol_send(mac_str):
     """Send Wake-on-LAN magic packet to wake up a target machine.
