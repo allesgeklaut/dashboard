@@ -494,28 +494,15 @@ def _build_magic_packet(mac_bytes):
     return packet
 
 def is_target_on(host: str) -> tuple[bool, str]:
-    """Check if *host* is reachable and accepts SSH.
+    """Return ``(True, "online")`` if the host responds to ping.
 
-    Returns a tuple ``(True, "OK")`` when both ping and an SSH command succeed,
-    otherwise ``(False, error_message)``.
+    The previous implementation attempted an SSH connection which can fail
+    when key authentication is not set up.  For a simple online check we only
+    need ICMP reachability.
     """
-
-    if not _ping(host):
-        return False, f"{host} did not respond to ping"
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        key = None
-        if SSH_KEY_PATH and os.path.exists(SSH_KEY_PATH):
-            key = paramiko.RSAKey.from_private_key_file(SSH_KEY_PATH)
-        client.connect(hostname=host, username=SSH_USER, pkey=key,
-                       timeout=5, banner_timeout=5)
-        stdin, stdout, stderr = client.exec_command("uptime", timeout=3)
-        _ = stdout.read()
-        client.close()
+    if _ping(host):
         return True, "online"
-    except Exception as exc:
-        return False, str(exc)
+    return False, f"{host} did not respond to ping"
 
 def remote_shutdown(host: str) -> tuple[bool, str]:
     """SSH into *host* and run ``sudo shutdown -h now``.
@@ -544,9 +531,14 @@ def remote_shutdown(host: str) -> tuple[bool, str]:
         return False, str(exc)
 
 def _ping(host: str, timeout: int = 2) -> bool:
-    """Return True if host responds to ICMP ping within *timeout* seconds."""
+    """Return True if the given hostname or IP responds to ICMP ping.
+
+    The function accepts either a fully qualified domain name or an IPv4/IPv6
+    address.  It uses the system ``ping`` command which is available on Linux
+    and macOS.  If the host string contains non‑numeric characters it will be
+    treated as a hostname.
+    """
     try:
-        # Use system ping; works on Linux/macOS. Windows requires -n.
         cmd = ["ping", "-c", str(timeout), host]
         subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
         return True

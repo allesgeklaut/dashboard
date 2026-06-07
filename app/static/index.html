@@ -438,6 +438,10 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
         <span id="wol-broadcast-ip" style="color:var(--g)"></span>
       </div>
       <div class="ag-item">
+        <span class="ag-label">TARGET IP</span>
+        <span id="wol-target-ip" style="color:var(--g-dim)">—</span>
+      </div>
+      <div class="ag-item">
         <span class="ag-label">PORT</span>
         <span id="wol-port" style="color:var(--g-dim)">—</span>
       </div>
@@ -564,7 +568,7 @@ async function toggleWOL() {
   
     let d; // response data
     try {
-      const r = await fetch(`/api/wol/${core.WOL_TARGET_MAC}`, { method: 'POST' });
+      const r = await fetch(`/api/wol/${window.targetIP}`, { method: 'POST' });
 
       if (r.ok) {
         d = await r.json();
@@ -606,6 +610,10 @@ async function initWoL() {
       (config.target_mac ? formatMac(config.target_mac) : '— not configured —');
     document.getElementById('wol-broadcast-ip').textContent = config.broadcast_ip || '';
     document.getElementById('wol-port').textContent = config.port;
+    // Store target IP globally for use in other functions
+    window.targetIP = config.target_ip;
+    // Show the target IP from config
+    document.getElementById('wol-target-ip').textContent = config.target_ip || '—';
     
     // Enable/disable button based on configuration state
     const btn = document.getElementById('btn-wol-toggle');
@@ -629,7 +637,7 @@ async function powerOff() {
   if (!window.currentHost) return;
   btn.disabled = true;
   try {
-    const r = await fetch(`/api/shutdown/${window.currentHost}`, { method: 'POST' });
+    const r = await fetch(`/api/shutdown/${window.targetIP}`, { method: 'POST' });
     if (r.ok) {
       toast('Shutdown command sent');
     } else {
@@ -727,7 +735,8 @@ async function fetchStats() {
   try {
     const d = await fetch('/api/stats').then(r=>r.json());
     document.getElementById('hdr-host').textContent = d.hostname;
-    // Store current host for shutdown
+    // Store current host; the target IP is taken from the environment variable
+    // WOL_TARGET_IP which is exposed by the backend via /api/wol/config.
     window.currentHost = d.hostname;
     document.getElementById('btn-shutdown').disabled = false;
     document.getElementById('hdr-ip').textContent   = d.ip;
