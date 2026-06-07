@@ -504,13 +504,6 @@ def is_target_on(host: str) -> tuple[bool, str]:
         return True, "online"
     return False, f"{host} did not respond to ping"
 
-def remote_shutdown(host: str) -> tuple[bool, str]:
-    """SSH into *host* and run ``sudo shutdown -h now``.
-
-    Requires that the SSH user has password‑less sudo rights for shutdown.
-    Returns ``(True, "OK")`` on success or ``(False, error_message)``.
-    """
-
 def remote_shutdown(host: str, password: str | None = None) -> tuple[bool, str]:
     """SSH into *host* and run ``sudo shutdown -h now``.
 
@@ -522,7 +515,14 @@ def remote_shutdown(host: str, password: str | None = None) -> tuple[bool, str]:
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         key = None
         if SSH_KEY_PATH and os.path.exists(SSH_KEY_PATH):
-            key = paramiko.RSAKey.from_private_key_file(SSH_KEY_PATH)
+            ext = os.path.splitext(SSH_KEY_PATH)[1].lower()
+            try:
+                if ext in ('.pem', '.pub') or SSH_KEY_PATH.endswith('id_rsa'):
+                    key = paramiko.RSAKey.from_private_key_file(SSH_KEY_PATH)
+                else:  # assume Ed25519
+                    key = paramiko.Ed25519Key.from_private_key_file(SSH_KEY_PATH)
+            except Exception:
+                key = None
         client.connect(hostname=host, username=SSH_USER, pkey=key,
                        timeout=5, banner_timeout=5)
         # Build command with optional password
