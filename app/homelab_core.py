@@ -14,7 +14,7 @@ load_dotenv()
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PORTAINER_URL     = os.getenv("PORTAINER_URL", "https://192.168.0.43:9443")
+PORTAINER_URL     = os.getenv("PORTAINER_URL", "https://192.168.0.46:9443")
 PORTAINER_API_KEY = os.getenv("PORTAINER_API_KEY", "")
 PORTAINER_ENVS: list[int] | None = None  # None = auto-discover; or e.g. [1, 2]
 ADGUARD_URL  = os.getenv("ADGUARD_URL", "http://192.168.0.2")
