@@ -3,7 +3,7 @@ homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
 Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
-import os, socket, subprocess, threading, time, json, tempfile
+import os, socket, subprocess, threading, time, json
 import paramiko
 from datetime import timedelta
 
@@ -35,6 +35,171 @@ SSH_USER = os.getenv("SSH_USER", "woladmin")
 SSH_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "")
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
+
+
+# ── Static system info (probed once at startup) ──────────────────────────────
+# Many helpers only need *which* sensor / device / mount point to read, not the
+# live value.  Doing that detection on every poll is wasted work — interfaces
+# and hwmon paths are static for the lifetime of the process.  This dataclass
+# caches all the cheap-to-compute, slow-to-change facts so the hot-path
+# getters only read the live counter.
+
+from dataclasses import dataclass, field
+
+@dataclass
+class _GpuPaths:
+    """Cached sysfs paths for a single detected AMD GPU.
+
+    ``None`` for any path that doesn't exist on the host (e.g. some cards
+    don't expose fan1_input).
+    """
+    hwmon_path:    str | None
+    card_path:     str | None
+    temp_junction: str | None = None   # temp2_input (preferred)
+    temp_edge:     str | None = None   # temp1_input (fallback)
+    fan_rpm:       str | None = None   # fan1_input
+    fan_pwm:       str | None = None   # pwm1
+    power:         str | None = None   # power1_average (µW)
+    usage:         str | None = None   # gpu_busy_percent
+    vram_total:    str | None = None   # mem_info_vram_total (bytes)
+    vram_used:     str | None = None   # mem_info_vram_used  (bytes)
+
+    def live_paths(self) -> list[str]:
+        """Sysfs files that the live getters will actually read."""
+        return [p for p in (
+            self.temp_junction, self.temp_edge, self.fan_rpm,
+            self.fan_pwm, self.power, self.usage,
+            self.vram_total, self.vram_used,
+        ) if p is not None]
+
+
+@dataclass
+class SystemInfo:
+    """Process-wide cache of static OS / hardware facts.
+
+    Populated lazily on first use of :func:`get_system_info` and held as a
+    module-level singleton.  All values are safe to read concurrently.
+    """
+    boot_time: float = 0.0
+    host_ipv4: str = "n/a"
+    cpu_temp_sensor: tuple[str, int] | None = None   # (key, index in sensors[key])
+
+    # /mnt/nas etc. — only those that actually exist as a directory
+    nfs_mounts: list[str] = field(default_factory=list)
+
+    # Pre-resolved AMD GPU sysfs paths (None if no AMD GPU is present)
+    amd_gpu: _GpuPaths | None = None
+
+    # ── probing ─────────────────────────────────────────────────────────────
+
+    @classmethod
+    def probe(cls) -> "SystemInfo":
+        self = cls()
+        self.boot_time       = psutil.boot_time()
+        self.host_ipv4       = self._detect_ip()
+        self.cpu_temp_sensor = self._detect_cpu_temp_sensor()
+        self.nfs_mounts      = self._detect_nfs_mounts()
+        self.amd_gpu         = self._detect_amd_gpu()
+        return self
+
+    @staticmethod
+    def _detect_ip() -> str:
+        for iface, addrs in psutil.net_if_addrs().items():
+            if iface == "lo":
+                continue
+            for a in addrs:
+                if a.family == 2 and not a.address.startswith("127."):
+                    return a.address
+        return "n/a"
+
+    @staticmethod
+    def _detect_cpu_temp_sensor() -> tuple[str, int] | None:
+        """Pick the first available sensor in our preferred order."""
+        try:
+            sensors = psutil.sensors_temperatures()
+        except Exception:
+            return None
+        for key in ("coretemp", "cpu_thermal", "k10temp", "acpitz"):
+            arr = sensors.get(key)
+            if arr:
+                return key, 0
+        return None
+
+    @staticmethod
+    def _detect_nfs_mounts() -> list[str]:
+        out: list[str] = []
+        for mp in NFS_MOUNTS:
+            if os.path.isdir(mp):
+                out.append(mp)
+        return out
+
+    @staticmethod
+    def _detect_amd_gpu() -> "_GpuPaths | None":
+        """Find amdgpu hwmon + the matching drm card; pre-resolve every path
+        we will need so the live getter is just a series of ``open()`` calls.
+        """
+        import glob
+
+        # 1) amdgpu hwmon
+        hwmon_path: str | None = None
+        for cand in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+            try:
+                if open(f"{cand}/name").read().strip() == "amdgpu":
+                    hwmon_path = cand
+                    break
+            except Exception:
+                continue
+        if hwmon_path is None:
+            return None
+
+        # 2) drm card bound to the AMD driver (prefer non-boot display)
+        card_path: str | None = None
+        for card in sorted(glob.glob("/sys/class/drm/card[0-9]")):
+            try:
+                if open(f"{card}/device/vendor").read().strip() != "0x1002":
+                    continue
+                boot_vga = open(f"{card}/device/boot_vga").read().strip() == "1"
+                if not boot_vga:
+                    card_path = card
+                    break
+                if card_path is None:
+                    card_path = card
+            except Exception:
+                continue
+
+        def _exists(p: str) -> str | None:
+            return p if os.path.exists(p) else None
+
+        paths = _GpuPaths(
+            hwmon_path    = hwmon_path,
+            card_path     = card_path,
+            temp_junction = _exists(f"{hwmon_path}/temp2_input"),
+            temp_edge     = _exists(f"{hwmon_path}/temp1_input"),
+            fan_rpm       = _exists(f"{hwmon_path}/fan1_input"),
+            fan_pwm       = _exists(f"{hwmon_path}/pwm1"),
+            power         = _exists(f"{hwmon_path}/power1_average"),
+            usage         = _exists(f"{card_path}/device/gpu_busy_percent") if card_path else None,
+            vram_total    = _exists(f"{card_path}/device/mem_info_vram_total") if card_path else None,
+            vram_used     = _exists(f"{card_path}/device/mem_info_vram_used") if card_path else None,
+        )
+        if not paths.live_paths():
+            return None
+        return paths
+
+
+# Singleton — populated on first call to get_system_info()
+_system_info: SystemInfo | None = None
+_system_info_lock = threading.Lock()
+
+def get_system_info() -> SystemInfo:
+    """Return the process-wide :class:`SystemInfo` singleton (probed once)."""
+    global _system_info
+    if _system_info is not None:
+        return _system_info
+    with _system_info_lock:
+        if _system_info is None:
+            _system_info = SystemInfo.probe()
+    return _system_info
 
 # ── Net speed ─────────────────────────────────────────────────────────────────
 _prev_net   = None
@@ -196,34 +361,29 @@ def container_action(cid: str, action: str, eid: int | None = None) -> tuple[boo
 
 def get_temp() -> float | None:
     """Return CPU temperature in °C, or None if unavailable."""
+    sensor = get_system_info().cpu_temp_sensor
+    if sensor is None:
+        return None
+    key, idx = sensor
     try:
-        sensors = psutil.sensors_temperatures()
-        for key in ("coretemp", "cpu_thermal", "k10temp", "acpitz"):
-            if key in sensors and sensors[key]:
-                return sensors[key][0].current
+        return psutil.sensors_temperatures()[key][idx].current
     except Exception:
-        pass
-    return None
+        return None
 
 def get_ip() -> str:
     """Return the first non-loopback IPv4 address, or 'n/a'."""
-    for iface, addrs in psutil.net_if_addrs().items():
-        if iface == "lo":
-            continue
-        for a in addrs:
-            if a.family == 2 and not a.address.startswith("127."):
-                return a.address
-    return "n/a"
+    return get_system_info().host_ipv4
 
 def get_system_stats() -> dict:
     """Return a dict of current CPU, RAM, swap, load, net, temp, uptime, and IP."""
+    info = get_system_info()
     cpu = psutil.cpu_percent()
     mem = psutil.virtual_memory()
     swp = psutil.swap_memory()
     l1, l5, l15 = psutil.getloadavg()
     tx, rx = net_speed()
     temp = get_temp()
-    td   = timedelta(seconds=int(time.time() - psutil.boot_time()))
+    td   = timedelta(seconds=int(time.time() - info.boot_time))
     h, rem = divmod(td.seconds, 3600)
     m = rem // 60
     return {
@@ -240,7 +400,7 @@ def get_system_stats() -> dict:
         "net_rx":       rx,
         "uptime":       f"{td.days}d {h:02d}h {m:02d}m",
         "hostname":     socket.gethostname(),
-        "ip":           get_ip(),
+        "ip":           info.host_ipv4,
     }
 
 # ── Storage ───────────────────────────────────────────────────────────────────
@@ -250,7 +410,8 @@ _SKIP_FS = ("tmpfs", "devtmpfs", "squashfs", "overlay", "efi")
 def get_storage() -> list[dict]:
     """Return disk usage for NFS mounts and local partitions."""
     out, seen = [], set()
-    for mp in NFS_MOUNTS:
+    mounts = get_system_info().nfs_mounts
+    for mp in mounts:
         if not os.path.ismount(mp):
             out.append({"mount": mp, "error": "not mounted", "type": "NFS"})
             seen.add(mp)
@@ -318,8 +479,11 @@ def get_adguard_stats() -> dict:
 import json
 import datetime as _dt
 
-_ENERGY_FILE  = os.getenv("HOMELAB_ENERGY_FILE", os.path.expanduser("~/.homelab_energy.json"))
-_energy_lock  = threading.Lock()
+_ENERGY_FILE = os.getenv("HOMELAB_ENERGY_FILE", os.path.expanduser("~/.homelab_energy.json"))
+
+# In-memory energy accumulator.  Only the background energy-tracker thread
+# writes to this dict, and the request handler only reads it.  Single-process,
+# so no lock is needed.
 _energy_data: dict = {
     "today":           "",    # YYYY-MM-DD
     "today_wh":        0.0,
@@ -329,26 +493,40 @@ _energy_data: dict = {
 }
 
 
+def _check_energy_file() -> None:
+    """Warn once if the energy file path is a directory (common mistake when
+    a Docker volume mount created a directory at that path) or otherwise
+    not writable."""
+    if os.path.isdir(_ENERGY_FILE):
+        print(
+            f"[homelab_core] WARNING: HOMELAB_ENERGY_FILE={_ENERGY_FILE!r} is a "
+            f"directory; energy data will NOT be persisted. Remove the directory "
+            f"(or fix the volume mount) and restart the container.",
+            flush=True,
+        )
+
+
 def _load_energy() -> None:
-    global _energy_data
     try:
         with open(_ENERGY_FILE) as f:
             saved = json.load(f)
-        with _energy_lock:
-            _energy_data.update(saved)
+        _energy_data.update(saved)
+    except FileNotFoundError:
+        pass
+    except (IsADirectoryError, PermissionError) as exc:
+        print(f"[homelab_core] energy file not readable: {exc}", flush=True)
     except Exception:
         pass
 
 
 def _save_energy() -> None:
     try:
-        with _energy_lock:
-            snapshot = dict(_energy_data)
-        dir_ = os.path.dirname(_ENERGY_FILE) or "."
-        with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False, suffix=".tmp") as tmp:
-            json.dump(snapshot, tmp, indent=2)
-            tmpname = tmp.name
-        os.replace(tmpname, _ENERGY_FILE)   # atomic on POSIX — safe across processes
+        with open(_ENERGY_FILE, "w") as f:
+            json.dump(_energy_data, f, indent=2)
+    except (IsADirectoryError, PermissionError) as exc:
+        # Common when the volume mount created a directory at this path.
+        # We only log the first time.
+        print(f"[homelab_core] energy file not writable: {exc}", flush=True)
     except Exception:
         pass
 
@@ -358,35 +536,35 @@ def _accumulate(by_minute: list, minute_ts: int) -> None:
     if not by_minute or not minute_ts:
         return
     today_str = _dt.date.today().isoformat()
-    with _energy_lock:
-        last_ts = _energy_data["_last_minute_ts"]
+    last_ts = _energy_data["_last_minute_ts"]
 
-        # How many fresh minutes does this payload contain?
-        if last_ts:
-            new_mins = min(len(by_minute), round((minute_ts - last_ts) / 60))
-        else:
-            new_mins = len(by_minute)   # first ever poll — use all 3
-        if new_mins <= 0:
-            return
+    # How many fresh minutes does this payload contain?
+    if last_ts:
+        new_mins = min(len(by_minute), round((minute_ts - last_ts) / 60))
+    else:
+        new_mins = len(by_minute)   # first ever poll — use all 3
+    if new_mins <= 0:
+        return
 
-        # Midnight rollover
-        if _energy_data["today"] != today_str:
-            if _energy_data["today"]:   # not the very first run
-                _energy_data["yesterday"]    = _energy_data["today"]
-                _energy_data["yesterday_wh"] = _energy_data["today_wh"]
-            _energy_data["today"]    = today_str
-            _energy_data["today_wh"] = 0.0
+    # Midnight rollover
+    if _energy_data["today"] != today_str:
+        if _energy_data["today"]:   # not the very first run
+            _energy_data["yesterday"]    = _energy_data["today"]
+            _energy_data["yesterday_wh"] = _energy_data["today_wh"]
+        _energy_data["today"]    = today_str
+        _energy_data["today_wh"] = 0.0
 
-        # by_minute[0] = most recent complete minute, [1] = one before, etc.
-        added_wh = sum(by_minute[:new_mins]) / 1000.0   # mWh → Wh
-        _energy_data["today_wh"]        = round(_energy_data["today_wh"] + added_wh, 3)
-        _energy_data["_last_minute_ts"] = minute_ts
+    # by_minute[0] = most recent complete minute, [1] = one before, etc.
+    added_wh = sum(by_minute[:new_mins]) / 1000.0   # mWh → Wh
+    _energy_data["today_wh"]        = round(_energy_data["today_wh"] + added_wh, 3)
+    _energy_data["_last_minute_ts"] = minute_ts
 
 
 def _energy_tracker_loop() -> None:
     """Background loop: poll every 180 s purely for energy accumulation."""
     if not SHELLY_PLUG_URL:
         return
+    _check_energy_file()
     _load_energy()
     while True:
         time.sleep(180)
@@ -421,10 +599,9 @@ def get_shelly_stats() -> dict:
         )
         if r.ok:
             d = r.json()
-            with _energy_lock:
-                today_kwh     = round(_energy_data["today_wh"]     / 1000, 4)
-                yesterday_kwh = round(_energy_data["yesterday_wh"] / 1000, 4)
-                yesterday_str = _energy_data["yesterday"]
+            today_kwh     = round(_energy_data["today_wh"]     / 1000, 4)
+            yesterday_kwh = round(_energy_data["yesterday_wh"] / 1000, 4)
+            yesterday_str = _energy_data["yesterday"]
             return {
                 "output":         d.get("output", False),
                 "apower":         round(d.get("apower",  0.0), 1),
@@ -609,9 +786,11 @@ def wol_send(mac_str):
 # ── Startup helper ────────────────────────────────────────────────────────────
 
 def prime_counters() -> None:
-    """Call once at startup to initialise rolling counters."""
+    """Call once at startup to initialise rolling counters and probe static info."""
     psutil.cpu_percent(interval=0.1)
     net_speed()
+    # Probe the system once so the first request doesn't pay the cost
+    get_system_info()
 
 
 # ── GPU stats (AMD via sysfs) ─────────────────────────────────────────────────
@@ -619,73 +798,76 @@ def prime_counters() -> None:
 def get_gpu_stats() -> dict | None:
     """Return AMD GPU stats read from sysfs, or None if not available.
 
-    Looks for an amdgpu hwmon device and the matching drm card whose
-    vendor file starts with 0x1002 (AMD).  Reports:
-      - temp (junction if available, else edge)  °C
-      - fan_rpm / fan_pct                          (from fan1_input / pwm1)
+    All sysfs discovery is cached in :class:`SystemInfo`; this function only
+    reads the live counter files.  Reports:
+      - temp    (junction if available, else edge)  °C
+      - fan_rpm / fan_pct (from fan1_input / pwm1)
       - power_w (power1_average, µW → W)
-      - usage    (gpu_busy_percent, 0–100)
+      - usage   (gpu_busy_percent, 0–100)
     """
-    import glob
-
-    # 1) find the amdgpu hwmon
-    hwmon_path: str | None = None
-    for candidate in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
-        try:
-            name = open(f"{candidate}/name").read().strip()
-            if name == "amdgpu":
-                hwmon_path = candidate
-                break
-        except Exception:
-            continue
-    if hwmon_path is None:
+    paths = get_system_info().amd_gpu
+    if paths is None:
         return None
 
-    # 2) find the matching drm card (AMD vendor 0x1002, NOT the boot display)
-    gpu_card: str | None = None
-    for card in sorted(glob.glob("/sys/class/drm/card[0-9]")):
-        try:
-            vendor = open(f"{card}/device/vendor").read().strip()
-            # ignore APUs / iGPUs — also confirm the amdgpu driver is bound
-            boot_vga = open(f"{card}/device/boot_vga").read().strip() == "1"
-            if vendor == "0x1002" and not boot_vga:
-                gpu_card = card
-                break
-            elif vendor == "0x1002" and gpu_card is None:
-                gpu_card = card
-        except Exception:
-            continue
-
-    def _read(path: str) -> str | None:
+    def _read(path: str | None) -> str | None:
+        if path is None:
+            return None
         try:
             return open(path).read().strip()
         except Exception:
             return None
 
-    # Junction (temp2) is the true GPU die temperature; temp1 is the edge sensor.
-    temp_raw  = _read(f"{hwmon_path}/temp2_input") or _read(f"{hwmon_path}/temp1_input")
-    fan_raw   = _read(f"{hwmon_path}/fan1_input")
-    pwm_raw   = _read(f"{hwmon_path}/pwm1")
-    power_raw = _read(f"{hwmon_path}/power1_average")
-    usage_raw = _read(f"{gpu_card}/device/gpu_busy_percent") if gpu_card else None
+    temp_raw  = _read(paths.temp_junction) or _read(paths.temp_edge)
+    fan_raw   = _read(paths.fan_rpm)
+    pwm_raw   = _read(paths.fan_pwm)
+    power_raw = _read(paths.power)
+    usage_raw = _read(paths.usage)
 
-    temp    = round(int(temp_raw) / 1000, 1) if temp_raw else None
-    fan_rpm = int(fan_raw) if fan_raw else None
-    # PWM duty cycle → fan speed %
-    fan_pct = round(int(pwm_raw) / 255.0 * 100, 1) if pwm_raw is not None else None
-    # power1_average is reported in microWatts → divide by 1,000,000 for Watts
-    power_w = round(int(power_raw) / 1_000_000, 1) if power_raw else None
-    usage   = int(usage_raw) if usage_raw else None
+    # VRAM (bytes → GB)
+    vram_total_b = _read(paths.vram_total)
+    vram_used_b  = _read(paths.vram_used)
+    vram_pct     = None
+    if vram_total_b and vram_used_b:
+        try:
+            vram_pct = round(int(vram_used_b) / int(vram_total_b) * 100, 1)
+        except (ValueError, ZeroDivisionError):
+            pass
 
-    if all(v is None for v in (temp, fan_rpm, fan_pct, power_w, usage)):
+    temp       = round(int(temp_raw) / 1000, 1) if temp_raw else None
+    fan_rpm    = int(fan_raw) if fan_raw else None
+    fan_pct    = round(int(pwm_raw) / 255.0 * 100, 1) if pwm_raw is not None else None
+    power_w    = round(int(power_raw) / 1_000_000, 1) if power_raw else None
+
+    # EMA smoothing for GPU usage (alpha=0.3, window=12 samples ≈ 24s @ 2s poll)
+    smoothed_usage: float | int | None = None
+    if usage_raw is not None:
+        try:
+            new_val = int(usage_raw)
+        except ValueError:
+            pass
+        else:
+            _window = getattr(get_system_info(), '_gpu_usage_window', None)
+            if _window is None:
+                # Lazy-init the smoothing window on first use
+                _window = list[int]()
+                object.__setattr__(get_system_info(), '_gpu_usage_window', _window)
+            _window.append(new_val)
+            if len(_window) > 12:
+                del _window[0]
+            smoothed_usage = sum(_window) / len(_window)
+
+    if all(v is None for v in (temp, fan_rpm, fan_pct, power_w)):
         return None
 
     return {
-        "temp":    temp,
-        "fan_rpm": fan_rpm,
-        "fan_pct": fan_pct,
-        "power_w": power_w,
-        "usage":   usage,
+        "temp":         temp,
+        "fan_rpm":      fan_rpm,
+        "fan_pct":      fan_pct,
+        "power_w":      power_w,
+        "usage":        smoothed_usage if smoothed_usage is not None else usage_raw,
+        "vram_used_gb": round(int(vram_used_b) / 1024**3, 1) if vram_used_b else None,
+        "vram_total_gb": round(int(vram_total_b) / 1024**3, 1) if vram_total_b else None,
+        "vram_pct":     vram_pct,
     }
 
 
