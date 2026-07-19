@@ -546,6 +546,9 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 
 <script>
 
+// ── helpers ───────────────────────────────────────────────────────────────────
+const round = (n, d=1) => Number(n.toFixed(d));
+
 // ── feature flags ─────────────────────────────────────────────────────────────
 let _features = { wol:false, shelly:false, shelly2:false, adguard:false, ollama:false };
 
@@ -916,13 +919,19 @@ function renderGpu(gpu) {
   lbl.style.display = 'flex'; sec.style.display = 'block';
 
   const items = [];
-  if (gpu.usage   !== null) items.push({ label:'GPU USE', val: gpu.usage+'%',  pct: gpu.usage, sub: 'processing' });
+  if (gpu.usage   !== null) items.push({ label:'GPU USE', val: round(gpu.usage,1)+'%',  pct: gpu.usage, sub: 'processing' });
   if (gpu.temp    !== null) {
     const tCls = gpu.temp >= 90 ? 'alert' : gpu.temp >= 75 ? 'warn' : '';
     items.push({ label:'TEMP', val: gpu.temp+'°C', pct: null, cls: tCls, sub: '' });
   }
   if (gpu.fan_pct !== null) items.push({ label:'FAN', isFan: true, fan_pct: gpu.fan_pct, fan_rpm: gpu.fan_rpm });
   if (gpu.power_w !== null) items.push({ label:'POWER', val: gpu.power_w+'W', pct: null, sub: '' });
+
+  // VRAM card (only shown when vram data is available)
+  if (gpu.vram_used_gb != null && gpu.vram_total_gb != null) {
+    const vPct = gpu.vram_pct ?? round(gpu.vram_used_gb / gpu.vram_total_gb * 100, 1);
+    items.push({ label:'VRAM', val: gpu.vram_used_gb+'GB', pct: vPct, sub: gpu.vram_total_gb+'GB total' });
+  }
 
   grid.innerHTML = items.map(it => {
     if (it.isFan) return `<div class="stat-card">

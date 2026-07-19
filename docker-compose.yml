@@ -8,11 +8,11 @@ services:
     privileged: false
     environment:
       - TZ=Europe/Vienna
-      - HOMELAB_ENERGY_FILE=/root/.homelab_energy.json
+      - HOMELAB_ENERGY_FILE=/data/energy.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro # CLI fallback
       - /mnt/nas:/mnt/nas:ro # NFS mounts visible
-      - ${HOME}/.homelab_energy.json:/root/.homelab_energy.json # energy tracking
+      - ${HOME}/.homelab-ctrl:/data # energy tracking dir (file: energy.json)
       - /home/johannes/.ssh/:/home/johannes/.ssh/:ro # use host's SSH keys for WOL and SSH actions
       - /sys/class/drm:/sys/class/drm:ro             # AMD GPU utilisation (gpu_busy_percent)
       - /sys/class/hwmon:/sys/class/hwmon:ro          # AMD GPU hwmon (temp, fan, power)
