@@ -57,8 +57,9 @@ class _GpuPaths:
     card_path:     str | None
     temp_junction: str | None = None   # temp2_input (preferred)
     temp_edge:     str | None = None   # temp1_input (fallback)
-    fan_rpm:       str | None = None   # fan1_input
-    fan_pwm:       str | None = None   # pwm1
+    fan_rpm:       str | None = None   # fan1_input (sysfs path)
+    fan_max:       int | None = None   # fan1_max value (resolved once, stored as int)
+    fan_pwm:       str | None = None   # pwm1 (sysfs path)
     power:         str | None = None   # power1_average (µW)
     usage:         str | None = None   # gpu_busy_percent
     vram_total:    str | None = None   # mem_info_vram_total (bytes)
@@ -170,12 +171,22 @@ class SystemInfo:
         def _exists(p: str) -> str | None:
             return p if os.path.exists(p) else None
 
+        # Read fan1_max once — it's a static value, no need to re-read every poll.
+        fan1_max_val: int | None = None
+        for cand in (f"{hwmon_path}/fan1_max", f"{card_path}/device/hwmon/fan1_max"):
+            try:
+                fan1_max_val = int(open(cand).read().strip())
+                break
+            except Exception:
+                continue
+
         paths = _GpuPaths(
             hwmon_path    = hwmon_path,
             card_path     = card_path,
             temp_junction = _exists(f"{hwmon_path}/temp2_input"),
             temp_edge     = _exists(f"{hwmon_path}/temp1_input"),
             fan_rpm       = _exists(f"{hwmon_path}/fan1_input"),
+            fan_max       = fan1_max_val,
             fan_pwm       = _exists(f"{hwmon_path}/pwm1"),
             power         = _exists(f"{hwmon_path}/power1_average"),
             usage         = _exists(f"{card_path}/device/gpu_busy_percent") if card_path else None,
@@ -835,7 +846,18 @@ def get_gpu_stats() -> dict | None:
 
     temp       = round(int(temp_raw) / 1000, 1) if temp_raw else None
     fan_rpm    = int(fan_raw) if fan_raw else None
-    fan_pct    = round(int(pwm_raw) / 255.0 * 100, 1) if pwm_raw is not None else None
+    
+    # Calculate fan percentage using actual RPM when available (more accurate than PWM duty cycle)
+    if paths.fan_max and fan_raw:
+        try:
+            fan_pct = round(int(fan_raw) / paths.fan_max * 100, 1)
+        except ValueError:
+            fan_pct = None
+    elif pwm_raw is not None:
+        fan_pct = round(int(pwm_raw) / 255.0 * 100, 1)
+    else:
+        fan_pct = None
+        
     power_w    = round(int(power_raw) / 1_000_000, 1) if power_raw else None
 
     # EMA smoothing for GPU usage (alpha=0.3, window=12 samples ≈ 24s @ 2s poll)
