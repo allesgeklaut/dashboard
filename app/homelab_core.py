@@ -17,12 +17,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 PORTAINER_URL     = os.getenv("PORTAINER_URL", "https://192.168.0.46:9443")
 PORTAINER_API_KEY = os.getenv("PORTAINER_API_KEY", "")
 PORTAINER_ENVS: list[int] | None = None  # None = auto-discover; or e.g. [1, 2]
-ADGUARD_URL  = os.getenv("ADGUARD_URL", "http://192.168.0.2")
+ADGUARD_URL  = os.getenv("ADGUARD_URL")          # None if not set → feature disabled
 ADGUARD_USER = os.getenv("ADGUARD_USER", "")
 ADGUARD_PASS = os.getenv("ADGUARD_PASS", "")
 NFS_MOUNTS    = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",") if m.strip()]
-SHELLY_PLUG_URL = os.getenv("SHELLY_PLUG_URL", "http://192.168.0.61")
-SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL", "http://192.168.0.62")
+SHELLY_PLUG_URL   = os.getenv("SHELLY_PLUG_URL")    # None if not set → feature disabled
+SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → feature disabled
+OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
 
 # ── Wake‑on‑LAN Config ───────────────────────────────────────────────────────
 WOL_TARGET_MAC    = os.getenv("WOL_TARGET_MAC", "").lower()  # MAC address of target machine (e.g., "aa:bb:cc:dd:ee:ff")
@@ -90,6 +91,17 @@ def get_env_names() -> dict[int, str]:
 # ── Container listing ─────────────────────────────────────────────────────────
 
 def _parse_container(c: dict, host: str, eid: int) -> dict:
+    seen_ports: set[str] = set()
+    ports: list[str] = []
+    for p in c.get("Ports", []):
+        pub  = p.get("PublicPort")
+        priv = p.get("PrivatePort")
+        proto = p.get("Type", "tcp")
+        if pub:
+            entry = f"{pub}\u2192{priv}/{proto}"
+            if entry not in seen_ports:
+                seen_ports.add(entry)
+                ports.append(entry)
     return {
         "id":     c["Id"][:12],
         "name":   c["Names"][0].lstrip("/"),
@@ -98,6 +110,7 @@ def _parse_container(c: dict, host: str, eid: int) -> dict:
         "image":  c["Image"].split("/")[-1].split(":")[0],
         "host":   host,
         "eid":    eid,
+        "ports":  ports,
     }
 
 def portainer_containers() -> list[dict]:
@@ -273,6 +286,8 @@ def get_storage() -> list[dict]:
 
 def get_adguard_stats() -> dict:
     """Return AdGuard Home query stats, or {'error': ...} on failure."""
+    if not ADGUARD_URL:
+        return {"error": "not configured"}
     try:
         r = requests.get(
             f"{ADGUARD_URL}/control/stats",
@@ -370,6 +385,8 @@ def _accumulate(by_minute: list, minute_ts: int) -> None:
 
 def _energy_tracker_loop() -> None:
     """Background loop: poll every 180 s purely for energy accumulation."""
+    if not SHELLY_PLUG_URL:
+        return
     _load_energy()
     while True:
         time.sleep(180)
@@ -395,6 +412,8 @@ def start_energy_tracker() -> None:
 
 def get_shelly_stats() -> dict:
     """Fetch live Shelly stats and merge in today/yesterday kWh from memory."""
+    if not SHELLY_PLUG_URL:
+        return {"error": "not configured"}
     try:
         r = requests.get(
             f"{SHELLY_PLUG_URL}/rpc/Switch.GetStatus?id=0",
@@ -444,6 +463,8 @@ def shelly_power_cycle(shelly_url: str, delay_s: int = 10) -> tuple[bool, str]:
 
 def get_shelly2_state() -> dict:
     """Return {output: bool} for the second Shelly plug, or {error: ...}."""
+    if not SHELLY_PLUG_2_URL:
+        return {"error": "not configured"}
     try:
         r = requests.get(
             f"{SHELLY_PLUG_2_URL}/rpc/Switch.GetStatus?id=0",
@@ -591,3 +612,112 @@ def prime_counters() -> None:
     """Call once at startup to initialise rolling counters."""
     psutil.cpu_percent(interval=0.1)
     net_speed()
+
+
+# ── GPU stats (AMD via sysfs) ─────────────────────────────────────────────────
+
+def get_gpu_stats() -> dict | None:
+    """Return AMD GPU stats read from sysfs, or None if not available.
+
+    Looks for an amdgpu hwmon device and the matching drm card whose
+    vendor file starts with 0x1002 (AMD).  Reports:
+      - temp (junction if available, else edge)  °C
+      - fan_rpm / fan_pct                          (from fan1_input / pwm1)
+      - power_w (power1_average, µW → W)
+      - usage    (gpu_busy_percent, 0–100)
+    """
+    import glob
+
+    # 1) find the amdgpu hwmon
+    hwmon_path: str | None = None
+    for candidate in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        try:
+            name = open(f"{candidate}/name").read().strip()
+            if name == "amdgpu":
+                hwmon_path = candidate
+                break
+        except Exception:
+            continue
+    if hwmon_path is None:
+        return None
+
+    # 2) find the matching drm card (AMD vendor 0x1002, NOT the boot display)
+    gpu_card: str | None = None
+    for card in sorted(glob.glob("/sys/class/drm/card[0-9]")):
+        try:
+            vendor = open(f"{card}/device/vendor").read().strip()
+            # ignore APUs / iGPUs — also confirm the amdgpu driver is bound
+            boot_vga = open(f"{card}/device/boot_vga").read().strip() == "1"
+            if vendor == "0x1002" and not boot_vga:
+                gpu_card = card
+                break
+            elif vendor == "0x1002" and gpu_card is None:
+                gpu_card = card
+        except Exception:
+            continue
+
+    def _read(path: str) -> str | None:
+        try:
+            return open(path).read().strip()
+        except Exception:
+            return None
+
+    # Junction (temp2) is the true GPU die temperature; temp1 is the edge sensor.
+    temp_raw  = _read(f"{hwmon_path}/temp2_input") or _read(f"{hwmon_path}/temp1_input")
+    fan_raw   = _read(f"{hwmon_path}/fan1_input")
+    pwm_raw   = _read(f"{hwmon_path}/pwm1")
+    power_raw = _read(f"{hwmon_path}/power1_average")
+    usage_raw = _read(f"{gpu_card}/device/gpu_busy_percent") if gpu_card else None
+
+    temp    = round(int(temp_raw) / 1000, 1) if temp_raw else None
+    fan_rpm = int(fan_raw) if fan_raw else None
+    # PWM duty cycle → fan speed %
+    fan_pct = round(int(pwm_raw) / 255.0 * 100, 1) if pwm_raw is not None else None
+    # power1_average is reported in microWatts → divide by 1,000,000 for Watts
+    power_w = round(int(power_raw) / 1_000_000, 1) if power_raw else None
+    usage   = int(usage_raw) if usage_raw else None
+
+    if all(v is None for v in (temp, fan_rpm, fan_pct, power_w, usage)):
+        return None
+
+    return {
+        "temp":    temp,
+        "fan_rpm": fan_rpm,
+        "fan_pct": fan_pct,
+        "power_w": power_w,
+        "usage":   usage,
+    }
+
+
+# ── Ollama ─────────────────────────────────────────────────────────────────────
+
+def get_ollama_model() -> list[dict]:
+    """Return currently-loaded Ollama models, or [] if unavailable/unconfigured."""
+    if not OLLAMA_URL:
+        return []
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/ps", timeout=3)
+        if r.ok:
+            return [
+                {
+                    "name":    m.get("name", ""),
+                    "size_gb": round(m.get("size", 0) / 1e9, 1),
+                }
+                for m in r.json().get("models", [])
+            ]
+    except Exception:
+        pass
+    return []
+
+
+# ── Feature flags ──────────────────────────────────────────────────────────────
+
+def get_features() -> dict:
+    """Return which optional integrations are configured via .env."""
+    return {
+        "wol":     bool(WOL_TARGET_MAC),
+        "shelly":  bool(SHELLY_PLUG_URL),
+        "shelly2": bool(SHELLY_PLUG_2_URL),
+        "adguard": bool(ADGUARD_URL),
+        "ollama":  bool(OLLAMA_URL),
+    }

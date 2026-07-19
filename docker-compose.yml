@@ -14,4 +14,6 @@ services:
       - /mnt/nas:/mnt/nas:ro # NFS mounts visible
       - ${HOME}/.homelab_energy.json:/root/.homelab_energy.json # energy tracking
       - /home/johannes/.ssh/:/home/johannes/.ssh/:ro # use host's SSH keys for WOL and SSH actions
+      - /sys/class/drm:/sys/class/drm:ro             # AMD GPU utilisation (gpu_busy_percent)
+      - /sys/class/hwmon:/sys/class/hwmon:ro          # AMD GPU hwmon (temp, fan, power)
     env_file: .env
