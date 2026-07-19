@@ -15,7 +15,19 @@ app = FastAPI(title="HOMELAB//CTRL")
 
 @app.get("/api/stats")
 def api_stats():
-    return core.get_system_stats()
+    stats = core.get_system_stats()
+    stats["gpu"] = core.get_gpu_stats()
+    return stats
+
+
+@app.get("/api/features")
+def api_features():
+    return core.get_features()
+
+
+@app.get("/api/ollama")
+def api_ollama():
+    return core.get_ollama_model()
 
 @app.get("/api/storage")
 def api_storage():

@@ -355,6 +355,52 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   line-height:1.2;
 }
 
+/* ── TABS ── */
+.tab-bar {
+  display:flex; gap:0; margin-bottom:12px;
+  border-bottom:1px solid var(--border);
+}
+.tab-btn {
+  font-family:var(--font); font-size:11px; font-weight:700;
+  letter-spacing:0.12em; text-transform:uppercase;
+  padding:8px 18px; background:transparent; color:var(--g-dim);
+  border:none; border-bottom:2px solid transparent;
+  margin-bottom:-1px; cursor:pointer;
+  transition:color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover { color:var(--g); }
+.tab-btn.active { color:var(--g-bright); border-bottom-color:var(--g); }
+
+/* ── FAN ANIMATION ── */
+@keyframes fan-spin { to { transform:rotate(360deg); } }
+.fan-icon {
+  display:inline-block; line-height:1; vertical-align:middle;
+  animation:fan-spin linear infinite;
+  animation-play-state:paused;
+}
+
+/* ── OLLAMA SECTION ── */
+.ollama-list { display:flex; flex-direction:column; gap:5px; }
+.ollama-card {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 12px;
+  display:flex; align-items:center; gap:10px;
+}
+.ollama-dot {
+  width:6px; height:6px; border-radius:50%; flex-shrink:0;
+  background:var(--g); box-shadow:0 0 6px var(--g);
+}
+.ollama-name { font-size:13px; color:var(--g); flex:1; }
+.ollama-size { font-size:10px; color:var(--g-dim); }
+.ollama-empty {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:10px 12px;
+  color:var(--g-dim); font-size:11px;
+}
+
+/* ── CONTAINER PORTS ── */
+.ctr-ports { font-size:10px; color:var(--blue); margin-top:2px; opacity:0.85; }
+
 </style>
 </head>
 <body>
@@ -370,103 +416,126 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 </header>
 
 <main>
-  <!-- Stats -->
-  <div class="sec-label">system</div>
-  <div class="stat-grid" id="stat-grid">
-    <!-- filled by JS -->
+  <!-- Tab bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="server"     onclick="switchTab('server',this)">SERVER</button>
+    <button class="tab-btn"        data-tab="containers" onclick="switchTab('containers',this)">CONTAINERS</button>
   </div>
 
-  <!-- Network -->
-  <div class="sec-label">network</div>
-  <div class="net-row">
-    <div class="net-item">
-      <span class="net-label">TX<span class="net-arrow"> ▲</span></span>
-      <span class="net-val" id="net-tx">—</span>
-    </div>
-    <div class="net-item">
-      <span class="net-label">RX<span class="net-arrow"> ▼</span></span>
-      <span class="net-val" id="net-rx">—</span>
-    </div>
-  </div>
+  <!-- ═══════════ SERVER TAB ═══════════ -->
+  <div id="tab-server" class="tab-pane">
 
-  <!-- AdGuard -->
-  <div class="sec-label" id="ag-label" style="display:none">adguard</div>
-  <div class="ag-row" id="ag-row" style="display:none"></div>
+    <!-- System -->
+    <div class="sec-label">system</div>
+    <div class="stat-grid" id="stat-grid"><!-- filled by JS --></div>
 
-
-  <!-- Shelly Plug -->
-  <div class="sec-label" id="shelly-label" style="display:none">shelly plug</div>
-  <div class="shelly-row" id="shelly-row" style="display:none"></div>
-  <button class="btn-cycle" id="btn-cycle" style="display:none" onclick="shellyCycle()">⟳ POWER CYCLE</button>
-  <button class="btn-cycle2" id="btn-cycle-2" style="display:none" onclick="shellyCycle2()">⏻ ROUTER CYCLE</button>
-
-  <!-- Storage -->
-  <div class="sec-label">storage</div>
-  <div class="stor-list" id="stor-list"></div>
-
-  
-  <!-- Processes -->
-  <div class="sec-label">top processes</div>
-  <div class="proc-table-wrap">
-    <table class="proc-table" id="proc-table">
-      <thead>
-        <tr>
-          <th class="col-pid">PID</th>
-          <th class="col-name">NAME</th>
-          <th class="col-cpu">CPU%</th>
-          <th class="col-mem">MEM%</th>
-        </tr>
-      </thead>
-      <tbody id="proc-tbody">
-        <tr><td colspan="4" class="empty">loading…</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Wake-on-LAN -->
-  <div class="sec-label" style="margin-top:16px; display:flex; align-items:center;">
-    <span>wake on LAN</span>
-  </div>
-  <div class="wol-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:3px; padding:8px 10px;">
-      <div class="ag-item">
-        <span class="ag-label">TARGET MAC</span>
-        <span id="wol-mac" style="color:var(--g-dim)">— not configured —</span>
+    <!-- Network -->
+    <div class="sec-label">network</div>
+    <div class="net-row">
+      <div class="net-item">
+        <span class="net-label">TX<span class="net-arrow"> ▲</span></span>
+        <span class="net-val" id="net-tx">—</span>
       </div>
-      <div class="ag-item">
-        <span class="ag-label">BROADCAST IP</span>
-        <span id="wol-broadcast-ip" style="color:var(--g)"></span>
-      </div>
-      <div class="ag-item">
-        <span class="ag-label">TARGET IP</span>
-        <span id="wol-target-ip" style="color:var(--g-dim)">—</span>
-      </div>
-      <div class="ag-item">
-        <span class="ag-label">PORT</span>
-        <span id="wol-port" style="color:var(--g-dim)">—</span>
+      <div class="net-item">
+        <span class="net-label">RX<span class="net-arrow"> ▼</span></span>
+        <span class="net-val" id="net-rx">—</span>
       </div>
     </div>
-    <!-- Status message and power off button -->
-    <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
-      <!-- Place the wake button next to the power‑off button for a unified look -->
-      <button class="btn-cycle2" id="btn-wol-toggle" onclick="toggleWOL()" disabled title="Click to wake target machine">⚡ WAKE TARGET</button>
-      <button class="btn-cycle2" id="btn-shutdown" onclick="powerOff()" disabled>POWER OFF</button>
-    </div>
-  </div>
 
-  <!-- Containers -->
-  <div class="sec-label" style="margin-top:16px">
-    containers <span id="ctr-count" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
-  </div>
-  <div class="ctr-filter">
-    <button class="filter-btn active" data-filter="all"  onclick="setFilter('all',this)">ALL</button>
-    <button class="filter-btn"        data-filter="running" onclick="setFilter('running',this)">RUNNING</button>
-    <button class="filter-btn"        data-filter="exited"  onclick="setFilter('exited',this)">STOPPED</button>
-  </div>
-  <div class="ctr-list" id="ctr-list"></div>
+    <!-- GPU (hidden until stats confirm GPU present) -->
+    <div class="sec-label" id="gpu-label" style="display:none">gpu</div>
+    <div id="gpu-section" style="display:none">
+      <div class="stat-grid" id="gpu-grid"></div>
+    </div>
+
+    <!-- Ollama (shown only when OLLAMA feature is enabled) -->
+    <div class="sec-label" id="ollama-label" style="display:none">ollama</div>
+    <div id="ollama-section" style="display:none">
+      <div class="ollama-list" id="ollama-list"></div>
+    </div>
+
+    <!-- AdGuard -->
+    <div class="sec-label" id="ag-label" style="display:none">adguard</div>
+    <div class="ag-row" id="ag-row" style="display:none"></div>
+
+    <!-- Shelly Plug 1 -->
+    <div class="sec-label" id="shelly-label" style="display:none">shelly plug</div>
+    <div class="shelly-row" id="shelly-row" style="display:none"></div>
+    <button class="btn-cycle" id="btn-cycle" style="display:none" onclick="shellyCycle()">⟳ POWER CYCLE</button>
+
+    <!-- Shelly Plug 2 (Router) -->
+    <div class="sec-label" id="shelly2-label" style="display:none">router</div>
+    <div class="shelly-row" id="shelly2-row" style="display:none"></div>
+    <button class="btn-cycle2" id="btn-cycle-2" style="display:none" onclick="shellyCycle2()">⏻ ROUTER CYCLE</button>
+
+    <!-- Storage -->
+    <div class="sec-label">storage</div>
+    <div class="stor-list" id="stor-list"></div>
+
+    <!-- Processes -->
+    <div class="sec-label">top processes</div>
+    <div class="proc-table-wrap">
+      <table class="proc-table" id="proc-table">
+        <thead>
+          <tr>
+            <th class="col-pid">PID</th>
+            <th class="col-name">NAME</th>
+            <th class="col-cpu">CPU%</th>
+            <th class="col-mem">MEM%</th>
+          </tr>
+        </thead>
+        <tbody id="proc-tbody">
+          <tr><td colspan="4" class="empty">loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Wake-on-LAN (shown only when WOL feature is enabled) -->
+    <div class="sec-label" id="wol-label" style="display:none">wake on LAN</div>
+    <div id="wol-section" style="display:none">
+      <div class="wol-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:3px; padding:8px 10px;">
+        <div class="ag-item">
+          <span class="ag-label">TARGET MAC</span>
+          <span id="wol-mac" style="color:var(--g-dim)">—</span>
+        </div>
+        <div class="ag-item">
+          <span class="ag-label">BROADCAST IP</span>
+          <span id="wol-broadcast-ip" style="color:var(--g)"></span>
+        </div>
+        <div class="ag-item">
+          <span class="ag-label">TARGET IP</span>
+          <span id="wol-target-ip" style="color:var(--g-dim)">—</span>
+        </div>
+        <div class="ag-item">
+          <span class="ag-label">PORT</span>
+          <span id="wol-port" style="color:var(--g-dim)">—</span>
+        </div>
+      </div>
+      <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
+        <button class="btn-cycle2" id="btn-wol-toggle" onclick="toggleWOL()" disabled>⚡ WAKE TARGET</button>
+        <button class="btn-cycle2" id="btn-shutdown"   onclick="powerOff()"  disabled>POWER OFF</button>
+      </div>
+    </div>
+
+  </div><!-- /#tab-server -->
+
+  <!-- ═══════════ CONTAINERS TAB ═══════════ -->
+  <div id="tab-containers" class="tab-pane" style="display:none">
+    <div class="sec-label">
+      containers <span id="ctr-count" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
+    </div>
+    <div class="ctr-filter">
+      <button class="filter-btn active" data-filter="all"     onclick="setFilter('all',this)">ALL</button>
+      <button class="filter-btn"        data-filter="running" onclick="setFilter('running',this)">RUNNING</button>
+      <button class="filter-btn"        data-filter="exited"  onclick="setFilter('exited',this)">STOPPED</button>
+    </div>
+    <div class="ctr-list" id="ctr-list"></div>
+  </div><!-- /#tab-containers -->
+
 </main>
 
-<!-- Bottom action bar -->
-<div class="action-bar">
+<!-- Bottom action bar (containers tab only) -->
+<div class="action-bar" id="action-bar" style="display:none">
   <div class="sel-label" id="sel-label">tap a container to select</div>
   <button class="act-btn start"   id="btn-start"   disabled onclick="doAction('start')">▶ Start</button>
   <button class="act-btn stop"    id="btn-stop"    disabled onclick="doAction('stop')">■ Stop</button>
@@ -477,8 +546,58 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 
 <script>
 
-// ── shelly plug 2 ──────────────────────────────────────────────────────────────
+// ── feature flags ─────────────────────────────────────────────────────────────
+let _features = { wol:false, shelly:false, shelly2:false, adguard:false, ollama:false };
+
+async function fetchFeatures() {
+  try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
+  // WOL
+  if (_features.wol) {
+    document.getElementById('wol-label').style.display   = 'flex';
+    document.getElementById('wol-section').style.display = 'block';
+    initWoL();
+  }
+  // Ollama
+  if (_features.ollama) {
+    document.getElementById('ollama-label').style.display   = 'flex';
+    document.getElementById('ollama-section').style.display = 'block';
+    fetchOllama();
+    setInterval(fetchOllama, 10000);
+  }
+  // Feature-gated polls
+  if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
+  if (_features.shelly)  { fetchShelly();  setInterval(fetchShelly,   5000); }
+  if (_features.shelly2) { fetchShelly2(); setInterval(fetchShelly2,  5000); }
+}
+
+// ── tab switching ─────────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).style.display = 'block';
+  btn.classList.add('active');
+  const bar = document.getElementById('action-bar');
+  const onContainers = name === 'containers';
+  bar.style.display = onContainers ? 'flex' : 'none';
+  document.body.style.paddingBottom = onContainers
+    ? 'calc(var(--bar-h) + env(safe-area-inset-bottom))' : '12px';
+  try { localStorage.setItem('activeTab', name); } catch(e) {}
+}
+
+// Restore saved tab on load
+(function() {
+  try {
+    const saved = localStorage.getItem('activeTab');
+    if (saved === 'containers') {
+      const btn = document.querySelector('.tab-btn[data-tab="containers"]');
+      if (btn) switchTab('containers', btn);
+    }
+  } catch(e) {}
+})();
+
+// ── shelly plug 2 ─────────────────────────────────────────────────────────────
 async function fetchShelly2() {
+  if (!_features.shelly2) return;
   try {
     const d = await fetch('/api/shelly2').then(r => r.json());
     const row = document.getElementById('shelly2-row');
@@ -490,8 +609,6 @@ async function fetchShelly2() {
     }
     row.style.display = 'flex'; lbl.style.display = 'flex'; btn.style.display = 'inline-block';
     btn.disabled = false;
-    btn.classList.toggle('is-on', d.output);
-    btn.textContent = d.output ? '⏻ TURN OFF' : '⏻ TURN ON';
     row.innerHTML = `
       <div class="ag-item">
         <span class="ag-label">STATE</span>
@@ -502,7 +619,7 @@ async function fetchShelly2() {
   } catch(e) { /* ignore */ }
 }
 
-// ── power cycle (router) ───────────────────────────────────────────────────────
+// ── power cycle (router) ─────────────────────────────────────────────────────
 let _cycleArmed2 = false,
     _cycleTimeout2 = null,
     _cycleRemaining2 = 8,
@@ -562,189 +679,95 @@ async function shellyCycle2() {
 }
 
 
-// ── wake-on-LAN (WoL) ───────────────────────────────────────────────────────
+// ── wake-on-LAN ───────────────────────────────────────────────────────────────
 let _wolBusy = false;
 
 async function toggleWOL() {
   const btn = document.getElementById('btn-wol-toggle');
-  
-  if (_wolBusy || !core.WOL_TARGET_MAC) {
-    return;
-  }
-  
-  // Toggle button state for confirmation (like Shelly cycle buttons)
-  _wolBusy = true;
-  btn.textContent = '⏳ WAKING…';
-  btn.disabled = true;
-  
-    let d; // response data
-    try {
-      const r = await fetch(`/api/wol/${window.targetIP}`, { method: 'POST' });
-
-      if (r.ok) {
-        d = await r.json();
-        toast(`WoL sent to ${d.msg}`);
-
-        // Update button text based on whether the target is online
-        btn.textContent = d.target_on ? 'TARGET ON' : '⚡ WAKE TARGET';
-        btn.style.animation = 'pulse-green 0.6s ease-in-out';
-        setTimeout(() => { btn.style.animation = ''; }, 1200);
-        } else {
-          const err = await r.json().catch(() => ({}));
-          toast(`error: ${err.detail || r.status}`, true);
-        }
-
-      } catch(e) {
-        toast('network error', true);
-      } finally {
-        _wolBusy = false;
-        btn.disabled = false;
-        // Reset to original text based on config state if not already updated
-        if (!d || !('target_on' in d)) {
-          if (core.WOL_TARGET_MAC && core.WOL_BROADCAST_IP) {
-            btn.textContent = '⚡ WAKE TARGET';
-          } else {
-            btn.textContent = '⚠ NOT CONFIGURED';
-          }
-        }
-      }
-}
-
-// Initialize WoL UI on page load and refresh periodically
-async function initWoL() {
+  if (_wolBusy) return;
+  _wolBusy = true; btn.textContent = '⏳ WAKING…'; btn.disabled = true;
   try {
-    const config = await fetch('/api/wol/config').then(r => r.json());
-    
-    // Update display elements with WOL configuration from backend
-    document.getElementById('wol-mac').textContent = 
-      (config.target_mac ? formatMac(config.target_mac) : '— not configured —');
-    document.getElementById('wol-broadcast-ip').textContent = config.broadcast_ip || '';
-    document.getElementById('wol-port').textContent = config.port;
-    // Store target IP globally for use in other functions
-    window.targetIP = config.target_ip;
-    // Show the target IP from config
-    document.getElementById('wol-target-ip').textContent = config.target_ip || '—';
-    
-    // Enable/disable button based on configuration state
-    const btn = document.getElementById('btn-wol-toggle');
-    if (config.target_mac && config.broadcast_ip) {
-      btn.disabled = false;
-      // Only set default label if not already showing "TARGET ON"
-      if (btn.textContent !== 'TARGET ON') {
-        btn.textContent = '⚡ WAKE TARGET';
-      }
-      core.WOL_TARGET_MAC = config.target_mac; // Sync with JS variable for toggleWOL() check
-      core.WOL_BROADCAST_IP = config.broadcast_ip;
-    } else {
-      btn.disabled = true;
-      btn.textContent = '⚠ NOT CONFIGURED';
-    }
-  } catch(e) {
-    console.error('Failed to load WoL config:', e);
-  }
-}
-
-// Utility to show a modal password prompt that masks input with '*'
-async function askPassword(message) {
-  return new Promise(resolve => {
-    const overlay = document.createElement('div');
-    overlay.style.position = 'fixed';
-    overlay.style.top = '0';
-    overlay.style.left = '0';
-    overlay.style.width = '100%';
-    overlay.style.height = '100%';
-    overlay.style.backgroundColor = 'rgba(0,0,0,0.5)';
-    overlay.style.display = 'flex';
-    overlay.style.alignItems = 'center';
-    overlay.style.justifyContent = 'center';
-
-    const box = document.createElement('div');
-    box.style.background = '#222';
-    box.style.padding = '20px';
-    box.style.borderRadius = '4px';
-    box.style.color = '#fff';
-    box.style.minWidth = '300px';
-
-    const label = document.createElement('label');
-    label.textContent = message;
-    label.style.display = 'block';
-    label.style.marginBottom = '8px';
-
-    const input = document.createElement('input');
-    input.type = 'password';
-    input.style.width = '100%';
-    input.style.padding = '6px';
-    input.style.boxSizing = 'border-box';
-
-    const btnOk = document.createElement('button');
-    btnOk.textContent = 'OK';
-    btnOk.style.marginRight = '10px';
-    const btnCancel = document.createElement('button');
-    btnCancel.textContent = 'Cancel';
-
-    box.appendChild(label);
-    box.appendChild(input);
-    box.appendChild(btnOk);
-    box.appendChild(btnCancel);
-    overlay.appendChild(box);
-    overlay.style.zIndex = 1000;
-    document.body.appendChild(overlay);
-    input.focus();
-
-    // Allow Enter to submit and Escape to cancel
-    input.addEventListener('keyup', e => {
-      if (e.key === 'Enter') btnOk.click();
-      if (e.key === 'Escape') btnCancel.click();
-    });
-
-    function cleanup() {
-      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-    }
-
-    btnOk.onclick = () => { cleanup(); resolve(input.value); };
-    btnCancel.onclick = () => { cleanup(); resolve(null); };
-  });
-}
-
-// Power off the current host via API
-async function powerOff() {
-  const btn = document.getElementById('btn-shutdown');
-  if (!window.currentHost) return;
-  const pwd = await askPassword('Enter sudo password for shutdown:');
-  if (pwd === null) return; // cancelled
-  btn.disabled = true;
-  try {
-    const r = await fetch(`/api/shutdown/${window.targetIP}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pwd })
-    });
+    const r = await fetch(`/api/wol/${window.targetIP}`, { method: 'POST' });
     if (r.ok) {
-      toast('Shutdown command sent');
+      const d = await r.json();
+      toast(`WoL sent — ${d.msg}`);
+      btn.textContent = d.target_on ? 'TARGET ON' : '⚡ WAKE TARGET';
     } else {
       const err = await r.json().catch(() => ({}));
       toast(`error: ${err.detail || r.status}`, true);
+      btn.textContent = '⚡ WAKE TARGET';
     }
-  } catch(e) {
-    toast('network error', true);
-  } finally {
-    btn.disabled = false;
-  }
+  } catch(e) { toast('network error', true); btn.textContent = '⚡ WAKE TARGET'; }
+  finally { _wolBusy = false; btn.disabled = false; }
 }
 
-// Helper: format MAC address for display (e.g., "aa:bb:cc:dd:ee:ff")
-function formatMac(macStr) {
-  return macStr.replace(/([a-fA-F0-9])([a-fA-F0-9]{2})/g, '$1:$2'); // Add colons every 2 chars from end
+async function initWoL() {
+  try {
+    const config = await fetch('/api/wol/config').then(r => r.json());
+    document.getElementById('wol-mac').textContent          = config.target_mac   || '—';
+    document.getElementById('wol-broadcast-ip').textContent = config.broadcast_ip || '';
+    document.getElementById('wol-port').textContent         = config.port;
+    document.getElementById('wol-target-ip').textContent    = config.target_ip    || '—';
+    window.targetIP = config.target_ip;
+    if (config.target_mac && config.broadcast_ip) {
+      document.getElementById('btn-wol-toggle').disabled = false;
+      core.WOL_TARGET_MAC   = config.target_mac;
+      core.WOL_BROADCAST_IP = config.broadcast_ip;
+    }
+    if (config.target_ip) document.getElementById('btn-shutdown').disabled = false;
+  } catch(e) { console.error('WoL config error:', e); }
 }
 
-// Initialize WoL UI once on page load – no periodic refresh needed
-initWoL();
+async function askPassword(message) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    Object.assign(overlay.style, {
+      position:'fixed', top:'0', left:'0', width:'100%', height:'100%',
+      backgroundColor:'rgba(0,0,0,0.7)', display:'flex',
+      alignItems:'center', justifyContent:'center', zIndex:'1000'
+    });
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+      background:'var(--bg-card)', border:'1px solid var(--border)',
+      padding:'20px', borderRadius:'4px', color:'var(--g)', minWidth:'300px'
+    });
+    const lbl = document.createElement('label');
+    lbl.textContent = message; lbl.style.cssText = 'display:block;margin-bottom:8px';
+    const inp = document.createElement('input'); inp.type = 'password';
+    Object.assign(inp.style, { width:'100%', padding:'6px', boxSizing:'border-box',
+      background:'var(--bg)', border:'1px solid var(--border)',
+      color:'var(--g)', fontFamily:'var(--font)', borderRadius:'2px' });
+    const ok  = document.createElement('button'); ok.textContent  = 'OK';     ok.style.cssText = 'margin-right:10px;margin-top:8px';
+    const can = document.createElement('button'); can.textContent = 'Cancel';
+    box.append(lbl, inp, ok, can); overlay.appendChild(box); document.body.appendChild(overlay); inp.focus();
+    inp.addEventListener('keyup', e => { if(e.key==='Enter') ok.click(); if(e.key==='Escape') can.click(); });
+    const cleanup = () => overlay.parentNode?.removeChild(overlay);
+    ok.onclick  = () => { cleanup(); resolve(inp.value); };
+    can.onclick = () => { cleanup(); resolve(null); };
+  });
+}
+
+async function powerOff() {
+  const btn = document.getElementById('btn-shutdown');
+  if (!window.targetIP) return;
+  const pwd = await askPassword('Enter sudo password for shutdown:');
+  if (pwd === null) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/shutdown/${window.targetIP}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ password: pwd })
+    });
+    if (r.ok) { toast('Shutdown command sent'); }
+    else { const err = await r.json().catch(()=>({})); toast(`error: ${err.detail || r.status}`, true); }
+  } catch(e) { toast('network error', true); }
+  finally { btn.disabled = false; }
+}
 
 
 // ── state ────────────────────────────────────────────────────────────────────
 const core = { WOL_TARGET_MAC: null, WOL_BROADCAST_IP: null };
 let selected = null, containers = [], ctrFilter = 'all', busy = false;
-let wolConfig = { mac: '', broadcastIp: '', port: 9000 }; // WOL configuration from backend
 
 // Power‑cycle button state
 let _cycleArmed = false,
@@ -842,20 +865,17 @@ setInterval(tick, 1000); tick();
 // ── fetch stats ───────────────────────────────────────────────────────────────
 async function fetchStats() {
   try {
-    const d = await fetch('/api/stats').then(r=>r.json());
+    const d = await fetch('/api/stats').then(r => r.json());
     document.getElementById('hdr-host').textContent = d.hostname;
-    // Store current host; the target IP is taken from the environment variable
-    // WOL_TARGET_IP which is exposed by the backend via /api/wol/config.
     window.currentHost = d.hostname;
-    document.getElementById('btn-shutdown').disabled = false;
-    document.getElementById('hdr-ip').textContent   = d.ip;
-    document.getElementById('hdr-up').textContent   = d.uptime;
-    document.getElementById('net-tx').textContent   = fmtBytes(d.net_tx);
-    document.getElementById('net-rx').textContent   = fmtBytes(d.net_rx);
+    document.getElementById('hdr-ip').textContent = d.ip;
+    document.getElementById('hdr-up').textContent = d.uptime;
+    document.getElementById('net-tx').textContent = fmtBytes(d.net_tx);
+    document.getElementById('net-rx').textContent = fmtBytes(d.net_rx);
 
     const items = [
-      { label:'CPU',  val: d.cpu.toFixed(1)+'%',   pct: d.cpu,      sub: '' },
-      { label:'RAM',  val: d.ram_pct.toFixed(1)+'%', pct: d.ram_pct, sub: `${d.ram_used_gb}/${d.ram_total_gb} GB` },
+      { label:'CPU',  val: d.cpu.toFixed(1)+'%',      pct: d.cpu,      sub: '' },
+      { label:'RAM',  val: d.ram_pct.toFixed(1)+'%',  pct: d.ram_pct,  sub: `${d.ram_used_gb}/${d.ram_total_gb} GB` },
       { label:'SWAP', val: d.swap_pct.toFixed(1)+'%', pct: d.swap_pct, sub: '' },
       { label:'LOAD', val: null, load: [d.load1, d.load5, d.load15], pct: null, sub: '' },
     ];
@@ -864,19 +884,16 @@ async function fetchStats() {
       items.splice(3, 0, { label:'TEMP', val: d.temp+'°C', pct:null, cls:tCls, sub:'' });
     }
 
-    const grid = document.getElementById('stat-grid');
-    grid.innerHTML = items.map(it => {
-      if (it.load) {
-        return `<div class="stat-card">
-          <div class="stat-label">${it.label}</div>
-          <div class="load-trio">
-            <span class="load-val">${it.load[0]}</span>
-            <span class="load-val">${it.load[1]}</span>
-            <span class="load-val">${it.load[2]}</span>
-          </div>
-          <div class="stat-sub">1m &nbsp; 5m &nbsp; 15m</div>
-        </div>`;
-      }
+    document.getElementById('stat-grid').innerHTML = items.map(it => {
+      if (it.load) return `<div class="stat-card">
+        <div class="stat-label">${it.label}</div>
+        <div class="load-trio">
+          <span class="load-val">${it.load[0]}</span>
+          <span class="load-val">${it.load[1]}</span>
+          <span class="load-val">${it.load[2]}</span>
+        </div>
+        <div class="stat-sub">1m &nbsp; 5m &nbsp; 15m</div>
+      </div>`;
       const cls = it.cls || (it.pct !== null ? pctClass(it.pct) : '');
       return `<div class="stat-card">
         <div class="stat-label">${it.label}</div>
@@ -885,25 +902,91 @@ async function fetchStats() {
         <div class="stat-sub">${it.sub}</div>
       </div>`;
     }).join('');
+
+    renderGpu(d.gpu);
+  } catch(e) { /* ignore */ }
+}
+
+// ── GPU rendering + fan animation ─────────────────────────────────────────────
+function renderGpu(gpu) {
+  const lbl  = document.getElementById('gpu-label');
+  const sec  = document.getElementById('gpu-section');
+  const grid = document.getElementById('gpu-grid');
+  if (!gpu) { lbl.style.display = 'none'; sec.style.display = 'none'; return; }
+  lbl.style.display = 'flex'; sec.style.display = 'block';
+
+  const items = [];
+  if (gpu.usage   !== null) items.push({ label:'GPU USE', val: gpu.usage+'%',  pct: gpu.usage, sub: 'processing' });
+  if (gpu.temp    !== null) {
+    const tCls = gpu.temp >= 90 ? 'alert' : gpu.temp >= 75 ? 'warn' : '';
+    items.push({ label:'TEMP', val: gpu.temp+'°C', pct: null, cls: tCls, sub: '' });
+  }
+  if (gpu.fan_pct !== null) items.push({ label:'FAN', isFan: true, fan_pct: gpu.fan_pct, fan_rpm: gpu.fan_rpm });
+  if (gpu.power_w !== null) items.push({ label:'POWER', val: gpu.power_w+'W', pct: null, sub: '' });
+
+  grid.innerHTML = items.map(it => {
+    if (it.isFan) return `<div class="stat-card">
+      <div class="stat-label">FAN</div>
+      <div class="stat-val" style="display:flex;align-items:center;gap:6px">
+        <svg id="fan-icon" class="fan-icon" viewBox="0 0 32 32" width="20" height="20" fill="currentColor">
+          <ellipse cx="16" cy="9" rx="4" ry="8" transform="rotate(0,16,16)"/>
+          <ellipse cx="16" cy="9" rx="4" ry="8" transform="rotate(120,16,16)"/>
+          <ellipse cx="16" cy="9" rx="4" ry="8" transform="rotate(240,16,16)"/>
+          <circle cx="16" cy="16" r="3.5" fill="var(--bg)"/>
+          <circle cx="16" cy="16" r="2" fill="currentColor"/>
+        </svg>
+        ${it.fan_pct !== null ? it.fan_pct.toFixed(0)+'%' : '—'}
+      </div>
+      <div class="stat-sub">${it.fan_rpm !== null ? it.fan_rpm+' RPM' : ''}</div>
+    </div>`;
+    const cls = it.cls || (it.pct !== null ? pctClass(it.pct) : '');
+    return `<div class="stat-card">
+      <div class="stat-label">${it.label}</div>
+      <div class="stat-val ${cls}">${it.val}</div>
+      ${it.pct !== null ? bar(it.pct) : ''}
+      <div class="stat-sub">${it.sub||''}</div>
+    </div>`;
+  }).join('');
+
+  const fanIcon = document.getElementById('fan-icon');
+  if (fanIcon && gpu.fan_pct !== null) {
+    if (gpu.fan_pct > 0) {
+      fanIcon.style.animationDuration  = Math.max(0.2, 4.5 - (gpu.fan_pct / 100) * 4.2) + 's';
+      fanIcon.style.animationPlayState = 'running';
+    } else {
+      fanIcon.style.animationPlayState = 'paused';
+    }
+  }
+}
+
+// ── fetch ollama ──────────────────────────────────────────────────────────────
+async function fetchOllama() {
+  if (!_features.ollama) return;
+  try {
+    const models = await fetch('/api/ollama').then(r => r.json());
+    const list = document.getElementById('ollama-list');
+    list.innerHTML = models.length
+      ? models.map(m => `<div class="ollama-card"><span class="ollama-dot"></span><span class="ollama-name">${escHtml(m.name)}</span><span class="ollama-size">${m.size_gb} GB</span></div>`).join('')
+      : '<div class="ollama-empty">no model loaded</div>';
   } catch(e) { /* ignore */ }
 }
 
 // ── fetch storage ─────────────────────────────────────────────────────────────
 async function fetchStorage() {
   try {
-    const data = await fetch('/api/storage').then(r=>r.json());
+    const data = await fetch('/api/storage').then(r => r.json());
     const list = document.getElementById('stor-list');
     const nfsOnly = data.filter(s => s.type === 'NFS');
     list.innerHTML = nfsOnly.map(s => {
       if (s.error) return `<div class="stor-row">
         <div class="stor-top">
-          <span class="stor-mount">${s.mount}</span>
-          <span class="stor-error">${s.error}</span>
+          <span class="stor-mount">${escHtml(s.mount)}</span>
+          <span class="stor-error">${escHtml(s.error)}</span>
         </div></div>`;
       const cls = pctClass(s.percent);
       return `<div class="stor-row">
         <div class="stor-top">
-          <span class="stor-mount">${s.mount}</span>
+          <span class="stor-mount">${escHtml(s.mount)}</span>
           <span class="stor-info">${s.used_gb} / ${s.total_gb} GB — ${s.percent}%</span>
         </div>
         <div class="pbar"><div class="pbar-fill ${cls}" style="width:${s.percent}%"></div></div>
@@ -914,39 +997,38 @@ async function fetchStorage() {
 
 // ── fetch adguard ─────────────────────────────────────────────────────────────
 async function fetchAdGuard() {
+  if (!_features.adguard) return;
   try {
-    const d = await fetch('/api/adguard').then(r=>r.json());
+    const d = await fetch('/api/adguard').then(r => r.json());
     const row = document.getElementById('ag-row');
     const lbl = document.getElementById('ag-label');
     if (d.error) { row.style.display='none'; lbl.style.display='none'; return; }
-    row.style.display='flex'; lbl.style.display='flex';
+    row.style.display = 'flex'; lbl.style.display = 'flex';
     row.innerHTML = [
-      { label:'AVG', val: d.avg_ms+'ms' },
+      { label:'AVG',     val: d.avg_ms+'ms' },
       { label:'QUERIES', val: d.queries.toLocaleString() },
       { label:'BLOCKED', val: d.blocked.toLocaleString() },
-      { label:'BLOCK%', val: d.blocked_pct+'%' },
-    ].map(i=>`<div class="ag-item"><span class="ag-label">${i.label}</span><span class="ag-val">${i.val}</span></div>`).join('');
+      { label:'BLOCK%',  val: d.blocked_pct+'%' },
+    ].map(i => `<div class="ag-item"><span class="ag-label">${i.label}</span><span class="ag-val">${i.val}</span></div>`).join('');
   } catch(e) { /* ignore */ }
 }
 
 // ── fetch shelly plug ─────────────────────────────────────────────────────────
 async function fetchShelly() {
+  if (!_features.shelly) return;
   try {
-    const d = await fetch('/api/shelly').then(r=>r.json());
+    const d = await fetch('/api/shelly').then(r => r.json());
     const row = document.getElementById('shelly-row');
     const lbl = document.getElementById('shelly-label');
-    if (d.error) { row.style.display='none'; lbl.style.display='none'; document.getElementById('btn-cycle').style.display='none'; document.getElementById('btn-cycle-2').style.display='none'; return; }
-    row.style.display='flex'; lbl.style.display='flex';
-    document.getElementById('btn-cycle').style.display='inline-block';
-    document.getElementById('btn-cycle-2').style.display='inline-block';
+    const btn = document.getElementById('btn-cycle');
+    if (d.error) { row.style.display='none'; lbl.style.display='none'; btn.style.display='none'; return; }
+    row.style.display = 'flex'; lbl.style.display = 'flex'; btn.style.display = 'inline-block';
     const pwrPct = Math.min(100, (d.apower / 2300) * 100).toFixed(1);
     const pwrCls = d.apower >= 2000 ? 'alert' : d.apower >= 1000 ? 'warn' : '';
     const todayRow = d.today_kwh !== null
-      ? `<div class="ag-item"><span class="ag-label">TODAY</span><span class="ag-val" style="color:var(--g-bright)">${d.today_kwh.toFixed(4)} kWh</span></div>`
-      : '';
+      ? `<div class="ag-item"><span class="ag-label">TODAY</span><span class="ag-val" style="color:var(--g-bright)">${d.today_kwh.toFixed(4)} kWh</span></div>` : '';
     const ydayRow = (d.yesterday_kwh !== null && d.yesterday_date)
-      ? `<div class="ag-item"><span class="ag-label">YDAY (${d.yesterday_date.slice(-5)})</span><span class="ag-val" style="color:var(--g-dim)">${d.yesterday_kwh.toFixed(4)} kWh</span></div>`
-      : '';
+      ? `<div class="ag-item"><span class="ag-label">YDAY (${d.yesterday_date.slice(-5)})</span><span class="ag-val" style="color:var(--g-dim)">${d.yesterday_kwh.toFixed(4)} kWh</span></div>` : '';
     row.innerHTML = `
       <div class="ag-item">
         <span class="ag-label">STATE</span>
@@ -957,14 +1039,8 @@ async function fetchShelly() {
         <span class="ag-val ${pwrCls}">${d.apower} W</span>
         <div class="pbar"><div class="pbar-fill ${pwrCls}" style="width:${pwrPct}%"></div></div>
       </div>
-      <div class="ag-item">
-        <span class="ag-label">VOLTAGE</span>
-        <span class="ag-val">${d.voltage} V</span>
-      </div>
-      <div class="ag-item">
-        <span class="ag-label">CURRENT</span>
-        <span class="ag-val">${d.current} A</span>
-      </div>
+      <div class="ag-item"><span class="ag-label">VOLTAGE</span><span class="ag-val">${d.voltage} V</span></div>
+      <div class="ag-item"><span class="ag-label">CURRENT</span><span class="ag-val">${d.current} A</span></div>
       ${todayRow}${ydayRow}`;
   } catch(e) { /* ignore */ }
 }
@@ -1012,16 +1088,18 @@ function renderContainers() {
   });
 
   list.innerHTML = sorted.map(c => {
-    const dotCls  = c.state==='running'?'running': c.state==='exited'?'exited': c.state==='paused'?'paused':c.state==='created'?'created':'exited';
-    const badgeCls = dotCls;
-    const isSel   = selected && selected.id === c.id;
+    const dotCls = c.state==='running'?'running': c.state==='exited'?'exited': c.state==='paused'?'paused':c.state==='created'?'created':'exited';
+    const isSel  = selected && selected.id === c.id;
+    const portsHtml = c.ports && c.ports.length
+      ? `<div class="ctr-ports">${c.ports.map(p => escHtml(p)).join(' · ')}</div>` : '';
     return `<div class="ctr-card ${isSel?'selected':''}" onclick="selectContainer('${c.id}')">
       <span class="ctr-dot ${dotCls}"></span>
       <div class="ctr-info">
         <div class="ctr-name">${escHtml(c.name)}</div>
         <div class="ctr-meta">${escHtml(c.host)} · ${escHtml(c.status)}</div>
+        ${portsHtml}
       </div>
-      <span class="ctr-badge ${badgeCls}">${c.state==='running'?'UP':c.state==='exited'?'DOWN':c.state.toUpperCase()}</span>
+      <span class="ctr-badge ${dotCls}">${c.state==='running'?'UP':c.state==='exited'?'DOWN':c.state.toUpperCase()}</span>
     </div>`;
   }).join('');
 }
@@ -1110,20 +1188,15 @@ async function fetchProcesses() {
 }
 
 // ── polling ───────────────────────────────────────────────────────────────────
+fetchFeatures(); // kicks off feature-gated polls (Shelly/AdGuard/Ollama/WoL)
 fetchStats();
 fetchStorage();
-fetchAdGuard();
-fetchShelly();
-fetchShelly2();
 fetchContainers();
 fetchProcesses();
 
 setInterval(fetchStats,      2000);
 setInterval(fetchContainers, 3000);
 setInterval(fetchStorage,    8000);
-setInterval(fetchAdGuard,   15000);
-setInterval(fetchShelly,     5000);
-setInterval(fetchShelly2,    5000);
 setInterval(fetchProcesses,  3000);
 </script>
 </body>
