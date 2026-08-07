@@ -16,4 +16,4 @@ services:
       - /home/johannes/.ssh/:/home/johannes/.ssh/:ro # use host's SSH keys for WOL and SSH actions
       - /sys/class/drm:/sys/class/drm:ro             # AMD GPU utilisation (gpu_busy_percent)
       - /sys/class/hwmon:/sys/class/hwmon:ro          # AMD GPU hwmon (temp, fan, power)
-    env_file: .env
+    env_file: /opt/secrets/dashboard.env
