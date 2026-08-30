@@ -662,7 +662,7 @@ def get_gpu_stats() -> dict | None:
       - temp    (junction if available, else edge)  °C
       - fan_rpm / fan_pct (from fan1_input / pwm1)
       - power_w (power1_instantaneous, else power1_average; µW → W)
-      - usage   (gpu_busy_percent, 0–100)
+      - usage   (gpu_busy_percent, 3-sample rolling mean, 0–100)
     """
     paths = get_system_info().amd_gpu
     if paths is None:
@@ -711,14 +711,26 @@ def get_gpu_stats() -> dict | None:
         
     power_w    = round(int(power_raw) / 1_000_000, 1) if power_raw else None
 
-    # gpu_busy_percent is already a ~1 s driver-side average — report it
-    # straight through, no extra smoothing (it made the readout sluggish).
-    usage: int | None = None
+    # gpu_busy_percent is a ~1 s driver-side window that still dips for
+    # ~2.5 s even under sustained llama decode — a 3-sample window
+    # (≈6 s @ 2 s poll) absorbs those dips without the old 12-sample
+    # (≈24 s) sluggishness.
+    usage: float | int | None = None
     if usage_raw is not None:
         try:
-            usage = int(usage_raw)
+            new_val = int(usage_raw)
         except ValueError:
             pass
+        else:
+            _window = getattr(get_system_info(), '_gpu_usage_window', None)
+            if _window is None:
+                # Lazy-init the smoothing window on first use
+                _window = list[int]()
+                object.__setattr__(get_system_info(), '_gpu_usage_window', _window)
+            _window.append(new_val)
+            if len(_window) > 3:
+                del _window[0]
+            usage = sum(_window) / len(_window)
 
     if all(v is None for v in (temp, fan_rpm, fan_pct, power_w)):
         return None
