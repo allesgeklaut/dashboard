@@ -401,6 +401,28 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 /* ── CONTAINER PORTS ── */
 .ctr-ports { font-size:10px; color:var(--blue); margin-top:2px; opacity:0.85; }
 
+/* ── LLAMA SECTION ── */
+.llama-card {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 12px;
+  display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;
+}
+.llama-speed { min-width:120px; }
+.llama-big {
+  font-size:30px; font-weight:700; color:var(--g-bright);
+  line-height:1; margin:2px 0 4px;
+}
+.llama-big small { font-size:12px; color:var(--g-dim); font-weight:400; margin-left:3px; }
+.llama-state { display:flex; gap:16px; flex-wrap:wrap; flex:1; }
+.llama-log {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; margin-top:6px; padding:8px 10px;
+  font-family:var(--font); font-size:10px; line-height:1.5;
+  color:var(--g-dim);
+  white-space:pre-wrap; word-break:break-word;
+  max-height:220px; overflow-y:auto;
+}
+
 </style>
 </head>
 <body>
@@ -452,6 +474,25 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <div class="sec-label" id="ollama-label" style="display:none">ollama</div>
     <div id="ollama-section" style="display:none">
       <div class="ollama-list" id="ollama-list"></div>
+    </div>
+
+    <!-- LLM (shown only when LLAMA feature is enabled) -->
+    <div class="sec-label" id="llama-label" style="display:none">llm · llama-server</div>
+    <div id="llama-section" style="display:none">
+      <div class="llama-card">
+        <div class="llama-speed">
+          <span class="stat-label">GEN SPEED</span>
+          <div class="llama-big"><span id="llama-gen">—</span><small>t/s</small></div>
+          <span class="stat-sub" id="llama-gen-sub">—</span>
+        </div>
+        <div class="llama-state">
+          <div class="ag-item"><span class="ag-label">STATE</span><span class="ag-val" id="llama-state">—</span></div>
+          <div class="ag-item"><span class="ag-label">PREFILL</span><span class="ag-val" id="llama-prefill">—</span></div>
+          <div class="ag-item"><span class="ag-label">TOKENS</span><span class="ag-val" id="llama-tokens">—</span></div>
+          <div class="ag-item"><span class="ag-label">DRAFT</span><span class="ag-val" id="llama-draft">—</span></div>
+        </div>
+      </div>
+      <pre class="llama-log" id="llama-log"></pre>
     </div>
 
     <!-- AdGuard -->
@@ -550,7 +591,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 const round = (n, d=1) => Number(n.toFixed(d));
 
 // ── feature flags ─────────────────────────────────────────────────────────────
-let _features = { wol:false, shelly:false, shelly2:false, adguard:false, ollama:false };
+let _features = { wol:false, shelly:false, shelly2:false, adguard:false, ollama:false, llama:false };
 
 async function fetchFeatures() {
   try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
@@ -566,6 +607,13 @@ async function fetchFeatures() {
     document.getElementById('ollama-section').style.display = 'block';
     fetchOllama();
     setInterval(fetchOllama, 10000);
+  }
+  // LLM (llama-server)
+  if (_features.llama) {
+    document.getElementById('llama-label').style.display   = 'flex';
+    document.getElementById('llama-section').style.display = 'block';
+    fetchLlama();
+    setInterval(fetchLlama, 2000);
   }
   // Feature-gated polls
   if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
@@ -977,6 +1025,40 @@ async function fetchOllama() {
     list.innerHTML = models.length
       ? models.map(m => `<div class="ollama-card"><span class="ollama-dot"></span><span class="ollama-name">${escHtml(m.name)}</span><span class="ollama-size">${m.size_gb} GB</span></div>`).join('')
       : '<div class="ollama-empty">no model loaded</div>';
+  } catch(e) { /* ignore */ }
+}
+
+// ── fetch llama (llama-server) ────────────────────────────────────────────────
+const _llmClean = s => s.replace(/^\S+\s+[IWEF]\s+/, '');
+async function fetchLlama() {
+  if (!_features.llama) return;
+  try {
+    const d = await fetch('/api/llama').then(r => r.json());
+    if (d.error) {
+      document.getElementById('llama-state').textContent = 'ERROR';
+      document.getElementById('llama-gen').textContent = '—';
+      document.getElementById('llama-gen-sub').textContent = '';
+      document.getElementById('llama-log').textContent = d.error;
+      return;
+    }
+    const l = d.latest;
+    const stateEl = document.getElementById('llama-state');
+    if (!d.running)               stateEl.textContent = 'STOPPED';
+    else if (l.phase === 'generation') stateEl.textContent = 'GENERATING';
+    else if (l.phase === 'prompt')     stateEl.textContent = 'PREFILL';
+    else                               stateEl.textContent = 'IDLE';
+    document.getElementById('llama-gen').textContent =
+      l.gen_tps != null ? l.gen_tps.toFixed(1) : '—';
+    document.getElementById('llama-gen-sub').textContent =
+      l.gen3s_tps != null ? `3s ${l.gen3s_tps.toFixed(1)} · n=${l.n_gen ?? '—'}` : '3s —';
+    document.getElementById('llama-prefill').textContent =
+      l.prompt_tps != null ? l.prompt_tps.toFixed(0) + ' t/s' : '—';
+    document.getElementById('llama-tokens').textContent =
+      l.n_gen != null ? String(l.n_gen) : '—';
+    document.getElementById('llama-draft').textContent =
+      l.draft_accept != null ? (l.draft_accept * 100).toFixed(0) + '%' : '—';
+    document.getElementById('llama-log').textContent =
+      d.lines.map(_llmClean).join('\n');
   } catch(e) { /* ignore */ }
 }
 
