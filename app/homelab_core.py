@@ -3,8 +3,7 @@ homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
 Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
-import os, socket, subprocess, threading, time, json
-import paramiko
+import os, socket, threading, time, json
 from datetime import timedelta
 
 import psutil, requests, urllib3
@@ -24,15 +23,7 @@ NFS_MOUNTS    = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",
 SHELLY_PLUG_URL   = os.getenv("SHELLY_PLUG_URL")    # None if not set → feature disabled
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → feature disabled
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
-
-# ── Wake‑on‑LAN Config ───────────────────────────────────────────────────────
-WOL_TARGET_MAC    = os.getenv("WOL_TARGET_MAC", "").lower()  # MAC address of target machine (e.g., "aa:bb:cc:dd:ee:ff")
-WOL_BROADCAST_IP  = os.getenv("WOL_BROADCAST_IP", "255.255.255.255")  # Broadcast IP for magic packet
-WOL_PORT          = int(os.getenv("WOL_PORT", "9000"))  # UDP port for WOL packets (typically 7 or 9000)
-
-# ── SSH Config ───────────────────────────────────────────────────────────────
-SSH_USER = os.getenv("SSH_USER", "woladmin")
-SSH_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "")
+LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
@@ -105,6 +96,13 @@ class SystemInfo:
 
     @staticmethod
     def _detect_ip() -> str:
+        # The web container runs on a docker bridge, so its own interfaces are
+        # the container's (192.168.144.x), not the host's.  HOST_IP is set in
+        # docker-compose.yml (host networking was dropped for security); only
+        # fall back to interface probing when unset (dev outside compose).
+        env_ip = os.environ.get("HOST_IP", "").strip()
+        if env_ip:
+            return env_ip
         for iface, addrs in psutil.net_if_addrs().items():
             if iface == "lo":
                 continue
@@ -305,66 +303,30 @@ def portainer_containers() -> list[dict]:
             pass
     return out
 
-def cli_containers() -> list[dict]:
-    """Fallback: list containers via the local docker CLI."""
-    try:
-        raw = subprocess.check_output(
-            ["docker", "ps", "-a", "--format",
-             "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Image}}"],
-            timeout=4, stderr=subprocess.DEVNULL,
-        ).decode().strip()
-        out = []
-        for line in raw.splitlines():
-            p = line.split("\t")
-            if len(p) < 4:
-                continue
-            out.append({
-                "id":     p[0],
-                "name":   p[1],
-                "state":  p[2],
-                "status": p[3],
-                "image":  (p[4] if len(p) > 4 else "").split("/")[-1].split(":")[0],
-                "host":   "local",
-                "eid":    None,
-            })
-        return out
-    except Exception:
-        return []
-
 def get_containers() -> tuple[list[dict], str]:
-    """Return (containers, source) where source is 'portainer', 'docker', or 'none'."""
+    """Return (containers, source) where source is 'portainer' or 'none'."""
     containers = portainer_containers()
     if containers:
         return containers, "portainer"
-    containers = cli_containers()
-    if containers:
-        return containers, "docker"
     return [], "none"
 
 # ── Container actions ─────────────────────────────────────────────────────────
 
 def container_action(cid: str, action: str, eid: int | None = None) -> tuple[bool, str]:
-    """Start, stop, or restart a container via Portainer or local docker CLI."""
+    """Start, stop, or restart a container via Portainer."""
     if eid is None:
         eids = get_eids()
         eid  = eids[0] if eids else None
-    if eid is not None:
-        try:
-            r = requests.post(
-                f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/{cid}/{action}",
-                headers=_HDR, timeout=15, verify=False,
-            )
-            if r.status_code in (200, 204, 304):
-                return True, f"{action} OK"
-            return False, f"HTTP {r.status_code}"
-        except Exception as exc:
-            return False, str(exc)
+    if eid is None:
+        return False, "no portainer endpoint"
     try:
-        subprocess.check_call(
-            ["docker", action, cid],
-            stderr=subprocess.DEVNULL, timeout=10,
+        r = requests.post(
+            f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/{cid}/{action}",
+            headers=_HDR, timeout=15, verify=False,
         )
-        return True, f"{action} OK"
+        if r.status_code in (200, 204, 304):
+            return True, f"{action} OK"
+        return False, f"HTTP {r.status_code}"
     except Exception as exc:
         return False, str(exc)
 
@@ -392,7 +354,6 @@ def get_system_stats() -> dict:
     mem = psutil.virtual_memory()
     swp = psutil.swap_memory()
     l1, l5, l15 = psutil.getloadavg()
-    tx, rx = net_speed()
     temp = get_temp()
     td   = timedelta(seconds=int(time.time() - info.boot_time))
     h, rem = divmod(td.seconds, 3600)
@@ -407,10 +368,8 @@ def get_system_stats() -> dict:
         "load1":        round(l1,  2),
         "load5":        round(l5,  2),
         "load15":       round(l15, 2),
-        "net_tx":       tx,
-        "net_rx":       rx,
         "uptime":       f"{td.days}d {h:02d}h {m:02d}m",
-        "hostname":     socket.gethostname(),
+        "hostname":     os.environ.get("HOST_NAME", "").strip() or socket.gethostname(),
         "ip":           info.host_ipv4,
     }
 
@@ -681,119 +640,6 @@ def shelly2_toggle() -> tuple[bool, str]:
         return False, str(exc)
 
 
-# ── Wake-on-LAN (WoL) ───────────────────────────────────────────────────────
-
-def _pack_mac(mac_str):
-    """Convert MAC string like 'aa:bb:cc:dd:ee:ff' to bytes."""
-    if not mac_str or len(mac_str.replace(":", "")) != 12:
-        return None
-    try:
-        # Remove any separators and convert to hex bytes
-        clean = mac_str.replace(":", "").replace("-", "")
-        return bytes.fromhex(clean)
-    except Exception:
-        return None
-
-def _build_magic_packet(mac_bytes):
-    """Build magic packet: 6 bytes of broadcast + 1598 repetitions (273 packets total)."""
-    if not mac_bytes or len(mac_bytes) != 6:
-        return b""
-    
-    packet = b"\xff" * 6 + mac_bytes * 16
-    return packet
-
-def is_target_on(host: str) -> tuple[bool, str]:
-    """Return ``(True, "online")`` if the host responds to ping.
-
-    The previous implementation attempted an SSH connection which can fail
-    when key authentication is not set up.  For a simple online check we only
-    need ICMP reachability.
-    """
-    if _ping(host):
-        return True, "online"
-    return False, f"{host} did not respond to ping"
-
-def remote_shutdown(host: str, password: str | None = None) -> tuple[bool, str]:
-    """SSH into *host* and run ``sudo shutdown -h now``.
-
-    Requires that the SSH user has password‑less sudo rights for shutdown.
-    Returns ``(True, "OK")`` on success or ``(False, error_message)``.
-    """
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        key = None
-        if SSH_KEY_PATH and os.path.exists(SSH_KEY_PATH):
-            ext = os.path.splitext(SSH_KEY_PATH)[1].lower()
-            try:
-                if ext in ('.pem', '.pub') or SSH_KEY_PATH.endswith('id_rsa'):
-                    key = paramiko.RSAKey.from_private_key_file(SSH_KEY_PATH)
-                else:  # assume Ed25519
-                    key = paramiko.Ed25519Key.from_private_key_file(SSH_KEY_PATH)
-            except Exception:
-                key = None
-        client.connect(hostname=host, username=SSH_USER, pkey=key,
-                       timeout=5, banner_timeout=5)
-        # Build command with optional password
-        if password:
-            cmd = f'echo "{password}" | sudo -S shutdown -h now'
-        else:
-            cmd = 'sudo shutdown -h now'
-        stdin, stdout, stderr = client.exec_command(cmd, timeout=3)
-        err = stderr.read().decode()
-        out = stdout.read().decode()
-        client.close()
-        if err:
-            return False, err.strip()
-        return True, "shutdown command sent"
-    except Exception as exc:
-        return False, str(exc)
-
-def _ping(host: str, timeout: int = 2) -> bool:
-    """Return True if the given hostname or IP responds to ICMP ping.
-
-    The function accepts either a fully qualified domain name or an IPv4/IPv6
-    address.  It uses the system ``ping`` command which is available on Linux
-    and macOS.  If the host string contains non‑numeric characters it will be
-    treated as a hostname.
-    """
-    try:
-        cmd = ["ping", "-c", str(timeout), host]
-        subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        return True
-    except Exception:
-        return False
-    
-
-def wol_send(mac_str):
-    """Send Wake-on-LAN magic packet to wake up a target machine.
-    
-    Returns: tuple[bool, str] — (success, message)
-    """
-    if not WOL_TARGET_MAC or not WOL_BROADCAST_IP:
-        return False, "WOL not configured: set WOL_TARGET_MAC and optionally WOL_BROADCAST_IP"
-    
-    mac_bytes = _pack_mac(WOL_TARGET_MAC.upper())
-    if not mac_bytes:
-        return False, f"Invalid MAC address format for target machine: {WOL_TARGET_MAC}"
-    
-    packet = _build_magic_packet(mac_bytes)
-    if not packet:
-        return False, "Failed to build magic packet"
-    
-    try:
-        # Send UDP broadcast packet (1500 bytes max is fine; ours is ~162 bytes)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        
-        # Send the packet
-        sock.sendto(packet, (WOL_BROADCAST_IP, WOL_PORT))
-        
-        return True, f"Wake-on-LAN sent to {WOL_TARGET_MAC} via {WOL_BROADCAST_IP}:{WOL_PORT}"
-    except Exception as exc:
-        return False, f"Failed to send WoL packet: {exc}"
-
-
 # ── Startup helper ────────────────────────────────────────────────────────────
 
 def prime_counters() -> None:
@@ -914,14 +760,196 @@ def get_ollama_model() -> list[dict]:
     return []
 
 
+# ── llama.cpp server (llama-server) ─────────────────────────────────────────────
+# Live view of what the local LLM is doing. Two plain-HTTP sources (no docker
+# socket needed):
+#   /metrics — Prometheus counters/gauges. Updated only at request *completion*,
+#              so it carries lifetime totals, lifetime averages and the
+#              speculative-decode stats, plus a delta fallback for short
+#              requests that finish between two polls.
+#   /slots   — per-slot progress (n_decoded, n_prompt_tokens_processed) that
+#              updates in real time; source of live tok/s while generating.
+
+_LLM_TRACKED = (
+    "llamacpp:tokens_predicted_total", "llamacpp:tokens_predicted_seconds_total",
+    "llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total",
+)
+_LLM_LAST: dict[str, float] = {}
+_LLM_SLOT = {"id_task": None, "t": 0.0, "n_decoded": 0, "n_prompt": 0}
+_LLM_AVG: dict[str, float] = {}  # *_tokens_seconds gauges read 0 mid-request
+_LLM_MIN: dict[str, float] = {}  # lowest seen *_total counters — restart baseline
+
+def _llm_restarted(m: dict[str, float]) -> bool:
+    """Return True when a cumulative *_total counter dropped below the lowest
+    value we've seen.  The totals only ever increase while llama-server runs, so
+    a drop means the process restarted and reset its counters to 0.  On restart
+    the cached average/slot state from the old process must be discarded."""
+    for k in _LLM_TRACKED:
+        v = m.get(k)
+        if v is None:
+            continue
+        if v < _LLM_MIN.get(k, v):
+            _LLM_MIN.clear()
+            for _k in _LLM_TRACKED:
+                _v = m.get(_k)
+                if _v is not None:
+                    _LLM_MIN[_k] = _v
+            return True
+        _LLM_MIN.setdefault(k, v)
+    return False
+
+def _parse_prometheus(text: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for line in text.splitlines():
+        if not line or line[0] in "# \t":
+            continue
+        name, sep, value = line.rpartition("}")
+        if sep:
+            name = name.rsplit(" ", 1)[0]
+        else:
+            name, _, value = line.rpartition(" ")
+        try:
+            out[name] = float(value.strip())
+        except ValueError:
+            continue
+    return out
+
+def _live_rate(prev: dict[str, float], cur: dict[str, float], count: str, seconds: str) -> float | None:
+    """Counter delta between scrapes → tokens/s since the last poll."""
+    if count not in cur or seconds not in cur:
+        return None
+    d_count = cur[count]  - prev.get(count, 0)
+    d_sec   = cur[seconds] - prev.get(seconds, 0)
+    if prev and d_count > 0 and d_sec > 0:
+        return d_count / d_sec
+    return None
+
+def _slot_rates(slots: list, now: float) -> tuple[float | None, float | None, str]:
+    """Generation rate from the first processing slot → (gen_tps, prompt_tps, phase).
+
+    Only generation is taken live from the slot: n_decoded advances once per
+    decode step (~60 ms), so a 2 s poll sees many steps and the delta is a real
+    rate.  n_prompt_tokens_processed however advances in whole llama_decode
+    batches (n_batch = 2048 tokens ≈ 10 s at 200 tok/s), so prompt deltas are
+    0 or ~2048 — dividing by the 2 s poll interval yields spikes of ~1000 t/s.
+    Prompt rate must therefore come from the server-timed /metrics counters
+    (handled by the caller's fallback), never from slot deltas.
+    """
+    act = next((s for s in slots if s.get("is_processing")), None)
+    if act is None:
+        _LLM_SLOT["id_task"] = None
+        return None, None, ""
+    task = act.get("id_task")
+    nt   = act.get("next_token")
+    ntd  = nt if isinstance(nt, dict) else (nt[0] if isinstance(nt, list) and nt else {})
+    try:
+        n_dec = int(ntd.get("n_decoded", 0) or 0)
+    except (TypeError, ValueError):
+        n_dec = 0
+    n_pr  = act.get("n_prompt_tokens_processed", 0) or 0
+    gen_tps = prompt_tps = None
+    if _LLM_SLOT["id_task"] == task:        # same request → delta is the live rate
+        dt = now - _LLM_SLOT["t"]
+        if dt > 0.2:
+            if n_dec > _LLM_SLOT["n_decoded"]:
+                gen_tps = (n_dec - _LLM_SLOT["n_decoded"]) / dt
+    _LLM_SLOT.update(id_task=task, t=now, n_decoded=n_dec, n_prompt=n_pr)
+    return gen_tps, prompt_tps, ("generation" if n_dec > 0 else "prompt")
+
+def get_llama() -> dict:
+    """Scrape llama-server /metrics + /slots and report the latest activity.
+
+    Returns ``{"url", "running", ...}`` or ``{"error": ...}``.
+    """
+    if not LLAMA_SERVER_URL:
+        return {"error": "LLAMA_SERVER_URL not configured"}
+    base = LLAMA_SERVER_URL.rstrip("/")
+    try:
+        r = requests.get(f"{base}/metrics", timeout=3)
+        r.raise_for_status()
+        m = _parse_prometheus(r.text)
+        slots = requests.get(f"{base}/slots", timeout=3).json()
+        if not isinstance(slots, list):
+            slots = []
+    except Exception as exc:
+        _LLM_LAST.clear()
+        return {"error": f"llama-server unreachable at {base}: {exc}"}
+
+    prev = dict(_LLM_LAST)
+    _LLM_LAST.update({k: m[k] for k in _LLM_TRACKED if k in m})
+
+    # If llama-server restarted, its counters reset to 0 — drop the old
+    # process's cached averages and slot deltas so we don't surface stale data.
+    if _llm_restarted(m):
+        _LLM_AVG.clear()
+        _LLM_SLOT.update(id_task=None, t=0.0, n_decoded=0, n_prompt=0)
+
+    now = time.monotonic()
+    gen_tps, _, slot_phase = _slot_rates(slots, now)
+
+    # /slots misses requests shorter than one poll — fall back to /metrics
+    # counter deltas, which catch a completed request's burst (both counters
+    # jump together at completion, so the delta is that request's true rate).
+    # This is also the only honest prompt-rate source: the slot's
+    # n_prompt_tokens_processed advances in whole decode batches (n_batch =
+    # 2048), so a 2 s poll against it yields 0 / ~2048 → ~1000 t/s spikes.
+    if gen_tps is None:
+        gen_tps = _live_rate(prev, m, "llamacpp:tokens_predicted_total", "llamacpp:tokens_predicted_seconds_total")
+    # prompt rate: server-timed counter delta across the scrape window — matches
+    # the "prompt eval" log lines (d_count/d_sec == request's own average)
+    prompt_tps = _live_rate(prev, m, "llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total")
+
+    d_gen    = m.get("llamacpp:tokens_predicted_total", 0) - prev.get("llamacpp:tokens_predicted_total", 0)
+    d_prompt = m.get("llamacpp:prompt_tokens_total", 0) - prev.get("llamacpp:prompt_tokens_total", 0)
+    if not prev:  # first scrape: no delta baseline yet
+        d_gen = d_prompt = 0
+    if slot_phase:
+        phase = slot_phase
+    elif d_gen > 0:
+        phase = "generation"
+    elif d_prompt > 0:
+        phase = "prompt"
+    elif m.get("llamacpp:requests_processing", 0) > 0:
+        phase = "processing"
+    else:
+        phase = "idle"
+
+    # the *_tokens_seconds gauges reset to 0 while a request is in flight —
+    # surface the last real value instead so the average doesn't flicker
+    gen_avg    = m.get("llamacpp:predicted_tokens_seconds")
+    prompt_avg = m.get("llamacpp:prompt_tokens_seconds")
+    if gen_avg:
+        _LLM_AVG["gen"] = gen_avg
+    if prompt_avg:
+        _LLM_AVG["prompt"] = prompt_avg
+
+    draft    = m.get("llamacpp:spec_decode_num_draft_tokens_total", 0)
+    accepted = m.get("llamacpp:spec_decode_num_accepted_tokens_total", 0)
+    return {
+        "url":               base,
+        "running":           True,
+        "phase":             phase,
+        "gen_tps":           gen_tps,
+        "gen_tps_avg":       gen_avg or _LLM_AVG.get("gen"),
+        "prompt_tps":        prompt_tps,
+        "prompt_tps_avg":    prompt_avg or _LLM_AVG.get("prompt"),
+        "tokens_predicted":  int(m.get("llamacpp:tokens_predicted_total", 0)),
+        "prompt_tokens":     int(m.get("llamacpp:prompt_tokens_total", 0)),
+        "requests_processing": int(m.get("llamacpp:requests_processing", 0)),
+        "requests_deferred":   int(m.get("llamacpp:requests_deferred", 0)),
+        "draft_accept":      (accepted / draft) if draft > 0 else None,
+        "draft_tokens":      int(draft),
+    }
+
+
 # ── Feature flags ──────────────────────────────────────────────────────────────
 
 def get_features() -> dict:
     """Return which optional integrations are configured via .env."""
     return {
-        "wol":     bool(WOL_TARGET_MAC),
         "shelly":  bool(SHELLY_PLUG_URL),
         "shelly2": bool(SHELLY_PLUG_2_URL),
         "adguard": bool(ADGUARD_URL),
         "ollama":  bool(OLLAMA_URL),
+        "llama":   bool(LLAMA_SERVER_URL),
     }
