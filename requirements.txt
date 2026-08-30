@@ -3,5 +3,4 @@ uvicorn
 psutil
 requests
 urllib3
-paramiko
 python-dotenv

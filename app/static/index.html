@@ -497,33 +497,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
       </table>
     </div>
 
-    <!-- Wake-on-LAN (shown only when WOL feature is enabled) -->
-    <div class="sec-label" id="wol-label" style="display:none">wake on LAN</div>
-    <div id="wol-section" style="display:none">
-      <div class="wol-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:3px; padding:8px 10px;">
-        <div class="ag-item">
-          <span class="ag-label">TARGET MAC</span>
-          <span id="wol-mac" style="color:var(--g-dim)">—</span>
-        </div>
-        <div class="ag-item">
-          <span class="ag-label">BROADCAST IP</span>
-          <span id="wol-broadcast-ip" style="color:var(--g)"></span>
-        </div>
-        <div class="ag-item">
-          <span class="ag-label">TARGET IP</span>
-          <span id="wol-target-ip" style="color:var(--g-dim)">—</span>
-        </div>
-        <div class="ag-item">
-          <span class="ag-label">PORT</span>
-          <span id="wol-port" style="color:var(--g-dim)">—</span>
-        </div>
-      </div>
-      <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
-        <button class="btn-cycle2" id="btn-wol-toggle" onclick="toggleWOL()" disabled>⚡ WAKE TARGET</button>
-        <button class="btn-cycle2" id="btn-shutdown"   onclick="powerOff()"  disabled>POWER OFF</button>
-      </div>
-    </div>
-
   </div><!-- /#tab-server -->
 
   <!-- ═══════════ CONTAINERS TAB ═══════════ -->
@@ -557,16 +530,10 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 const round = (n, d=1) => Number(n.toFixed(d));
 
 // ── feature flags ─────────────────────────────────────────────────────────────
-let _features = { wol:false, shelly:false, shelly2:false, adguard:false, ollama:false, llama:false };
+let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false };
 
 async function fetchFeatures() {
   try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
-  // WOL
-  if (_features.wol) {
-    document.getElementById('wol-label').style.display   = 'flex';
-    document.getElementById('wol-section').style.display = 'block';
-    initWoL();
-  }
   // Ollama
   if (_features.ollama) {
     document.getElementById('ollama-label').style.display   = 'flex';
@@ -696,94 +663,7 @@ async function shellyCycle2() {
 }
 
 
-// ── wake-on-LAN ───────────────────────────────────────────────────────────────
-let _wolBusy = false;
-
-async function toggleWOL() {
-  const btn = document.getElementById('btn-wol-toggle');
-  if (_wolBusy) return;
-  _wolBusy = true; btn.textContent = '⏳ WAKING…'; btn.disabled = true;
-  try {
-    const r = await fetch(`/api/wol/${window.targetIP}`, { method: 'POST' });
-    if (r.ok) {
-      const d = await r.json();
-      toast(`WoL sent — ${d.msg}`);
-      btn.textContent = d.target_on ? 'TARGET ON' : '⚡ WAKE TARGET';
-    } else {
-      const err = await r.json().catch(() => ({}));
-      toast(`error: ${err.detail || r.status}`, true);
-      btn.textContent = '⚡ WAKE TARGET';
-    }
-  } catch(e) { toast('network error', true); btn.textContent = '⚡ WAKE TARGET'; }
-  finally { _wolBusy = false; btn.disabled = false; }
-}
-
-async function initWoL() {
-  try {
-    const config = await fetch('/api/wol/config').then(r => r.json());
-    document.getElementById('wol-mac').textContent          = config.target_mac   || '—';
-    document.getElementById('wol-broadcast-ip').textContent = config.broadcast_ip || '';
-    document.getElementById('wol-port').textContent         = config.port;
-    document.getElementById('wol-target-ip').textContent    = config.target_ip    || '—';
-    window.targetIP = config.target_ip;
-    if (config.target_mac && config.broadcast_ip) {
-      document.getElementById('btn-wol-toggle').disabled = false;
-      core.WOL_TARGET_MAC   = config.target_mac;
-      core.WOL_BROADCAST_IP = config.broadcast_ip;
-    }
-    if (config.target_ip) document.getElementById('btn-shutdown').disabled = false;
-  } catch(e) { console.error('WoL config error:', e); }
-}
-
-async function askPassword(message) {
-  return new Promise(resolve => {
-    const overlay = document.createElement('div');
-    Object.assign(overlay.style, {
-      position:'fixed', top:'0', left:'0', width:'100%', height:'100%',
-      backgroundColor:'rgba(0,0,0,0.7)', display:'flex',
-      alignItems:'center', justifyContent:'center', zIndex:'1000'
-    });
-    const box = document.createElement('div');
-    Object.assign(box.style, {
-      background:'var(--bg-card)', border:'1px solid var(--border)',
-      padding:'20px', borderRadius:'4px', color:'var(--g)', minWidth:'300px'
-    });
-    const lbl = document.createElement('label');
-    lbl.textContent = message; lbl.style.cssText = 'display:block;margin-bottom:8px';
-    const inp = document.createElement('input'); inp.type = 'password';
-    Object.assign(inp.style, { width:'100%', padding:'6px', boxSizing:'border-box',
-      background:'var(--bg)', border:'1px solid var(--border)',
-      color:'var(--g)', fontFamily:'var(--font)', borderRadius:'2px' });
-    const ok  = document.createElement('button'); ok.textContent  = 'OK';     ok.style.cssText = 'margin-right:10px;margin-top:8px';
-    const can = document.createElement('button'); can.textContent = 'Cancel';
-    box.append(lbl, inp, ok, can); overlay.appendChild(box); document.body.appendChild(overlay); inp.focus();
-    inp.addEventListener('keyup', e => { if(e.key==='Enter') ok.click(); if(e.key==='Escape') can.click(); });
-    const cleanup = () => overlay.parentNode?.removeChild(overlay);
-    ok.onclick  = () => { cleanup(); resolve(inp.value); };
-    can.onclick = () => { cleanup(); resolve(null); };
-  });
-}
-
-async function powerOff() {
-  const btn = document.getElementById('btn-shutdown');
-  if (!window.targetIP) return;
-  const pwd = await askPassword('Enter sudo password for shutdown:');
-  if (pwd === null) return;
-  btn.disabled = true;
-  try {
-    const r = await fetch(`/api/shutdown/${window.targetIP}`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ password: pwd })
-    });
-    if (r.ok) { toast('Shutdown command sent'); }
-    else { const err = await r.json().catch(()=>({})); toast(`error: ${err.detail || r.status}`, true); }
-  } catch(e) { toast('network error', true); }
-  finally { btn.disabled = false; }
-}
-
-
 // ── state ────────────────────────────────────────────────────────────────────
-const core = { WOL_TARGET_MAC: null, WOL_BROADCAST_IP: null };
 let selected = null, containers = [], ctrFilter = 'all', busy = false;
 
 // Power‑cycle button state
@@ -1004,8 +884,7 @@ async function fetchLlama() {
       return;
     }
     const stateEl = document.getElementById('llama-state');
-    if (!d.running)                    stateEl.textContent = 'STOPPED';
-    else if (d.phase === 'generation') stateEl.textContent = 'GENERATING';
+    if (d.phase === 'generation') stateEl.textContent = 'GENERATING';
     else if (d.phase === 'prompt')     stateEl.textContent = 'PREFILL';
     else if (d.phase === 'processing') stateEl.textContent = 'PROCESSING';
     else                               stateEl.textContent = 'IDLE';
