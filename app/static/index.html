@@ -125,18 +125,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .pbar-fill.warn  { background:var(--yellow); }
 .pbar-fill.alert { background:var(--red); }
 
-/* ── NET ROW ── */
-.net-row {
-  background:var(--bg-card); border:1px solid var(--border);
-  border-radius:3px; padding:8px 10px;
-  display:grid; grid-template-columns:1fr 1fr;
-  gap:4px;
-}
-.net-item { display:flex; flex-direction:column; }
-.net-label { font-size:10px; color:var(--g-dim); letter-spacing:0.06em; }
-.net-val { font-size:15px; font-weight:600; color:var(--g); }
-.net-arrow { color:var(--g-dim); margin-right:3px; }
-
 /* ── ADGUARD ROW ── */
 .ag-row {
   background:var(--bg-card); border:1px solid var(--border);
@@ -401,6 +389,20 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 /* ── CONTAINER PORTS ── */
 .ctr-ports { font-size:10px; color:var(--blue); margin-top:2px; opacity:0.85; }
 
+/* ── LLAMA SECTION ── */
+.llama-card {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 12px;
+  display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;
+}
+.llama-speed { min-width:120px; }
+.llama-big {
+  font-size:30px; font-weight:700; color:var(--g-bright);
+  line-height:1; margin:2px 0 4px;
+}
+.llama-big small { font-size:12px; color:var(--g-dim); font-weight:400; margin-left:3px; }
+.llama-state { display:flex; gap:16px; flex-wrap:wrap; flex:1; }
+
 </style>
 </head>
 <body>
@@ -429,19 +431,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <div class="sec-label">system</div>
     <div class="stat-grid" id="stat-grid"><!-- filled by JS --></div>
 
-    <!-- Network -->
-    <div class="sec-label">network</div>
-    <div class="net-row">
-      <div class="net-item">
-        <span class="net-label">TX<span class="net-arrow"> ▲</span></span>
-        <span class="net-val" id="net-tx">—</span>
-      </div>
-      <div class="net-item">
-        <span class="net-label">RX<span class="net-arrow"> ▼</span></span>
-        <span class="net-val" id="net-rx">—</span>
-      </div>
-    </div>
-
     <!-- GPU (hidden until stats confirm GPU present) -->
     <div class="sec-label" id="gpu-label" style="display:none">gpu</div>
     <div id="gpu-section" style="display:none">
@@ -452,6 +441,24 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <div class="sec-label" id="ollama-label" style="display:none">ollama</div>
     <div id="ollama-section" style="display:none">
       <div class="ollama-list" id="ollama-list"></div>
+    </div>
+
+    <!-- LLM (shown only when LLAMA feature is enabled) -->
+    <div class="sec-label" id="llama-label" style="display:none">llm · llama-server</div>
+    <div id="llama-section" style="display:none">
+      <div class="llama-card">
+        <div class="llama-speed">
+          <span class="stat-label">GEN SPEED</span>
+          <div class="llama-big"><span id="llama-gen">—</span><small>t/s</small></div>
+          <span class="stat-sub" id="llama-gen-sub">—</span>
+        </div>
+        <div class="llama-state">
+          <div class="ag-item"><span class="ag-label">STATE</span><span class="ag-val" id="llama-state">—</span></div>
+          <div class="ag-item"><span class="ag-label">PREFILL</span><span class="ag-val" id="llama-prefill">—</span></div>
+          <div class="ag-item"><span class="ag-label">TOKENS</span><span class="ag-val" id="llama-tokens">—</span></div>
+          <div class="ag-item"><span class="ag-label">DRAFT</span><span class="ag-val" id="llama-draft">—</span></div>
+        </div>
+      </div>
     </div>
 
     <!-- AdGuard -->
@@ -490,33 +497,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
       </table>
     </div>
 
-    <!-- Wake-on-LAN (shown only when WOL feature is enabled) -->
-    <div class="sec-label" id="wol-label" style="display:none">wake on LAN</div>
-    <div id="wol-section" style="display:none">
-      <div class="wol-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:3px; padding:8px 10px;">
-        <div class="ag-item">
-          <span class="ag-label">TARGET MAC</span>
-          <span id="wol-mac" style="color:var(--g-dim)">—</span>
-        </div>
-        <div class="ag-item">
-          <span class="ag-label">BROADCAST IP</span>
-          <span id="wol-broadcast-ip" style="color:var(--g)"></span>
-        </div>
-        <div class="ag-item">
-          <span class="ag-label">TARGET IP</span>
-          <span id="wol-target-ip" style="color:var(--g-dim)">—</span>
-        </div>
-        <div class="ag-item">
-          <span class="ag-label">PORT</span>
-          <span id="wol-port" style="color:var(--g-dim)">—</span>
-        </div>
-      </div>
-      <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
-        <button class="btn-cycle2" id="btn-wol-toggle" onclick="toggleWOL()" disabled>⚡ WAKE TARGET</button>
-        <button class="btn-cycle2" id="btn-shutdown"   onclick="powerOff()"  disabled>POWER OFF</button>
-      </div>
-    </div>
-
   </div><!-- /#tab-server -->
 
   <!-- ═══════════ CONTAINERS TAB ═══════════ -->
@@ -550,22 +530,23 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 const round = (n, d=1) => Number(n.toFixed(d));
 
 // ── feature flags ─────────────────────────────────────────────────────────────
-let _features = { wol:false, shelly:false, shelly2:false, adguard:false, ollama:false };
+let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false };
 
 async function fetchFeatures() {
   try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
-  // WOL
-  if (_features.wol) {
-    document.getElementById('wol-label').style.display   = 'flex';
-    document.getElementById('wol-section').style.display = 'block';
-    initWoL();
-  }
   // Ollama
   if (_features.ollama) {
     document.getElementById('ollama-label').style.display   = 'flex';
     document.getElementById('ollama-section').style.display = 'block';
     fetchOllama();
     setInterval(fetchOllama, 10000);
+  }
+  // LLM (llama-server)
+  if (_features.llama) {
+    document.getElementById('llama-label').style.display   = 'flex';
+    document.getElementById('llama-section').style.display = 'block';
+    fetchLlama();
+    setInterval(fetchLlama, 2000);
   }
   // Feature-gated polls
   if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
@@ -682,94 +663,7 @@ async function shellyCycle2() {
 }
 
 
-// ── wake-on-LAN ───────────────────────────────────────────────────────────────
-let _wolBusy = false;
-
-async function toggleWOL() {
-  const btn = document.getElementById('btn-wol-toggle');
-  if (_wolBusy) return;
-  _wolBusy = true; btn.textContent = '⏳ WAKING…'; btn.disabled = true;
-  try {
-    const r = await fetch(`/api/wol/${window.targetIP}`, { method: 'POST' });
-    if (r.ok) {
-      const d = await r.json();
-      toast(`WoL sent — ${d.msg}`);
-      btn.textContent = d.target_on ? 'TARGET ON' : '⚡ WAKE TARGET';
-    } else {
-      const err = await r.json().catch(() => ({}));
-      toast(`error: ${err.detail || r.status}`, true);
-      btn.textContent = '⚡ WAKE TARGET';
-    }
-  } catch(e) { toast('network error', true); btn.textContent = '⚡ WAKE TARGET'; }
-  finally { _wolBusy = false; btn.disabled = false; }
-}
-
-async function initWoL() {
-  try {
-    const config = await fetch('/api/wol/config').then(r => r.json());
-    document.getElementById('wol-mac').textContent          = config.target_mac   || '—';
-    document.getElementById('wol-broadcast-ip').textContent = config.broadcast_ip || '';
-    document.getElementById('wol-port').textContent         = config.port;
-    document.getElementById('wol-target-ip').textContent    = config.target_ip    || '—';
-    window.targetIP = config.target_ip;
-    if (config.target_mac && config.broadcast_ip) {
-      document.getElementById('btn-wol-toggle').disabled = false;
-      core.WOL_TARGET_MAC   = config.target_mac;
-      core.WOL_BROADCAST_IP = config.broadcast_ip;
-    }
-    if (config.target_ip) document.getElementById('btn-shutdown').disabled = false;
-  } catch(e) { console.error('WoL config error:', e); }
-}
-
-async function askPassword(message) {
-  return new Promise(resolve => {
-    const overlay = document.createElement('div');
-    Object.assign(overlay.style, {
-      position:'fixed', top:'0', left:'0', width:'100%', height:'100%',
-      backgroundColor:'rgba(0,0,0,0.7)', display:'flex',
-      alignItems:'center', justifyContent:'center', zIndex:'1000'
-    });
-    const box = document.createElement('div');
-    Object.assign(box.style, {
-      background:'var(--bg-card)', border:'1px solid var(--border)',
-      padding:'20px', borderRadius:'4px', color:'var(--g)', minWidth:'300px'
-    });
-    const lbl = document.createElement('label');
-    lbl.textContent = message; lbl.style.cssText = 'display:block;margin-bottom:8px';
-    const inp = document.createElement('input'); inp.type = 'password';
-    Object.assign(inp.style, { width:'100%', padding:'6px', boxSizing:'border-box',
-      background:'var(--bg)', border:'1px solid var(--border)',
-      color:'var(--g)', fontFamily:'var(--font)', borderRadius:'2px' });
-    const ok  = document.createElement('button'); ok.textContent  = 'OK';     ok.style.cssText = 'margin-right:10px;margin-top:8px';
-    const can = document.createElement('button'); can.textContent = 'Cancel';
-    box.append(lbl, inp, ok, can); overlay.appendChild(box); document.body.appendChild(overlay); inp.focus();
-    inp.addEventListener('keyup', e => { if(e.key==='Enter') ok.click(); if(e.key==='Escape') can.click(); });
-    const cleanup = () => overlay.parentNode?.removeChild(overlay);
-    ok.onclick  = () => { cleanup(); resolve(inp.value); };
-    can.onclick = () => { cleanup(); resolve(null); };
-  });
-}
-
-async function powerOff() {
-  const btn = document.getElementById('btn-shutdown');
-  if (!window.targetIP) return;
-  const pwd = await askPassword('Enter sudo password for shutdown:');
-  if (pwd === null) return;
-  btn.disabled = true;
-  try {
-    const r = await fetch(`/api/shutdown/${window.targetIP}`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ password: pwd })
-    });
-    if (r.ok) { toast('Shutdown command sent'); }
-    else { const err = await r.json().catch(()=>({})); toast(`error: ${err.detail || r.status}`, true); }
-  } catch(e) { toast('network error', true); }
-  finally { btn.disabled = false; }
-}
-
-
 // ── state ────────────────────────────────────────────────────────────────────
-const core = { WOL_TARGET_MAC: null, WOL_BROADCAST_IP: null };
 let selected = null, containers = [], ctrFilter = 'all', busy = false;
 
 // Power‑cycle button state
@@ -833,12 +727,6 @@ function shellyCycle() {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-const fmtBytes = b => {
-  if (b < 1024)     return b.toFixed(0)  + ' B/s';
-  if (b < 1048576)  return (b/1024).toFixed(1) + ' KB/s';
-  return (b/1048576).toFixed(1) + ' MB/s';
-};
-
 const pctClass = p => p >= 85 ? 'alert' : p >= 65 ? 'warn' : '';
 
 function bar(pct) {
@@ -873,8 +761,6 @@ async function fetchStats() {
     window.currentHost = d.hostname;
     document.getElementById('hdr-ip').textContent = d.ip;
     document.getElementById('hdr-up').textContent = d.uptime;
-    document.getElementById('net-tx').textContent = fmtBytes(d.net_tx);
-    document.getElementById('net-rx').textContent = fmtBytes(d.net_rx);
 
     const items = [
       { label:'CPU',  val: d.cpu.toFixed(1)+'%',      pct: d.cpu,      sub: '' },
@@ -977,6 +863,37 @@ async function fetchOllama() {
     list.innerHTML = models.length
       ? models.map(m => `<div class="ollama-card"><span class="ollama-dot"></span><span class="ollama-name">${escHtml(m.name)}</span><span class="ollama-size">${m.size_gb} GB</span></div>`).join('')
       : '<div class="ollama-empty">no model loaded</div>';
+  } catch(e) { /* ignore */ }
+}
+
+// ── fetch llama (llama-server) ────────────────────────────────────────────────
+async function fetchLlama() {
+  if (!_features.llama) return;
+  try {
+    const d = await fetch('/api/llama').then(r => r.json());
+    if (d.error) {
+      document.getElementById('llama-state').textContent = 'UNREACHABLE';
+      ['llama-gen', 'llama-gen-sub', 'llama-prefill', 'llama-tokens', 'llama-draft']
+        .forEach(id => document.getElementById(id).textContent = '—');
+      return;
+    }
+    const stateEl = document.getElementById('llama-state');
+    if (d.phase === 'generation') stateEl.textContent = 'GENERATING';
+    else if (d.phase === 'prompt')     stateEl.textContent = 'PREFILL';
+    else if (d.phase === 'processing') stateEl.textContent = 'PROCESSING';
+    else                               stateEl.textContent = 'IDLE';
+    const gen = d.gen_tps ?? d.gen_tps_avg;
+    document.getElementById('llama-gen').textContent =
+      gen != null ? gen.toFixed(1) : '—';
+    document.getElementById('llama-gen-sub').textContent =
+      `avg ${d.gen_tps_avg != null ? d.gen_tps_avg.toFixed(1) : '—'} t/s · ${d.tokens_predicted} tok`;
+    const prefill = d.prompt_tps ?? d.prompt_tps_avg;
+    document.getElementById('llama-prefill').textContent =
+      prefill != null ? prefill.toFixed(0) + ' t/s' : '—';
+    document.getElementById('llama-tokens').textContent =
+      String(d.tokens_predicted);
+    document.getElementById('llama-draft').textContent =
+      d.draft_accept != null ? (d.draft_accept * 100).toFixed(0) + '%' : '—';
   } catch(e) { /* ignore */ }
 }
 
@@ -1197,7 +1114,7 @@ async function fetchProcesses() {
 }
 
 // ── polling ───────────────────────────────────────────────────────────────────
-fetchFeatures(); // kicks off feature-gated polls (Shelly/AdGuard/Ollama/WoL)
+  fetchFeatures(); // kicks off feature-gated polls (Shelly/AdGuard/Ollama/llama-server)
 fetchStats();
 fetchStorage();
 fetchContainers();
