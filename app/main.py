@@ -31,7 +31,7 @@ def api_ollama():
 
 @app.get("/api/llama")
 def api_llama():
-    return core.get_llama_logs()
+    return core.get_llama()
 
 @app.get("/api/storage")
 def api_storage():
