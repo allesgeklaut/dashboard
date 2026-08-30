@@ -354,7 +354,6 @@ def get_system_stats() -> dict:
     mem = psutil.virtual_memory()
     swp = psutil.swap_memory()
     l1, l5, l15 = psutil.getloadavg()
-    tx, rx = net_speed()
     temp = get_temp()
     td   = timedelta(seconds=int(time.time() - info.boot_time))
     h, rem = divmod(td.seconds, 3600)
@@ -369,8 +368,6 @@ def get_system_stats() -> dict:
         "load1":        round(l1,  2),
         "load5":        round(l5,  2),
         "load15":       round(l15, 2),
-        "net_tx":       tx,
-        "net_rx":       rx,
         "uptime":       f"{td.days}d {h:02d}h {m:02d}m",
         "hostname":     os.environ.get("HOST_NAME", "").strip() or socket.gethostname(),
         "ip":           info.host_ipv4,
