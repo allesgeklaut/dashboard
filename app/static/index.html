@@ -879,8 +879,8 @@ async function fetchLlama() {
     const d = await fetch('/api/llama').then(r => r.json());
     if (d.error) {
       document.getElementById('llama-state').textContent = 'UNREACHABLE';
-      document.getElementById('llama-gen').textContent = '—';
-      document.getElementById('llama-gen-sub').textContent = '';
+      ['llama-gen', 'llama-gen-sub', 'llama-prefill', 'llama-tokens', 'llama-draft']
+        .forEach(id => document.getElementById(id).textContent = '—');
       return;
     }
     const stateEl = document.getElementById('llama-state');
