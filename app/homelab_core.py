@@ -52,6 +52,7 @@ class _GpuPaths:
     fan_max:       int | None = None   # fan1_max value (resolved once, stored as int)
     fan_pwm:       str | None = None   # pwm1 (sysfs path)
     power:         str | None = None   # power1_average (µW)
+    power_inst:    str | None = None   # power1_instantaneous (µW)
     usage:         str | None = None   # gpu_busy_percent
     vram_total:    str | None = None   # mem_info_vram_total (bytes)
     vram_used:     str | None = None   # mem_info_vram_used  (bytes)
@@ -60,7 +61,7 @@ class _GpuPaths:
         """Sysfs files that the live getters will actually read."""
         return [p for p in (
             self.temp_junction, self.temp_edge, self.fan_rpm,
-            self.fan_pwm, self.power, self.usage,
+            self.fan_pwm, self.power, self.power_inst, self.usage,
             self.vram_total, self.vram_used,
         ) if p is not None]
 
@@ -187,6 +188,7 @@ class SystemInfo:
             fan_max       = fan1_max_val,
             fan_pwm       = _exists(f"{hwmon_path}/pwm1"),
             power         = _exists(f"{hwmon_path}/power1_average"),
+            power_inst    = _exists(f"{hwmon_path}/power1_instantaneous"),
             usage         = _exists(f"{card_path}/device/gpu_busy_percent") if card_path else None,
             vram_total    = _exists(f"{card_path}/device/mem_info_vram_total") if card_path else None,
             vram_used     = _exists(f"{card_path}/device/mem_info_vram_used") if card_path else None,
@@ -659,7 +661,7 @@ def get_gpu_stats() -> dict | None:
     reads the live counter files.  Reports:
       - temp    (junction if available, else edge)  °C
       - fan_rpm / fan_pct (from fan1_input / pwm1)
-      - power_w (power1_average, µW → W)
+      - power_w (power1_instantaneous, else power1_average; µW → W)
       - usage   (gpu_busy_percent, 0–100)
     """
     paths = get_system_info().amd_gpu
@@ -677,7 +679,10 @@ def get_gpu_stats() -> dict | None:
     temp_raw  = _read(paths.temp_junction) or _read(paths.temp_edge)
     fan_raw   = _read(paths.fan_rpm)
     pwm_raw   = _read(paths.fan_pwm)
-    power_raw = _read(paths.power)
+    # power1_instantaneous is the latest driver sample (no moving average);
+    # power1_average is the driver's sliding-window mean — fall back to it
+    # when the instantaneous file isn't exposed by the firmware/driver.
+    power_raw = _read(paths.power_inst) or _read(paths.power)
     usage_raw = _read(paths.usage)
 
     # VRAM (bytes → GB)
@@ -706,23 +711,14 @@ def get_gpu_stats() -> dict | None:
         
     power_w    = round(int(power_raw) / 1_000_000, 1) if power_raw else None
 
-    # EMA smoothing for GPU usage (alpha=0.3, window=12 samples ≈ 24s @ 2s poll)
-    smoothed_usage: float | int | None = None
+    # gpu_busy_percent is already a ~1 s driver-side average — report it
+    # straight through, no extra smoothing (it made the readout sluggish).
+    usage: int | None = None
     if usage_raw is not None:
         try:
-            new_val = int(usage_raw)
+            usage = int(usage_raw)
         except ValueError:
             pass
-        else:
-            _window = getattr(get_system_info(), '_gpu_usage_window', None)
-            if _window is None:
-                # Lazy-init the smoothing window on first use
-                _window = list[int]()
-                object.__setattr__(get_system_info(), '_gpu_usage_window', _window)
-            _window.append(new_val)
-            if len(_window) > 12:
-                del _window[0]
-            smoothed_usage = sum(_window) / len(_window)
 
     if all(v is None for v in (temp, fan_rpm, fan_pct, power_w)):
         return None
@@ -732,7 +728,7 @@ def get_gpu_stats() -> dict | None:
         "fan_rpm":      fan_rpm,
         "fan_pct":      fan_pct,
         "power_w":      power_w,
-        "usage":        smoothed_usage if smoothed_usage is not None else usage_raw,
+        "usage":        usage,
         "vram_used_gb": round(int(vram_used_b) / 1024**3, 1) if vram_used_b else None,
         "vram_total_gb": round(int(vram_total_b) / 1024**3, 1) if vram_total_b else None,
         "vram_pct":     vram_pct,
