@@ -3,17 +3,17 @@ services:
     build: .
     container_name: homelab-ctrl
     restart: unless-stopped
-    network_mode: host # required — psutil reads host network stats
+    ports:
+      - "127.0.0.1:7681:7681" # loopback only — reached via cloudflared tunnel, not on LAN
     pid: host # required — psutil reads host CPU / process list
     privileged: false
     environment:
       - TZ=Europe/Vienna
       - HOMELAB_ENERGY_FILE=/data/energy.json
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro # CLI fallback
+      - /var/run/docker.sock:/var/run/docker.sock:ro # docker CLI for llama-server log tail
       - /mnt/nas:/mnt/nas:ro # NFS mounts visible
       - ${HOME}/.homelab-ctrl:/data # energy tracking dir (file: energy.json)
-      - /home/johannes/.ssh/:/home/johannes/.ssh/:ro # use host's SSH keys for WOL and SSH actions
       - /sys/class/drm:/sys/class/drm:ro             # AMD GPU utilisation (gpu_busy_percent)
       - /sys/class/hwmon:/sys/class/hwmon:ro          # AMD GPU hwmon (temp, fan, power)
     env_file:

@@ -307,66 +307,30 @@ def portainer_containers() -> list[dict]:
             pass
     return out
 
-def cli_containers() -> list[dict]:
-    """Fallback: list containers via the local docker CLI."""
-    try:
-        raw = subprocess.check_output(
-            ["docker", "ps", "-a", "--format",
-             "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Image}}"],
-            timeout=4, stderr=subprocess.DEVNULL,
-        ).decode().strip()
-        out = []
-        for line in raw.splitlines():
-            p = line.split("\t")
-            if len(p) < 4:
-                continue
-            out.append({
-                "id":     p[0],
-                "name":   p[1],
-                "state":  p[2],
-                "status": p[3],
-                "image":  (p[4] if len(p) > 4 else "").split("/")[-1].split(":")[0],
-                "host":   "local",
-                "eid":    None,
-            })
-        return out
-    except Exception:
-        return []
-
 def get_containers() -> tuple[list[dict], str]:
-    """Return (containers, source) where source is 'portainer', 'docker', or 'none'."""
+    """Return (containers, source) where source is 'portainer' or 'none'."""
     containers = portainer_containers()
     if containers:
         return containers, "portainer"
-    containers = cli_containers()
-    if containers:
-        return containers, "docker"
     return [], "none"
 
 # ── Container actions ─────────────────────────────────────────────────────────
 
 def container_action(cid: str, action: str, eid: int | None = None) -> tuple[bool, str]:
-    """Start, stop, or restart a container via Portainer or local docker CLI."""
+    """Start, stop, or restart a container via Portainer."""
     if eid is None:
         eids = get_eids()
         eid  = eids[0] if eids else None
-    if eid is not None:
-        try:
-            r = requests.post(
-                f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/{cid}/{action}",
-                headers=_HDR, timeout=15, verify=False,
-            )
-            if r.status_code in (200, 204, 304):
-                return True, f"{action} OK"
-            return False, f"HTTP {r.status_code}"
-        except Exception as exc:
-            return False, str(exc)
+    if eid is None:
+        return False, "no portainer endpoint"
     try:
-        subprocess.check_call(
-            ["docker", action, cid],
-            stderr=subprocess.DEVNULL, timeout=10,
+        r = requests.post(
+            f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/{cid}/{action}",
+            headers=_HDR, timeout=15, verify=False,
         )
-        return True, f"{action} OK"
+        if r.status_code in (200, 204, 304):
+            return True, f"{action} OK"
+        return False, f"HTTP {r.status_code}"
     except Exception as exc:
         return False, str(exc)
 

@@ -125,18 +125,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .pbar-fill.warn  { background:var(--yellow); }
 .pbar-fill.alert { background:var(--red); }
 
-/* ── NET ROW ── */
-.net-row {
-  background:var(--bg-card); border:1px solid var(--border);
-  border-radius:3px; padding:8px 10px;
-  display:grid; grid-template-columns:1fr 1fr;
-  gap:4px;
-}
-.net-item { display:flex; flex-direction:column; }
-.net-label { font-size:10px; color:var(--g-dim); letter-spacing:0.06em; }
-.net-val { font-size:15px; font-weight:600; color:var(--g); }
-.net-arrow { color:var(--g-dim); margin-right:3px; }
-
 /* ── ADGUARD ROW ── */
 .ag-row {
   background:var(--bg-card); border:1px solid var(--border);
@@ -450,19 +438,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <!-- System -->
     <div class="sec-label">system</div>
     <div class="stat-grid" id="stat-grid"><!-- filled by JS --></div>
-
-    <!-- Network -->
-    <div class="sec-label">network</div>
-    <div class="net-row">
-      <div class="net-item">
-        <span class="net-label">TX<span class="net-arrow"> ▲</span></span>
-        <span class="net-val" id="net-tx">—</span>
-      </div>
-      <div class="net-item">
-        <span class="net-label">RX<span class="net-arrow"> ▼</span></span>
-        <span class="net-val" id="net-rx">—</span>
-      </div>
-    </div>
 
     <!-- GPU (hidden until stats confirm GPU present) -->
     <div class="sec-label" id="gpu-label" style="display:none">gpu</div>
@@ -921,8 +896,6 @@ async function fetchStats() {
     window.currentHost = d.hostname;
     document.getElementById('hdr-ip').textContent = d.ip;
     document.getElementById('hdr-up').textContent = d.uptime;
-    document.getElementById('net-tx').textContent = fmtBytes(d.net_tx);
-    document.getElementById('net-rx').textContent = fmtBytes(d.net_rx);
 
     const items = [
       { label:'CPU',  val: d.cpu.toFixed(1)+'%',      pct: d.cpu,      sub: '' },
