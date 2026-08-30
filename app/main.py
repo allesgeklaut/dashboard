@@ -2,10 +2,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import psutil
-from fastapi import FastAPI, HTTPException, Body
-import os
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 
 import homelab_core as core
 
@@ -68,16 +66,6 @@ def api_shelly_powercycle():
         raise HTTPException(500, msg)
     return {"ok": True, "msg": msg}
 
-@app.get("/api/wol/config")
-def api_wol_config():
-    """Return WOL configuration for frontend display."""
-    return {
-        "target_mac": core.WOL_TARGET_MAC or "",
-        "broadcast_ip": core.WOL_BROADCAST_IP,
-        "port": core.WOL_PORT,
-        "target_ip": os.getenv("WOL_TARGET_IP", "")
-    }
-
 @app.get("/api/shelly2")
 def api_shelly2():
     return core.get_shelly2_state()
@@ -103,28 +91,6 @@ def api_processes():
     except Exception:
         return []
 
-@app.post("/api/wol/{target_ip}")
-def api_wol(target_ip: str):
-    """Send Wake-on-LAN packet to wake up a target machine.
-    
-    hostname is used for display purposes; the actual MAC address comes from WOL_TARGET_MAC config.
-    Returns status of the WoL send attempt.
-    """
-    ok, msg = core.wol_send(None)  # None means use default WOL_TARGET_MAC from homelab_core.py
-    if not ok:
-        raise HTTPException(500, detail=msg)
-    # Give the NIC a moment to wake up before probing.
-    import time
-    time.sleep(5)
-    on, status_msg = core.is_target_on(target_ip)
-    return {"ok": True, "msg": msg, "target_on": on, "status_message": status_msg}
-
-@app.post("/api/shutdown/{hostname}")
-def api_shutdown(hostname: str, payload: dict = Body(...)):
-    # Payload may contain a sudo password for the shutdown command.
-    pwd = payload.get('password') if isinstance(payload, dict) else None
-    ok, msg = core.remote_shutdown(hostname, pwd)
-    return {"ok": ok, "msg": msg}
 
 @app.get("/", response_class=HTMLResponse)
 def root():

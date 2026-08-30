@@ -3,8 +3,7 @@ homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
 Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
-import os, socket, subprocess, threading, time, json
-import paramiko
+import os, socket, threading, time, json
 from datetime import timedelta
 
 import psutil, requests, urllib3
@@ -25,15 +24,6 @@ SHELLY_PLUG_URL   = os.getenv("SHELLY_PLUG_URL")    # None if not set → featur
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → feature disabled
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
-
-# ── Wake‑on‑LAN Config ───────────────────────────────────────────────────────
-WOL_TARGET_MAC    = os.getenv("WOL_TARGET_MAC", "").lower()  # MAC address of target machine (e.g., "aa:bb:cc:dd:ee:ff")
-WOL_BROADCAST_IP  = os.getenv("WOL_BROADCAST_IP", "255.255.255.255")  # Broadcast IP for magic packet
-WOL_PORT          = int(os.getenv("WOL_PORT", "9000"))  # UDP port for WOL packets (typically 7 or 9000)
-
-# ── SSH Config ───────────────────────────────────────────────────────────────
-SSH_USER = os.getenv("SSH_USER", "woladmin")
-SSH_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "")
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
@@ -646,119 +636,6 @@ def shelly2_toggle() -> tuple[bool, str]:
         return False, str(exc)
 
 
-# ── Wake-on-LAN (WoL) ───────────────────────────────────────────────────────
-
-def _pack_mac(mac_str):
-    """Convert MAC string like 'aa:bb:cc:dd:ee:ff' to bytes."""
-    if not mac_str or len(mac_str.replace(":", "")) != 12:
-        return None
-    try:
-        # Remove any separators and convert to hex bytes
-        clean = mac_str.replace(":", "").replace("-", "")
-        return bytes.fromhex(clean)
-    except Exception:
-        return None
-
-def _build_magic_packet(mac_bytes):
-    """Build magic packet: 6 bytes of broadcast + 1598 repetitions (273 packets total)."""
-    if not mac_bytes or len(mac_bytes) != 6:
-        return b""
-    
-    packet = b"\xff" * 6 + mac_bytes * 16
-    return packet
-
-def is_target_on(host: str) -> tuple[bool, str]:
-    """Return ``(True, "online")`` if the host responds to ping.
-
-    The previous implementation attempted an SSH connection which can fail
-    when key authentication is not set up.  For a simple online check we only
-    need ICMP reachability.
-    """
-    if _ping(host):
-        return True, "online"
-    return False, f"{host} did not respond to ping"
-
-def remote_shutdown(host: str, password: str | None = None) -> tuple[bool, str]:
-    """SSH into *host* and run ``sudo shutdown -h now``.
-
-    Requires that the SSH user has password‑less sudo rights for shutdown.
-    Returns ``(True, "OK")`` on success or ``(False, error_message)``.
-    """
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        key = None
-        if SSH_KEY_PATH and os.path.exists(SSH_KEY_PATH):
-            ext = os.path.splitext(SSH_KEY_PATH)[1].lower()
-            try:
-                if ext in ('.pem', '.pub') or SSH_KEY_PATH.endswith('id_rsa'):
-                    key = paramiko.RSAKey.from_private_key_file(SSH_KEY_PATH)
-                else:  # assume Ed25519
-                    key = paramiko.Ed25519Key.from_private_key_file(SSH_KEY_PATH)
-            except Exception:
-                key = None
-        client.connect(hostname=host, username=SSH_USER, pkey=key,
-                       timeout=5, banner_timeout=5)
-        # Build command with optional password
-        if password:
-            cmd = f'echo "{password}" | sudo -S shutdown -h now'
-        else:
-            cmd = 'sudo shutdown -h now'
-        stdin, stdout, stderr = client.exec_command(cmd, timeout=3)
-        err = stderr.read().decode()
-        out = stdout.read().decode()
-        client.close()
-        if err:
-            return False, err.strip()
-        return True, "shutdown command sent"
-    except Exception as exc:
-        return False, str(exc)
-
-def _ping(host: str, timeout: int = 2) -> bool:
-    """Return True if the given hostname or IP responds to ICMP ping.
-
-    The function accepts either a fully qualified domain name or an IPv4/IPv6
-    address.  It uses the system ``ping`` command which is available on Linux
-    and macOS.  If the host string contains non‑numeric characters it will be
-    treated as a hostname.
-    """
-    try:
-        cmd = ["ping", "-c", str(timeout), host]
-        subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        return True
-    except Exception:
-        return False
-    
-
-def wol_send(mac_str):
-    """Send Wake-on-LAN magic packet to wake up a target machine.
-    
-    Returns: tuple[bool, str] — (success, message)
-    """
-    if not WOL_TARGET_MAC or not WOL_BROADCAST_IP:
-        return False, "WOL not configured: set WOL_TARGET_MAC and optionally WOL_BROADCAST_IP"
-    
-    mac_bytes = _pack_mac(WOL_TARGET_MAC.upper())
-    if not mac_bytes:
-        return False, f"Invalid MAC address format for target machine: {WOL_TARGET_MAC}"
-    
-    packet = _build_magic_packet(mac_bytes)
-    if not packet:
-        return False, "Failed to build magic packet"
-    
-    try:
-        # Send UDP broadcast packet (1500 bytes max is fine; ours is ~162 bytes)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        
-        # Send the packet
-        sock.sendto(packet, (WOL_BROADCAST_IP, WOL_PORT))
-        
-        return True, f"Wake-on-LAN sent to {WOL_TARGET_MAC} via {WOL_BROADCAST_IP}:{WOL_PORT}"
-    except Exception as exc:
-        return False, f"Failed to send WoL packet: {exc}"
-
-
 # ── Startup helper ────────────────────────────────────────────────────────────
 
 def prime_counters() -> None:
@@ -896,6 +773,26 @@ _LLM_TRACKED = (
 _LLM_LAST: dict[str, float] = {}
 _LLM_SLOT = {"id_task": None, "t": 0.0, "n_decoded": 0, "n_prompt": 0}
 _LLM_AVG: dict[str, float] = {}  # *_tokens_seconds gauges read 0 mid-request
+_LLM_MIN: dict[str, float] = {}  # lowest seen *_total counters — restart baseline
+
+def _llm_restarted(m: dict[str, float]) -> bool:
+    """Return True when a cumulative *_total counter dropped below the lowest
+    value we've seen.  The totals only ever increase while llama-server runs, so
+    a drop means the process restarted and reset its counters to 0.  On restart
+    the cached average/slot state from the old process must be discarded."""
+    for k in _LLM_TRACKED:
+        v = m.get(k)
+        if v is None:
+            continue
+        if v < _LLM_MIN.get(k, v):
+            _LLM_MIN.clear()
+            for _k in _LLM_TRACKED:
+                _v = m.get(_k)
+                if _v is not None:
+                    _LLM_MIN[_k] = _v
+            return True
+        _LLM_MIN.setdefault(k, v)
+    return False
 
 def _parse_prometheus(text: str) -> dict[str, float]:
     out: dict[str, float] = {}
@@ -970,6 +867,12 @@ def get_llama() -> dict:
     prev = dict(_LLM_LAST)
     _LLM_LAST.update({k: m[k] for k in _LLM_TRACKED if k in m})
 
+    # If llama-server restarted, its counters reset to 0 — drop the old
+    # process's cached averages and slot deltas so we don't surface stale data.
+    if _llm_restarted(m):
+        _LLM_AVG.clear()
+        _LLM_SLOT.update(id_task=None, t=0.0, n_decoded=0, n_prompt=0)
+
     now = time.monotonic()
     gen_tps, prompt_tps, slot_phase = _slot_rates(slots, now)
 
@@ -1029,7 +932,6 @@ def get_llama() -> dict:
 def get_features() -> dict:
     """Return which optional integrations are configured via .env."""
     return {
-        "wol":     bool(WOL_TARGET_MAC),
         "shelly":  bool(SHELLY_PLUG_URL),
         "shelly2": bool(SHELLY_PLUG_2_URL),
         "adguard": bool(ADGUARD_URL),
