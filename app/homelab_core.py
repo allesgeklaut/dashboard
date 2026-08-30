@@ -3,7 +3,7 @@ homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
 Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
-import os, socket, subprocess, threading, time, json
+import os, socket, subprocess, threading, time, json, re
 import paramiko
 from datetime import timedelta
 
@@ -24,6 +24,8 @@ NFS_MOUNTS    = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",
 SHELLY_PLUG_URL   = os.getenv("SHELLY_PLUG_URL")    # None if not set → feature disabled
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → feature disabled
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
+LLAMA_LOG_CONTAINER = os.getenv("LLAMA_LOG_CONTAINER", "llama-server")
+LLAMA_LOG_LINES     = int(os.getenv("LLAMA_LOG_LINES", "12"))
 
 # ── Wake‑on‑LAN Config ───────────────────────────────────────────────────────
 WOL_TARGET_MAC    = os.getenv("WOL_TARGET_MAC", "").lower()  # MAC address of target machine (e.g., "aa:bb:cc:dd:ee:ff")
@@ -914,6 +916,86 @@ def get_ollama_model() -> list[dict]:
     return []
 
 
+# ── llama.cpp server (llama-server) ─────────────────────────────────────────────
+# Live view of what the local LLM is doing. llama.cpp exposes no per-request
+# speed endpoint (the Prometheus /metrics endpoint is not enabled), so we tail
+# the container's log via the docker CLI. The `print_timing` log lines carry the
+# live generation speed (tg / tg_3s), prompt-processing speed, and draft
+# acceptance for the in-flight request. Logs are written to the container's
+# stderr, hence stderr is merged into the captured output.
+
+_LLM_RE_TASK   = re.compile(r"\btask (\d+)\b")
+_LLM_RE_GEN    = re.compile(r"n_gen\s*=\s*(\d+),\s*tg\s*=\s*([\d.]+)\s*t/s,\s*tg_3s\s*=\s*([\d.]+)\s*t/s")
+_LLM_RE_PROMPT = re.compile(
+    r"prompt processing,\s*n_tokens\s*=\s*(\d+),\s*progress\s*=\s*([\d.]+),\s*"
+    r"t\s*=\s*[\d.]+\s*s\s*/\s*([\d.]+)\s*tokens per second"
+)
+_LLM_RE_DRAFT  = re.compile(
+    r"draft acceptance = ([\d.]+) \(\s*\d+ accepted /\s*\d+ generated\), mean len =\s*([\d.]+)"
+)
+
+def parse_llama_lines(lines: list[str]) -> dict:
+    """Scan log lines (oldest → newest) and return the most recent activity."""
+    latest: dict[str, object] = {
+        "phase": None, "gen_tps": None, "gen3s_tps": None, "n_gen": None,
+        "prompt_tps": None, "n_prompt": None, "progress": None,
+        "draft_accept": None, "draft_len": None, "task": None,
+    }
+    for line in lines:
+        m = _LLM_RE_TASK.search(line)
+        if m:
+            latest["task"] = int(m.group(1))
+        m = _LLM_RE_PROMPT.search(line)
+        if m:
+            latest["n_prompt"]   = int(m.group(1))
+            latest["progress"]   = float(m.group(2))
+            latest["prompt_tps"] = float(m.group(3))
+            latest["phase"]      = "prompt"
+        m = _LLM_RE_GEN.search(line)
+        if m:
+            latest["n_gen"]     = int(m.group(1))
+            latest["gen_tps"]   = float(m.group(2))
+            latest["gen3s_tps"] = float(m.group(3))
+            latest["phase"]     = "generation"
+        m = _LLM_RE_DRAFT.search(line)
+        if m:
+            latest["draft_accept"] = float(m.group(1))
+            latest["draft_len"]    = float(m.group(2))
+        if "stop processing" in line:
+            latest["phase"] = "done"
+    return latest
+
+def get_llama_logs(n_lines: int | None = None) -> dict:
+    """Tail the llama-server container's log and parse the latest activity.
+
+    Returns ``{"container", "running", "lines", "latest"}`` or ``{"error": ...}``.
+    """
+    if n_lines is None:
+        n_lines = LLAMA_LOG_LINES
+    container = LLAMA_LOG_CONTAINER
+    try:
+        running_raw = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container],
+            timeout=4, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return {"error": f"container {container!r} not found"}
+    try:
+        raw = subprocess.check_output(
+            ["docker", "logs", "--tail", str(n_lines), container],
+            timeout=4, stderr=subprocess.STDOUT,
+        ).decode()
+    except Exception as exc:
+        return {"error": f"docker logs failed: {exc}"}
+    lines = [l for l in raw.splitlines() if l.strip()]
+    return {
+        "container": container,
+        "running":   running_raw == "true",
+        "lines":     lines[-n_lines:],
+        "latest":    parse_llama_lines(lines),
+    }
+
+
 # ── Feature flags ──────────────────────────────────────────────────────────────
 
 def get_features() -> dict:
@@ -924,4 +1006,5 @@ def get_features() -> dict:
         "shelly2": bool(SHELLY_PLUG_2_URL),
         "adguard": bool(ADGUARD_URL),
         "ollama":  bool(OLLAMA_URL),
+        "llama":   bool(LLAMA_LOG_CONTAINER),
     }

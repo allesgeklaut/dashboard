@@ -29,6 +29,10 @@ def api_features():
 def api_ollama():
     return core.get_ollama_model()
 
+@app.get("/api/llama")
+def api_llama():
+    return core.get_llama_logs()
+
 @app.get("/api/storage")
 def api_storage():
     return core.get_storage()
