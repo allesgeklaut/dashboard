@@ -727,12 +727,6 @@ function shellyCycle() {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-const fmtBytes = b => {
-  if (b < 1024)     return b.toFixed(0)  + ' B/s';
-  if (b < 1048576)  return (b/1024).toFixed(1) + ' KB/s';
-  return (b/1048576).toFixed(1) + ' MB/s';
-};
-
 const pctClass = p => p >= 85 ? 'alert' : p >= 65 ? 'warn' : '';
 
 function bar(pct) {
@@ -1120,7 +1114,7 @@ async function fetchProcesses() {
 }
 
 // ── polling ───────────────────────────────────────────────────────────────────
-fetchFeatures(); // kicks off feature-gated polls (Shelly/AdGuard/Ollama/WoL)
+  fetchFeatures(); // kicks off feature-gated polls (Shelly/AdGuard/Ollama/llama-server)
 fetchStats();
 fetchStorage();
 fetchContainers();
