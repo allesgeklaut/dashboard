@@ -3,7 +3,7 @@ homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
 Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
-import os, socket, subprocess, threading, time, json, re
+import os, socket, subprocess, threading, time, json
 import paramiko
 from datetime import timedelta
 
@@ -24,8 +24,7 @@ NFS_MOUNTS    = [m.strip() for m in os.getenv("NFS_MOUNTS", "/mnt/nas").split(",
 SHELLY_PLUG_URL   = os.getenv("SHELLY_PLUG_URL")    # None if not set → feature disabled
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → feature disabled
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
-LLAMA_LOG_CONTAINER = os.getenv("LLAMA_LOG_CONTAINER", "llama-server")
-LLAMA_LOG_LINES     = int(os.getenv("LLAMA_LOG_LINES", "12"))
+LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
 
 # ── Wake‑on‑LAN Config ───────────────────────────────────────────────────────
 WOL_TARGET_MAC    = os.getenv("WOL_TARGET_MAC", "").lower()  # MAC address of target machine (e.g., "aa:bb:cc:dd:ee:ff")
@@ -881,82 +880,147 @@ def get_ollama_model() -> list[dict]:
 
 
 # ── llama.cpp server (llama-server) ─────────────────────────────────────────────
-# Live view of what the local LLM is doing. llama.cpp exposes no per-request
-# speed endpoint (the Prometheus /metrics endpoint is not enabled), so we tail
-# the container's log via the docker CLI. The `print_timing` log lines carry the
-# live generation speed (tg / tg_3s), prompt-processing speed, and draft
-# acceptance for the in-flight request. Logs are written to the container's
-# stderr, hence stderr is merged into the captured output.
+# Live view of what the local LLM is doing. Two plain-HTTP sources (no docker
+# socket needed):
+#   /metrics — Prometheus counters/gauges. Updated only at request *completion*,
+#              so it carries lifetime totals, lifetime averages and the
+#              speculative-decode stats, plus a delta fallback for short
+#              requests that finish between two polls.
+#   /slots   — per-slot progress (n_decoded, n_prompt_tokens_processed) that
+#              updates in real time; source of live tok/s while generating.
 
-_LLM_RE_TASK   = re.compile(r"\btask (\d+)\b")
-_LLM_RE_GEN    = re.compile(r"n_gen\s*=\s*(\d+),\s*tg\s*=\s*([\d.]+)\s*t/s,\s*tg_3s\s*=\s*([\d.]+)\s*t/s")
-_LLM_RE_PROMPT = re.compile(
-    r"prompt processing,\s*n_tokens\s*=\s*(\d+),\s*progress\s*=\s*([\d.]+),\s*"
-    r"t\s*=\s*[\d.]+\s*s\s*/\s*([\d.]+)\s*tokens per second"
+_LLM_TRACKED = (
+    "llamacpp:tokens_predicted_total", "llamacpp:tokens_predicted_seconds_total",
+    "llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total",
 )
-_LLM_RE_DRAFT  = re.compile(
-    r"draft acceptance = ([\d.]+) \(\s*\d+ accepted /\s*\d+ generated\), mean len =\s*([\d.]+)"
-)
+_LLM_LAST: dict[str, float] = {}
+_LLM_SLOT = {"id_task": None, "t": 0.0, "n_decoded": 0, "n_prompt": 0}
+_LLM_AVG: dict[str, float] = {}  # *_tokens_seconds gauges read 0 mid-request
 
-def parse_llama_lines(lines: list[str]) -> dict:
-    """Scan log lines (oldest → newest) and return the most recent activity."""
-    latest: dict[str, object] = {
-        "phase": None, "gen_tps": None, "gen3s_tps": None, "n_gen": None,
-        "prompt_tps": None, "n_prompt": None, "progress": None,
-        "draft_accept": None, "draft_len": None, "task": None,
-    }
-    for line in lines:
-        m = _LLM_RE_TASK.search(line)
-        if m:
-            latest["task"] = int(m.group(1))
-        m = _LLM_RE_PROMPT.search(line)
-        if m:
-            latest["n_prompt"]   = int(m.group(1))
-            latest["progress"]   = float(m.group(2))
-            latest["prompt_tps"] = float(m.group(3))
-            latest["phase"]      = "prompt"
-        m = _LLM_RE_GEN.search(line)
-        if m:
-            latest["n_gen"]     = int(m.group(1))
-            latest["gen_tps"]   = float(m.group(2))
-            latest["gen3s_tps"] = float(m.group(3))
-            latest["phase"]     = "generation"
-        m = _LLM_RE_DRAFT.search(line)
-        if m:
-            latest["draft_accept"] = float(m.group(1))
-            latest["draft_len"]    = float(m.group(2))
-        if "stop processing" in line:
-            latest["phase"] = "done"
-    return latest
+def _parse_prometheus(text: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for line in text.splitlines():
+        if not line or line[0] in "# \t":
+            continue
+        name, sep, value = line.rpartition("}")
+        if sep:
+            name = name.rsplit(" ", 1)[0]
+        else:
+            name, _, value = line.rpartition(" ")
+        try:
+            out[name] = float(value.strip())
+        except ValueError:
+            continue
+    return out
 
-def get_llama_logs(n_lines: int | None = None) -> dict:
-    """Tail the llama-server container's log and parse the latest activity.
+def _live_rate(prev: dict[str, float], cur: dict[str, float], count: str, seconds: str) -> float | None:
+    """Counter delta between scrapes → tokens/s since the last poll."""
+    if count not in cur or seconds not in cur:
+        return None
+    d_count = cur[count]  - prev.get(count, 0)
+    d_sec   = cur[seconds] - prev.get(seconds, 0)
+    if prev and d_count > 0 and d_sec > 0:
+        return d_count / d_sec
+    return None
 
-    Returns ``{"container", "running", "lines", "latest"}`` or ``{"error": ...}``.
+def _slot_rates(slots: list, now: float) -> tuple[float | None, float | None, str]:
+    """Live rates from the first processing slot → (gen_tps, prompt_tps, phase)."""
+    act = next((s for s in slots if s.get("is_processing")), None)
+    if act is None:
+        _LLM_SLOT["id_task"] = None
+        return None, None, ""
+    task = act.get("id_task")
+    nt   = act.get("next_token")
+    ntd  = nt if isinstance(nt, dict) else (nt[0] if isinstance(nt, list) and nt else {})
+    try:
+        n_dec = int(ntd.get("n_decoded", 0) or 0)
+    except (TypeError, ValueError):
+        n_dec = 0
+    n_pr  = act.get("n_prompt_tokens_processed", 0) or 0
+    gen_tps = prompt_tps = None
+    if _LLM_SLOT["id_task"] == task:        # same request → delta is the live rate
+        dt = now - _LLM_SLOT["t"]
+        if dt > 0.2:
+            if n_dec > _LLM_SLOT["n_decoded"]:
+                gen_tps = (n_dec - _LLM_SLOT["n_decoded"]) / dt
+            elif n_pr > _LLM_SLOT["n_prompt"]:
+                prompt_tps = (n_pr - _LLM_SLOT["n_prompt"]) / dt
+    _LLM_SLOT.update(id_task=task, t=now, n_decoded=n_dec, n_prompt=n_pr)
+    return gen_tps, prompt_tps, ("generation" if n_dec > 0 else "prompt")
+
+def get_llama() -> dict:
+    """Scrape llama-server /metrics + /slots and report the latest activity.
+
+    Returns ``{"url", "running", ...}`` or ``{"error": ...}``.
     """
-    if n_lines is None:
-        n_lines = LLAMA_LOG_LINES
-    container = LLAMA_LOG_CONTAINER
+    if not LLAMA_SERVER_URL:
+        return {"error": "LLAMA_SERVER_URL not configured"}
+    base = LLAMA_SERVER_URL.rstrip("/")
     try:
-        running_raw = subprocess.check_output(
-            ["docker", "inspect", "-f", "{{.State.Running}}", container],
-            timeout=4, stderr=subprocess.DEVNULL,
-        ).decode().strip()
-    except Exception:
-        return {"error": f"container {container!r} not found"}
-    try:
-        raw = subprocess.check_output(
-            ["docker", "logs", "--tail", str(n_lines), container],
-            timeout=4, stderr=subprocess.STDOUT,
-        ).decode()
+        r = requests.get(f"{base}/metrics", timeout=3)
+        r.raise_for_status()
+        m = _parse_prometheus(r.text)
+        slots = requests.get(f"{base}/slots", timeout=3).json()
+        if not isinstance(slots, list):
+            slots = []
     except Exception as exc:
-        return {"error": f"docker logs failed: {exc}"}
-    lines = [l for l in raw.splitlines() if l.strip()]
+        _LLM_LAST.clear()
+        return {"error": f"llama-server unreachable at {base}: {exc}"}
+
+    prev = dict(_LLM_LAST)
+    _LLM_LAST.update({k: m[k] for k in _LLM_TRACKED if k in m})
+
+    now = time.monotonic()
+    gen_tps, prompt_tps, slot_phase = _slot_rates(slots, now)
+
+    # /slots misses requests shorter than one poll — fall back to /metrics
+    # counter deltas, which catch a completed request's burst (both counters
+    # jump together at completion, so the delta is that request's true rate).
+    if gen_tps is None:
+        gen_tps = _live_rate(prev, m, "llamacpp:tokens_predicted_total", "llamacpp:tokens_predicted_seconds_total")
+    if prompt_tps is None:
+        prompt_tps = _live_rate(prev, m, "llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total")
+
+    d_gen    = m.get("llamacpp:tokens_predicted_total", 0) - prev.get("llamacpp:tokens_predicted_total", 0)
+    d_prompt = m.get("llamacpp:prompt_tokens_total", 0) - prev.get("llamacpp:prompt_tokens_total", 0)
+    if not prev:  # first scrape: no delta baseline yet
+        d_gen = d_prompt = 0
+    if slot_phase:
+        phase = slot_phase
+    elif d_gen > 0:
+        phase = "generation"
+    elif d_prompt > 0:
+        phase = "prompt"
+    elif m.get("llamacpp:requests_processing", 0) > 0:
+        phase = "processing"
+    else:
+        phase = "idle"
+
+    # the *_tokens_seconds gauges reset to 0 while a request is in flight —
+    # surface the last real value instead so the average doesn't flicker
+    gen_avg    = m.get("llamacpp:predicted_tokens_seconds")
+    prompt_avg = m.get("llamacpp:prompt_tokens_seconds")
+    if gen_avg:
+        _LLM_AVG["gen"] = gen_avg
+    if prompt_avg:
+        _LLM_AVG["prompt"] = prompt_avg
+
+    draft    = m.get("llamacpp:spec_decode_num_draft_tokens_total", 0)
+    accepted = m.get("llamacpp:spec_decode_num_accepted_tokens_total", 0)
     return {
-        "container": container,
-        "running":   running_raw == "true",
-        "lines":     lines[-n_lines:],
-        "latest":    parse_llama_lines(lines),
+        "url":               base,
+        "running":           True,
+        "phase":             phase,
+        "gen_tps":           gen_tps,
+        "gen_tps_avg":       gen_avg or _LLM_AVG.get("gen"),
+        "prompt_tps":        prompt_tps,
+        "prompt_tps_avg":    prompt_avg or _LLM_AVG.get("prompt"),
+        "tokens_predicted":  int(m.get("llamacpp:tokens_predicted_total", 0)),
+        "prompt_tokens":     int(m.get("llamacpp:prompt_tokens_total", 0)),
+        "requests_processing": int(m.get("llamacpp:requests_processing", 0)),
+        "requests_deferred":   int(m.get("llamacpp:requests_deferred", 0)),
+        "draft_accept":      (accepted / draft) if draft > 0 else None,
+        "draft_tokens":      int(draft),
     }
 
 
@@ -970,5 +1034,5 @@ def get_features() -> dict:
         "shelly2": bool(SHELLY_PLUG_2_URL),
         "adguard": bool(ADGUARD_URL),
         "ollama":  bool(OLLAMA_URL),
-        "llama":   bool(LLAMA_LOG_CONTAINER),
+        "llama":   bool(LLAMA_SERVER_URL),
     }

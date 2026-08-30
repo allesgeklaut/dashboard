@@ -402,14 +402,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 }
 .llama-big small { font-size:12px; color:var(--g-dim); font-weight:400; margin-left:3px; }
 .llama-state { display:flex; gap:16px; flex-wrap:wrap; flex:1; }
-.llama-log {
-  background:var(--bg-card); border:1px solid var(--border);
-  border-radius:3px; margin-top:6px; padding:8px 10px;
-  font-family:var(--font); font-size:10px; line-height:1.5;
-  color:var(--g-dim);
-  white-space:pre-wrap; word-break:break-word;
-  max-height:220px; overflow-y:auto;
-}
 
 </style>
 </head>
@@ -467,7 +459,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
           <div class="ag-item"><span class="ag-label">DRAFT</span><span class="ag-val" id="llama-draft">—</span></div>
         </div>
       </div>
-      <pre class="llama-log" id="llama-log"></pre>
     </div>
 
     <!-- AdGuard -->
@@ -1002,36 +993,34 @@ async function fetchOllama() {
 }
 
 // ── fetch llama (llama-server) ────────────────────────────────────────────────
-const _llmClean = s => s.replace(/^\S+\s+[IWEF]\s+/, '');
 async function fetchLlama() {
   if (!_features.llama) return;
   try {
     const d = await fetch('/api/llama').then(r => r.json());
     if (d.error) {
-      document.getElementById('llama-state').textContent = 'ERROR';
+      document.getElementById('llama-state').textContent = 'UNREACHABLE';
       document.getElementById('llama-gen').textContent = '—';
       document.getElementById('llama-gen-sub').textContent = '';
-      document.getElementById('llama-log').textContent = d.error;
       return;
     }
-    const l = d.latest;
     const stateEl = document.getElementById('llama-state');
-    if (!d.running)               stateEl.textContent = 'STOPPED';
-    else if (l.phase === 'generation') stateEl.textContent = 'GENERATING';
-    else if (l.phase === 'prompt')     stateEl.textContent = 'PREFILL';
+    if (!d.running)                    stateEl.textContent = 'STOPPED';
+    else if (d.phase === 'generation') stateEl.textContent = 'GENERATING';
+    else if (d.phase === 'prompt')     stateEl.textContent = 'PREFILL';
+    else if (d.phase === 'processing') stateEl.textContent = 'PROCESSING';
     else                               stateEl.textContent = 'IDLE';
+    const gen = d.gen_tps ?? d.gen_tps_avg;
     document.getElementById('llama-gen').textContent =
-      l.gen_tps != null ? l.gen_tps.toFixed(1) : '—';
+      gen != null ? gen.toFixed(1) : '—';
     document.getElementById('llama-gen-sub').textContent =
-      l.gen3s_tps != null ? `3s ${l.gen3s_tps.toFixed(1)} · n=${l.n_gen ?? '—'}` : '3s —';
+      `avg ${d.gen_tps_avg != null ? d.gen_tps_avg.toFixed(1) : '—'} t/s · ${d.tokens_predicted} tok`;
+    const prefill = d.prompt_tps ?? d.prompt_tps_avg;
     document.getElementById('llama-prefill').textContent =
-      l.prompt_tps != null ? l.prompt_tps.toFixed(0) + ' t/s' : '—';
+      prefill != null ? prefill.toFixed(0) + ' t/s' : '—';
     document.getElementById('llama-tokens').textContent =
-      l.n_gen != null ? String(l.n_gen) : '—';
+      String(d.tokens_predicted);
     document.getElementById('llama-draft').textContent =
-      l.draft_accept != null ? (l.draft_accept * 100).toFixed(0) + '%' : '—';
-    document.getElementById('llama-log').textContent =
-      d.lines.map(_llmClean).join('\n');
+      d.draft_accept != null ? (d.draft_accept * 100).toFixed(0) + '%' : '—';
   } catch(e) { /* ignore */ }
 }
 
