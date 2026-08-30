@@ -821,7 +821,16 @@ def _live_rate(prev: dict[str, float], cur: dict[str, float], count: str, second
     return None
 
 def _slot_rates(slots: list, now: float) -> tuple[float | None, float | None, str]:
-    """Live rates from the first processing slot → (gen_tps, prompt_tps, phase)."""
+    """Generation rate from the first processing slot → (gen_tps, prompt_tps, phase).
+
+    Only generation is taken live from the slot: n_decoded advances once per
+    decode step (~60 ms), so a 2 s poll sees many steps and the delta is a real
+    rate.  n_prompt_tokens_processed however advances in whole llama_decode
+    batches (n_batch = 2048 tokens ≈ 10 s at 200 tok/s), so prompt deltas are
+    0 or ~2048 — dividing by the 2 s poll interval yields spikes of ~1000 t/s.
+    Prompt rate must therefore come from the server-timed /metrics counters
+    (handled by the caller's fallback), never from slot deltas.
+    """
     act = next((s for s in slots if s.get("is_processing")), None)
     if act is None:
         _LLM_SLOT["id_task"] = None
@@ -840,8 +849,6 @@ def _slot_rates(slots: list, now: float) -> tuple[float | None, float | None, st
         if dt > 0.2:
             if n_dec > _LLM_SLOT["n_decoded"]:
                 gen_tps = (n_dec - _LLM_SLOT["n_decoded"]) / dt
-            elif n_pr > _LLM_SLOT["n_prompt"]:
-                prompt_tps = (n_pr - _LLM_SLOT["n_prompt"]) / dt
     _LLM_SLOT.update(id_task=task, t=now, n_decoded=n_dec, n_prompt=n_pr)
     return gen_tps, prompt_tps, ("generation" if n_dec > 0 else "prompt")
 
@@ -874,15 +881,19 @@ def get_llama() -> dict:
         _LLM_SLOT.update(id_task=None, t=0.0, n_decoded=0, n_prompt=0)
 
     now = time.monotonic()
-    gen_tps, prompt_tps, slot_phase = _slot_rates(slots, now)
+    gen_tps, _, slot_phase = _slot_rates(slots, now)
 
     # /slots misses requests shorter than one poll — fall back to /metrics
     # counter deltas, which catch a completed request's burst (both counters
     # jump together at completion, so the delta is that request's true rate).
+    # This is also the only honest prompt-rate source: the slot's
+    # n_prompt_tokens_processed advances in whole decode batches (n_batch =
+    # 2048), so a 2 s poll against it yields 0 / ~2048 → ~1000 t/s spikes.
     if gen_tps is None:
         gen_tps = _live_rate(prev, m, "llamacpp:tokens_predicted_total", "llamacpp:tokens_predicted_seconds_total")
-    if prompt_tps is None:
-        prompt_tps = _live_rate(prev, m, "llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total")
+    # prompt rate: server-timed counter delta across the scrape window — matches
+    # the "prompt eval" log lines (d_count/d_sec == request's own average)
+    prompt_tps = _live_rate(prev, m, "llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total")
 
     d_gen    = m.get("llamacpp:tokens_predicted_total", 0) - prev.get("llamacpp:tokens_predicted_total", 0)
     d_prompt = m.get("llamacpp:prompt_tokens_total", 0) - prev.get("llamacpp:prompt_tokens_total", 0)
