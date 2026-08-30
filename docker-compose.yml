@@ -10,6 +10,8 @@ services:
     environment:
       - TZ=Europe/Vienna
       - HOMELAB_ENERGY_FILE=/data/energy.json
+      - HOST_NAME=${SYS_HOST_NAME}   # show real host identity (container runs on a bridge net)
+      - HOST_IP=${SYS_HOST_IP}
     volumes:
       - /mnt/nas:/mnt/nas:ro # NFS mounts visible
       - ${HOME}/.homelab-ctrl:/data # energy tracking dir (file: energy.json)

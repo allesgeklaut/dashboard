@@ -96,6 +96,13 @@ class SystemInfo:
 
     @staticmethod
     def _detect_ip() -> str:
+        # The web container runs on a docker bridge, so its own interfaces are
+        # the container's (192.168.144.x), not the host's.  HOST_IP is set in
+        # docker-compose.yml (host networking was dropped for security); only
+        # fall back to interface probing when unset (dev outside compose).
+        env_ip = os.environ.get("HOST_IP", "").strip()
+        if env_ip:
+            return env_ip
         for iface, addrs in psutil.net_if_addrs().items():
             if iface == "lo":
                 continue
@@ -365,7 +372,7 @@ def get_system_stats() -> dict:
         "net_tx":       tx,
         "net_rx":       rx,
         "uptime":       f"{td.days}d {h:02d}h {m:02d}m",
-        "hostname":     socket.gethostname(),
+        "hostname":     os.environ.get("HOST_NAME", "").strip() or socket.gethostname(),
         "ip":           info.host_ipv4,
     }
 
