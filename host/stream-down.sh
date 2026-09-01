@@ -2,6 +2,7 @@
 # stream-down.sh — end streaming and return the host to headless.
 # graceful steam shutdown → reset greetd runfile → isolate multi-user.target.
 LOG_FILE="${STREAM_LOG_FILE:-$HOME/.homelab-ctrl/stream.log}"
+STEAM_BIN="${STEAM_BIN:-/usr/games/steam}"
 
 log() { printf '%s [stream-down] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_FILE"; }
 
@@ -9,7 +10,7 @@ log "requested"
 
 # Ask Steam to exit cleanly so Remote Play sessions terminate gracefully.
 if pgrep -x steam > /dev/null; then
-    steam -shutdown >>"$LOG_FILE" 2>&1 || log "WARN: steam -shutdown returned nonzero"
+    "$STEAM_BIN" -shutdown >>"$LOG_FILE" 2>&1 || log "WARN: steam -shutdown returned nonzero"
     deadline=$(( $(date +%s) + 15 ))
     while pgrep -x steam > /dev/null; do
         if [ "$(date +%s)" -ge "$deadline" ]; then

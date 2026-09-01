@@ -992,11 +992,12 @@ def request_stream(action: str) -> tuple[bool, str]:
         return False, "STREAM_SPOOL_DIR not configured"
     try:
         os.makedirs(STREAM_SPOOL_DIR, exist_ok=True)
-        tmp  = os.path.join(STREAM_SPOOL_DIR, f".{action}.{os.getpid()}.tmp")
+        uid = f"{os.getpid()}.{threading.get_ident()}"
+        tmp  = os.path.join(STREAM_SPOOL_DIR, f".{action}.{uid}.tmp")
         with open(tmp, "w") as f:
             f.write(action)
         # atomic publish so the .path glob never sees a half-written file
-        os.replace(tmp, os.path.join(STREAM_SPOOL_DIR, f"{action}.{os.getpid()}.request"))
+        os.replace(tmp, os.path.join(STREAM_SPOOL_DIR, f"{action}.{uid}.request"))
     except Exception as exc:
         return False, str(exc)
     return True, "queued"
