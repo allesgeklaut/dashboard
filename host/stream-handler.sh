@@ -13,7 +13,9 @@ if [ ${#requests[@]} -eq 0 ]; then
     exit 0
 fi
 
-# Handle only the newest request; older ones are consumed and ignored.
+# Execute every queued request, oldest first. Requests are dispatched
+# sequentially, so the last one wins overall. Note: the while loop below runs
+# in a pipeline subshell, so failures do not affect this script's exit status.
 printf '%s\n' "${requests[@]}" | sort | while read -r req; do
     action=$(tr -d '[:space:]' < "$req")
     rm -f "$req"

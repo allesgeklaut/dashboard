@@ -4,7 +4,9 @@ Description=HOMELAB//CTRL stream request spool watcher
 # an up/down request by creating a .request file in the spool dir.
 
 [Path]
-PathExistsGlob=%h/.homelab-ctrl/stream-spool/*.request
+# NOTE: %h is NOT used here — in the system manager it resolves to /root,
+# not to the User= of the triggered unit. Hardcode the dashboard user's home.
+PathExistsGlob=/home/johannes/.homelab-ctrl/stream-spool/*.request
 Unit=homelab-stream.service
 
 [Install]

@@ -32,6 +32,10 @@ done
 sleep 3  # compositor + outputs settle
 
 # Best-effort 16:10 mode for the Deck's Remote Play client.
+# This script runs as a system service, outside the desktop session — export
+# the session env explicitly or cosmic-randr fails with NoCompositor.
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}"
 OUTPUT=$(cosmic-randr list 2>/dev/null | awk '/^Output/ {print $2; exit}')
 if [ -n "$OUTPUT" ]; then
     if cosmic-randr mode "$OUTPUT" "$DECK_WIDTH" "$DECK_HEIGHT" 2>>"$LOG_FILE"; then

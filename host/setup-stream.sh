@@ -46,14 +46,16 @@ if ! sudo visudo -c > /dev/null; then
 fi
 echo "✓ sudoers installed (scope: 2× isolate + rm /run/greetd.run)"
 
+# ── user-level steps (no sudo) ────────────────────────────────────────────────
+# spool dir must exist BEFORE the path unit is enabled, otherwise the inotify
+# watch can't be placed on a missing directory.
+mkdir -p "$SPOOL_DIR"
+echo "✓ spool dir ready"
+
 sudo install -m 644 "$REPO_DIR/host/homelab-stream.path" "$REPO_DIR/host/homelab-stream.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now homelab-stream.path
 echo "✓ homelab-stream.path $(systemctl is-active homelab-stream.path)"
-
-# ── user-level steps (no sudo) ────────────────────────────────────────────────
-mkdir -p "$SPOOL_DIR"
-echo "✓ spool dir ready"
 
 if [ -f "$ENV_FILE" ] && grep -q "^STREAM_SPOOL_DIR=" "$ENV_FILE"; then
     echo "• $ENV_FILE already has STREAM_SPOOL_DIR"
