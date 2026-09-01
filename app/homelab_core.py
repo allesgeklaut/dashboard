@@ -363,6 +363,7 @@ def get_system_stats() -> dict:
     m = rem // 60
     return {
         "cpu":          cpu,
+        "cores":        psutil.cpu_count() or 1,
         "ram_pct":      mem.percent,
         "ram_used_gb":  round(mem.used  / 1024**3, 1),
         "ram_total_gb": round(mem.total / 1024**3, 1),
@@ -460,9 +461,10 @@ _ENERGY_FILE = os.getenv("HOMELAB_ENERGY_FILE", os.path.expanduser("~/.homelab_e
 _energy_data: dict = {
     "today":           "",    # YYYY-MM-DD
     "today_wh":        0.0,
-    "yesterday":       "",    # YYYY-MM-DD
+    "yesterday":       "",
     "yesterday_wh":    0.0,
     "_last_minute_ts": 0,     # unix ts of last processed minute
+    "today_history":   [],    # [[minute_ts, wh], ...] per-minute energy samples
 }
 
 
@@ -483,6 +485,24 @@ def _load_energy() -> None:
     try:
         with open(_ENERGY_FILE) as f:
             saved = json.load(f)
+        saved.setdefault("today_history", [])
+        # Drop history samples that don't belong to the stored day (safety net
+        # against corrupted or hand-edited files).
+        day = saved.get("today", "")
+        day_start = 0
+        if day:
+            try:
+                day_start = _dt.datetime.fromisoformat(day).timestamp()
+            except ValueError:
+                day = ""
+        if day:
+            saved["today_history"] = [
+                s for s in saved["today_history"]
+                if isinstance(s, (list, tuple)) and len(s) == 2
+                and isinstance(s[0], (int, float)) and s[0] >= day_start
+            ]
+        else:
+            saved["today_history"] = []
         _energy_data.update(saved)
     except FileNotFoundError:
         pass
@@ -505,7 +525,8 @@ def _save_energy() -> None:
 
 
 def _accumulate(by_minute: list, minute_ts: int) -> None:
-    """Add newly seen per-minute mWh values to today's Wh accumulator."""
+    """Add newly seen per-minute mWh values to today's Wh accumulator and
+    append them as history samples."""
     if not by_minute or not minute_ts:
         return
     today_str = _dt.date.today().isoformat()
@@ -526,11 +547,24 @@ def _accumulate(by_minute: list, minute_ts: int) -> None:
             _energy_data["yesterday_wh"] = _energy_data["today_wh"]
         _energy_data["today"]    = today_str
         _energy_data["today_wh"] = 0.0
+        _energy_data["today_history"] = []
 
     # by_minute[0] = most recent complete minute, [1] = one before, etc.
-    added_wh = sum(by_minute[:new_mins]) / 1000.0   # mWh → Wh
+    fresh = [float(v) for v in by_minute[:new_mins]]
+    added_wh = sum(fresh) / 1000.0   # mWh → Wh
     _energy_data["today_wh"]        = round(_energy_data["today_wh"] + added_wh, 3)
     _energy_data["_last_minute_ts"] = minute_ts
+
+    # Append chronologically (oldest first): fresh = [newest, ..., oldest].
+    hist = _energy_data["today_history"]
+    for ts, wh in zip(
+        range(minute_ts - (len(fresh) - 1) * 60, minute_ts + 1, 60),
+        reversed(fresh),
+    ):
+        hist.append([ts, round(wh / 1000.0, 5)])   # mWh → Wh
+    # Cap at one full day of samples (safety net; rollover clears it anyway).
+    if len(hist) > 1440:
+        del hist[:len(hist) - 1440]
 
 
 def _energy_tracker_loop() -> None:
@@ -588,6 +622,30 @@ def get_shelly_stats() -> dict:
         pass
     return {"error": "unavailable"}
 
+
+
+def get_shelly_history() -> dict:
+    """Return today's per-minute energy samples, converted to average watts.
+
+    The tracker stores [minute_ts, wh_per_minute]; watt = wh * 60.
+    day_start_ts is the unix ts of server-local midnight, so the client can
+    align the chart's 00:00–24:00 axis to the server's day.
+    """
+    samples = [
+        [int(ts), round(float(wh) * 60.0, 1)]
+        for ts, wh in _energy_data.get("today_history", [])
+        if isinstance(wh, (int, float))
+    ]
+    today = _energy_data.get("today", "")
+    try:
+        day_start_ts = int(_dt.datetime.fromisoformat(today).timestamp()) if today else 0
+    except ValueError:
+        day_start_ts = 0
+    return {
+        "date":        today,
+        "day_start_ts": day_start_ts,
+        "samples":     samples,
+    }
 
 
 def shelly_power_cycle(shelly_url: str, delay_s: int = 10) -> tuple[bool, str]:
