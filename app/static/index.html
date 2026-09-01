@@ -719,7 +719,8 @@ let selected = null, containers = [], ctrFilter = 'all', busy = false;
 // ── steam stream (target control) ────────────────────────────────────────────
 let _streamArmed = null,          // 'up' | 'down' | null — which button is armed
     _streamTimer = null,
-    _streamBusy  = false;
+    _streamBusy  = false,
+    _streamTarget = null;         // pending 'up' | 'down' until status confirms it
 
 const STREAM_BTN_LABEL = { up: '▲ STREAM UP', down: '▼ STREAM DOWN' };
 const STREAM_STATES = {
@@ -749,10 +750,17 @@ async function fetchStream() {
       // auto-disarm the button that has reached its goal, enable the useful one
       if (d.state === 'streaming') disarmStream('up');
       else disarmStream('down');
+      // transition finished (or busy window elapsed) — restore labels
+      btnUp.textContent   = STREAM_BTN_LABEL.up;
+      btnDown.textContent = STREAM_BTN_LABEL.down;
       btnUp.style.display   = 'inline-block';
       btnDown.style.display = 'inline-block';
       btnUp.disabled   = d.state === 'streaming';
       btnDown.disabled = d.state === 'headless';
+    } else if (_streamTarget === 'up'   && d.state === 'streaming') {
+      _streamBusy = false; _streamTarget = null;
+    } else if (_streamTarget === 'down' && d.state === 'headless') {
+      _streamBusy = false; _streamTarget = null;
     }
   } catch(e) { /* ignore */ }
 }
@@ -781,6 +789,7 @@ function streamToggle(side) {
   // Second press — fire
   disarmStream(side);
   _streamBusy = true;
+  _streamTarget = side;
   const btnUp   = document.getElementById('btn-stream-up');
   const btnDown = document.getElementById('btn-stream-down');
   btnUp.disabled = btnDown.disabled = true;
@@ -790,7 +799,10 @@ function streamToggle(side) {
     .then(d => {
       toast(d.ok ? `${side === 'up' ? 'stream up' : 'stream down'} — takes ~30-90 s`
                  : ('error: ' + (d.detail || 'failed')), !d.ok);
-      setTimeout(() => { _streamBusy = false; }, 10000);  // let status polls show the transition
+      if (!d.ok) { _streamBusy = false; _streamTarget = null; return; }
+      // safety net: if status never confirms the target, unstick after 180 s
+      // (stream-up can legitimately take up to ~2 min: target switch + session wait)
+      setTimeout(() => { _streamBusy = false; _streamTarget = null; }, 180000);
     })
     .catch(() => {
       toast('network error', true);
