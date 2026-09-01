@@ -6,6 +6,9 @@ RUN apt-get update \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
+# Dedicated non-root user for the app process
+RUN useradd --system --no-create-home --uid 1000 homelab
+
 WORKDIR /app
 
 RUN pip install --no-cache-dir \
@@ -17,6 +20,9 @@ RUN pip install --no-cache-dir \
     python-dotenv
 
 COPY app/ .
+RUN chown -R homelab:homelab /app
+
+USER homelab
 
 EXPOSE 7681
 
