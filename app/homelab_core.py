@@ -24,6 +24,7 @@ SHELLY_PLUG_URL   = os.getenv("SHELLY_PLUG_URL")    # None if not set → featur
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → feature disabled
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
+STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
@@ -950,6 +951,57 @@ def get_llama() -> dict:
     }
 
 
+# ── Steam streaming control ───────────────────────────────────────────────────
+# The container is unprivileged, so up/down *actions* are queued as spool files
+# that a host-side systemd .path unit picks up and executes (see host/ in repo
+# root).  Status, however, needs no privileges at all: docker-compose already
+# uses pid: host so psutil sees the host's compositor / steam processes.
+
+_STREAM_GRAPHICAL_PROCS = ("cosmic-session", "cosmic-comp")
+_STREAM_STEAM_PROCS     = ("steam",)
+
+def _proc_running(names: tuple[str, ...]) -> bool:
+    for p in psutil.process_iter(["name"]):
+        try:
+            if p.info["name"] in names:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return False
+
+def get_stream_status() -> dict:
+    """Headless / ready (graphical, no steam) / streaming (steam up)."""
+    if not STREAM_SPOOL_DIR:
+        return {"error": "STREAM_SPOOL_DIR not configured"}
+    try:
+        if _proc_running(_STREAM_STEAM_PROCS):
+            state = "streaming"
+        elif _proc_running(_STREAM_GRAPHICAL_PROCS):
+            state = "ready"
+        else:
+            state = "headless"
+    except Exception as exc:
+        return {"error": str(exc)}
+    return {"state": state}
+
+def request_stream(action: str) -> tuple[bool, str]:
+    """Queue 'up'/'down' for the host-side handler by dropping a spool file."""
+    if action not in ("up", "down"):
+        return False, "invalid action"
+    if not STREAM_SPOOL_DIR:
+        return False, "STREAM_SPOOL_DIR not configured"
+    try:
+        os.makedirs(STREAM_SPOOL_DIR, exist_ok=True)
+        tmp  = os.path.join(STREAM_SPOOL_DIR, f".{action}.{os.getpid()}.tmp")
+        with open(tmp, "w") as f:
+            f.write(action)
+        # atomic publish so the .path glob never sees a half-written file
+        os.replace(tmp, os.path.join(STREAM_SPOOL_DIR, f"{action}.{os.getpid()}.request"))
+    except Exception as exc:
+        return False, str(exc)
+    return True, "queued"
+
+
 # ── Feature flags ──────────────────────────────────────────────────────────────
 
 def get_features() -> dict:
@@ -960,4 +1012,5 @@ def get_features() -> dict:
         "adguard": bool(ADGUARD_URL),
         "ollama":  bool(OLLAMA_URL),
         "llama":   bool(LLAMA_SERVER_URL),
+        "stream":  bool(STREAM_SPOOL_DIR),
     }

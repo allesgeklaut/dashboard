@@ -77,6 +77,24 @@ def api_shelly2_powercycle():
         raise HTTPException(500, msg)
     return {"ok": True, "msg": msg}
 
+@app.get("/api/stream")
+def api_stream():
+    return core.get_stream_status()
+
+@app.post("/api/stream/up")
+def api_stream_up():
+    ok, msg = core.request_stream("up")
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"ok": True, "msg": msg}
+
+@app.post("/api/stream/down")
+def api_stream_down():
+    ok, msg = core.request_stream("down")
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"ok": True, "msg": msg}
+
 @app.get("/api/processes")
 def api_processes():
     try:
