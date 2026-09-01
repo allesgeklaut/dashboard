@@ -89,6 +89,117 @@ Anyone reaching your URL now has to authenticate first.
 
 ---
 
+## 5 — Steam streaming (Stream Up / Stream Down)
+
+Lets the web dashboard switch the **same host** between headless
+(`multi-user.target`) and a desktop session that launches Steam for
+Remote Play to a Steam Deck — without exposing shell to the container.
+
+### Architecture
+
+```
+Web UI ── POST /api/stream/up ──► FastAPI (unprivileged container)
+                                      │  writes .request file (atomic)
+                          bind-mount  ▼
+              ~/.homelab-ctrl/stream-spool/   (on host)
+                                      │ systemd .path unit watches
+                                      ▼
+              stream-handler.sh (as your user, via systemd)
+                  ├─ stream-up.sh   sudo rm /run/greetd.run
+                  │                 sudo systemctl isolate graphical.target
+                  │                 wait for autologin session (greetd)
+                  │                 cosmic-randr mode <out> 1680 1050
+                  │                 steam -bigpicture
+                  └─ stream-down.sh steam -shutdown
+                                    sudo rm /run/greetd.run
+                                    sudo systemctl isolate multi-user.target
+```
+
+Status (HEADLESS / READY / STEAM) is read in-process via psutil (`pid: host`
+already gives the container the host process list) — no privileges needed.
+
+### Prerequisites on the host
+
+- greetd autologin (one-time, so the session comes up unattended):
+
+  ```bash
+  sudo tee -a /etc/greetd/cosmic-greeter.toml > /dev/null <<'EOF'
+
+  [initial_session]
+  command = "/usr/bin/cosmic-session"
+  user = "johannes"
+  EOF
+  ```
+
+  greetd runs `initial_session` only on its **first start since boot** and
+  records that in `/run/greetd.run` — the stream scripts clear that file so
+  every Stream Up behaves like a fresh boot.
+
+### Host setup (one-time)
+
+All steps are bundled in one script — review it, then run it:
+
+```bash
+/opt/stacks/dashboard/host/setup-stream.sh
+```
+
+It does, in order: installs the scoped sudoers file (single sudo prompt,
+`visudo -c` validated, auto-removes itself on syntax error), installs +
+enables the systemd path unit, creates the spool dir, appends
+`STREAM_SPOOL_DIR` to `.env` (idempotent), runs a **negative test** (sudo
+`reboot` must be denied — aborts if the scope is somehow too broad), and
+finally rebuilds the container. Re-running it is safe.
+
+<details>
+<summary>Manual equivalent (what the script does)</summary>
+
+```bash
+# 1. spool dir (container app-user is uid 1000 = your user; plain mkdir suffices)
+mkdir -p ~/.homelab-ctrl/stream-spool
+
+# 2. passwordless sudo — scoped to exactly the three commands the scripts use
+sudo cp /opt/stacks/dashboard/host/99-homelab-stream-sudoers /etc/sudoers.d/
+sudo chmod 440 /etc/sudoers.d/99-homelab-stream-sudoers
+sudo visudo -c    # must report no syntax errors
+
+# 3. systemd path watcher + handler
+sudo cp /opt/stacks/dashboard/host/homelab-stream.path \
+        /opt/stacks/dashboard/host/homelab-stream.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now homelab-stream.path
+
+# 4. enable the feature in the container
+echo 'STREAM_SPOOL_DIR=/stream-spool' >> /opt/stacks/dashboard/.env
+cd /opt/stacks/dashboard && docker compose up -d --build
+```
+
+</details>
+
+### Non-root container
+
+The image runs the app as a dedicated `homelab` user (uid 1000), not root.
+`pid: host` still works for psutil (reads /proc, no privileges needed), and all
+other mounts are read-only. On this box uid 1000 = your user, so the spool dir
+and `/data` need no ownership changes.
+
+### Sanity checks
+
+```bash
+# sudoers scope — all three must succeed silently; anything else must fail:
+sudo -n /usr/bin/systemctl isolate multi-user.target && echo ok1
+sudo -n rm -f /run/greetd.run && echo ok2
+sudo -n systemctl reboot   # must FAIL (not in sudoers)
+
+# watcher active?
+systemctl status homelab-stream.path
+```
+
+The scripts read env overrides (`STEAM_ARGS`, `STREAM_WIDTH/HEIGHT`,
+`SESSION_WAIT`, …) — defaults live at the top of `host/stream-up.sh`.
+Log: `~/.homelab-ctrl/stream.log`.
+
+---
+
 ## Container Controls
 
 - **Tap** any container row to select it

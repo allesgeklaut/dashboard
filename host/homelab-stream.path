@@ -1,0 +1,11 @@
+[Unit]
+Description=HOMELAB//CTRL stream request spool watcher
+# Triggers stream-handler.service when the dashboard container queues
+# an up/down request by creating a .request file in the spool dir.
+
+[Path]
+PathExistsGlob=%h/.homelab-ctrl/stream-spool/*.request
+Unit=homelab-stream.service
+
+[Install]
+WantedBy=multi-user.target
