@@ -59,6 +59,10 @@ def api_action(eid: str, cid: str, action: str):
 def api_shelly():
     return core.get_shelly_stats()
 
+@app.get("/api/shelly/history")
+def api_shelly_history():
+    return core.get_shelly_history()
+
 @app.post("/api/shelly/powercycle")
 def api_shelly_powercycle():
     ok, msg = core.shelly_power_cycle(core.SHELLY_PLUG_URL, 10)
@@ -99,13 +103,16 @@ def api_stream_down():
 def api_processes():
     try:
         procs = []
-        for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
+        for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "memory_info"]):
             try:
-                procs.append(p.info)
+                info = p.info
+                rss = info.get("memory_info")
+                info["rss_mb"] = round(rss.rss / 1024**2, 1) if rss else None
+                del info["memory_info"]
+                procs.append(info)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-        procs.sort(key=lambda x: x.get("cpu_percent") or 0, reverse=True)
-        return procs[:12]
+        return procs
     except Exception:
         return []
 
