@@ -388,13 +388,13 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .proc-sortable.sorted-desc::after { content:' ▼'; font-size:8px; }
 
 
-/* ── LOAD TRIO ── */
+/* ── LOAD CARD ── */
 .load-trio {
-  display:flex; justify-content:space-between; gap:10px;
-  margin:2px 0 4px;
+  display:grid; grid-template-columns:repeat(3,1fr); gap:12px;
+  margin-top:4px;
 }
-.load-item { flex:1; display:flex; flex-direction:column; align-items:center; }
-.load-item .stat-sub { margin-top:2px; }
+.load-item { display:flex; flex-direction:column; min-width:0; }
+.load-item + .load-item { border-left:1px solid var(--g-faint); padding-left:12px; }
 .load-val {
   font-size:18px; font-weight:700; color:var(--g-bright);
   line-height:1.2;
@@ -403,12 +403,13 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 /* ── VRAM SPARKLINE ── */
 .vram-card { position:relative; overflow:hidden; }
 .vram-spark {
-  position:absolute; left:0; right:0; bottom:0; height:65%;
-  width:100%; pointer-events:none;
+  position:absolute; left:0; right:0; top:0; bottom:0;
+  width:100%; height:100%; pointer-events:none;
 }
 .vram-card .stat-label,
 .vram-card .stat-val,
-.vram-card .stat-sub { position:relative; z-index:1; }
+.vram-card .stat-sub,
+.vram-card .pbar { position:relative; z-index:1; }
 
 /* ── TABS ── */
 .tab-bar {
@@ -971,14 +972,27 @@ async function fetchStats() {
     }
 
     document.getElementById('stat-grid').innerHTML = items.map(it => {
-      if (it.load) return `<div class="stat-card wide">
-        <div class="stat-label">${it.label}</div>
-        <div class="load-trio">
-          <span class="load-item"><span class="load-val">${it.load[0]}</span><span class="stat-sub">1m</span></span>
-          <span class="load-item"><span class="load-val">${it.load[1]}</span><span class="stat-sub">5m</span></span>
-          <span class="load-item"><span class="load-val">${it.load[2]}</span><span class="stat-sub">15m</span></span>
-        </div>
-      </div>`;
+      if (it.load) {
+        const cores = Math.max(1, d.cores || 1);
+        const items3 = [
+          { label:'1m',  val: it.load[0] },
+          { label:'5m',  val: it.load[1] },
+          { label:'15m', val: it.load[2] },
+        ];
+        return `<div class="stat-card wide">
+          <div class="stat-label">${it.label}</div>
+          <div class="load-trio">
+            ${items3.map(li => {
+              const pct = Math.min(100, li.val / cores * 100);
+              return `<div class="load-item">
+                <div class="stat-val ${pctClass(pct)}">${li.val.toFixed(2)}</div>
+                ${bar(pct)}
+                <div class="stat-sub">${li.label}</div>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+      }
       const cls = it.cls || (it.pct !== null ? pctClass(it.pct) : '');
       return `<div class="stat-card">
         <div class="stat-label">${it.label}</div>
@@ -1000,7 +1014,7 @@ function vramSpark(hist) {
   const max = Math.max(10, ...hist);
   const step = W / Math.max(1, hist.length - 1);
   const line = hist.map((v, i) =>
-    (i ? 'L' : 'M') + (i * step).toFixed(1) + ' ' + (H - (v / max) * (H - 4)).toFixed(1)
+    (i ? 'L' : 'M') + (i * step).toFixed(1) + ' ' + (H - (v / max) * H).toFixed(1)
   ).join(' ');
   return `<svg class="vram-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
     <path d="${line} L ${W} ${H} L 0 ${H} Z" fill="var(--g-faint)"/>
@@ -1030,7 +1044,7 @@ function renderGpu(gpu) {
     _vramHist.push(vPct);
     if (_vramHist.length > 150) _vramHist.shift();   // ~5 min of samples
     items.push({
-      label:'VRAM', val: gpu.vram_used_gb+'GB', pct: vPct, sub: gpu.vram_total_gb+'GB total',
+      label:'VRAM', val: gpu.vram_used_gb+'GB', pct: null, sub: gpu.vram_total_gb+'GB total',
       wide: true, spark: vramSpark(_vramHist)
     });
   }

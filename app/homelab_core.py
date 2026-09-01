@@ -363,6 +363,7 @@ def get_system_stats() -> dict:
     m = rem // 60
     return {
         "cpu":          cpu,
+        "cores":        psutil.cpu_count() or 1,
         "ram_pct":      mem.percent,
         "ram_used_gb":  round(mem.used  / 1024**3, 1),
         "ram_total_gb": round(mem.total / 1024**3, 1),
