@@ -1,0 +1,9 @@
+# HOMELAB//CTRL — passwordless sudo for steam stream control.
+# Scope: exactly the three commands the stream scripts need. Nothing else.
+# Install: sudo cp /opt/stacks/dashboard/host/99-homelab-stream-sudoers /etc/sudoers.d/
+#          sudo chmod 440 /etc/sudoers.d/99-homelab-stream-sudoers
+#          sudo visudo -c
+
+johannes ALL=(root) NOPASSWD: /usr/bin/rm -f /run/greetd.run
+johannes ALL=(root) NOPASSWD: /usr/bin/systemctl isolate graphical.target
+johannes ALL=(root) NOPASSWD: /usr/bin/systemctl isolate multi-user.target

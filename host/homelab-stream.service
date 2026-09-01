@@ -1,0 +1,14 @@
+[Unit]
+Description=HOMELAB//CTRL stream request handler
+After=multi-user.target
+
+[Service]
+Type=oneshot
+User=johannes
+# stream-up.sh launches Steam detached (setsid) and exits; with the default
+# KillMode=control-group systemd would sweep the cgroup and kill Steam.
+KillMode=process
+ExecStart=/opt/stacks/dashboard/host/stream-handler.sh
+# stream-up can take up to ~3 min (target switch + session wait + steam start);
+# never kill it mid-transition.
+TimeoutStartSec=600

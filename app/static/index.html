@@ -174,6 +174,36 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .btn-cycle2.armed  { background: #220000; color: #ff4444; border-color: #880000; animation: pulse-red 0.6s ease-in-out infinite alternate; }
 .btn-cycle2:disabled  { opacity: 0.5; cursor: not-allowed; }
 
+/* ── STEAM STREAM SECTION ── */
+.stream-row {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 10px;
+  display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;
+}
+.stream-state { display:flex; flex-direction:column; min-width:110px; }
+.stream-btns { display:flex; gap:8px; flex-wrap:wrap; }
+.btn-stream {
+  padding:5px 14px;
+  background:#001a00; color:var(--g); border:1px solid #004400;
+  border-radius:3px; cursor:pointer; font:inherit;
+  font-size:11px; letter-spacing:0.05em;
+  transition:background 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-stream:hover  { background:#002800; border-color:var(--g); }
+.btn-stream.armed  { background:#220000; color:#ff4444; border-color:#880000; animation:pulse-red 0.6s ease-in-out infinite alternate; }
+.btn-stream:disabled { opacity:0.5; cursor:not-allowed; }
+.btn-stream.down { border-color:#330a0a; color:var(--red-dim); }
+.btn-stream.down:hover { border-color:var(--red-dim); background:#1a0505; color:var(--red); }
+.stream-dot {
+  width:8px; height:8px; border-radius:50%; flex-shrink:0;
+  align-self:center;
+  box-shadow:0 0 6px currentColor;
+}
+.stream-dot.headless  { color:var(--red);    background:var(--red); }
+.stream-dot.ready     { color:var(--yellow); background:var(--yellow); }
+.stream-dot.streaming { color:var(--g);      background:var(--g);
+  animation:pulse 0.8s ease-in-out infinite; }
+
 /* ── STORAGE ROWS ── */
 .stor-list { display:flex; flex-direction:column; gap:5px; }
 .stor-row {
@@ -475,6 +505,25 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <div class="shelly-row" id="shelly2-row" style="display:none"></div>
     <button class="btn-cycle2" id="btn-cycle-2" style="display:none" onclick="shellyCycle2()">⏻ ROUTER CYCLE</button>
 
+    <!-- Steam streaming (shown only when STREAM feature is enabled) -->
+    <div class="sec-label" id="stream-label" style="display:none">steam stream</div>
+    <div id="stream-section" style="display:none">
+      <div class="stream-row">
+        <div class="stream-state">
+          <span class="ag-label">TARGET</span>
+          <div style="display:flex;align-items:center;gap:7px;margin-top:2px">
+            <span class="stream-dot headless" id="stream-dot"></span>
+            <span class="ag-val" id="stream-state">—</span>
+          </div>
+          <span class="stat-sub" id="stream-sub">graphical vs multi-user</span>
+        </div>
+        <div class="stream-btns">
+          <button class="btn-stream" id="btn-stream-up"   style="display:none" onclick="streamToggle('up')">▲ STREAM UP</button>
+          <button class="btn-stream down" id="btn-stream-down" style="display:none" onclick="streamToggle('down')">▼ STREAM DOWN</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Storage -->
     <div class="sec-label">storage</div>
     <div class="stor-list" id="stor-list"></div>
@@ -530,7 +579,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 const round = (n, d=1) => Number(n.toFixed(d));
 
 // ── feature flags ─────────────────────────────────────────────────────────────
-let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false };
+let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false };
 
 async function fetchFeatures() {
   try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
@@ -552,6 +601,7 @@ async function fetchFeatures() {
   if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
   if (_features.shelly)  { fetchShelly();  setInterval(fetchShelly,   5000); }
   if (_features.shelly2) { fetchShelly2(); setInterval(fetchShelly2,  5000); }
+  if (_features.stream)  { fetchStream();  setInterval(fetchStream,   5000); }
 }
 
 // ── tab switching ─────────────────────────────────────────────────────────────
@@ -665,6 +715,88 @@ async function shellyCycle2() {
 
 // ── state ────────────────────────────────────────────────────────────────────
 let selected = null, containers = [], ctrFilter = 'all', busy = false;
+
+// ── steam stream (target control) ────────────────────────────────────────────
+let _streamArmed = null,          // 'up' | 'down' | null — which button is armed
+    _streamTimer = null,
+    _streamBusy  = false;
+
+const STREAM_BTN_LABEL = { up: '▲ STREAM UP', down: '▼ STREAM DOWN' };
+const STREAM_STATES = {
+  headless:  { label: 'HEADLESS', dot: 'headless'  },
+  ready:     { label: 'READY',    dot: 'ready'     },
+  streaming: { label: 'STEAM',    dot: 'streaming' },
+};
+
+async function fetchStream() {
+  if (!_features.stream) return;
+  try {
+    const d = await fetch('/api/stream').then(r => r.json());
+    const sec   = document.getElementById('stream-section');
+    const lbl   = document.getElementById('stream-label');
+    const dot   = document.getElementById('stream-dot');
+    const state = document.getElementById('stream-state');
+    const btnUp   = document.getElementById('btn-stream-up');
+    const btnDown = document.getElementById('btn-stream-down');
+    if (d.error || !STREAM_STATES[d.state]) {
+      sec.style.display = 'none'; lbl.style.display = 'none'; return;
+    }
+    sec.style.display = 'block'; lbl.style.display = 'flex';
+    const s = STREAM_STATES[d.state];
+    dot.className = `stream-dot ${s.dot}`;
+    state.textContent = s.label;
+    if (!_streamBusy) {
+      // auto-disarm the button that has reached its goal, enable the useful one
+      if (d.state === 'streaming') disarmStream('up');
+      else disarmStream('down');
+      btnUp.style.display   = 'inline-block';
+      btnDown.style.display = 'inline-block';
+      btnUp.disabled   = d.state === 'streaming';
+      btnDown.disabled = d.state === 'headless';
+    }
+  } catch(e) { /* ignore */ }
+}
+
+function disarmStream(side) {
+  if (_streamArmed !== side) return;
+  _streamArmed = null;
+  clearTimeout(_streamTimer);
+  const btn = document.getElementById(side === 'up' ? 'btn-stream-up' : 'btn-stream-down');
+  btn.textContent = STREAM_BTN_LABEL[side];
+  btn.classList.remove('armed');
+}
+
+function streamToggle(side) {
+  const btn = document.getElementById(side === 'up' ? 'btn-stream-up' : 'btn-stream-down');
+  if (_streamBusy) return;
+  if (_streamArmed !== side) {
+    // First press — arm this button, disarm the other
+    disarmStream('up'); disarmStream('down');
+    _streamArmed = side;
+    btn.textContent = '⚠ CONFIRM?';
+    btn.classList.add('armed');
+    _streamTimer = setTimeout(() => disarmStream(side), 8000);
+    return;
+  }
+  // Second press — fire
+  disarmStream(side);
+  _streamBusy = true;
+  const btnUp   = document.getElementById('btn-stream-up');
+  const btnDown = document.getElementById('btn-stream-down');
+  btnUp.disabled = btnDown.disabled = true;
+  btn.textContent = side === 'up' ? 'Switching…' : 'Shutting down…';
+  fetch(`/api/stream/${side}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      toast(d.ok ? `${side === 'up' ? 'stream up' : 'stream down'} — takes ~30-90 s`
+                 : ('error: ' + (d.detail || 'failed')), !d.ok);
+      setTimeout(() => { _streamBusy = false; }, 10000);  // let status polls show the transition
+    })
+    .catch(() => {
+      toast('network error', true);
+      _streamBusy = false;
+    });
+}
 
 // Power‑cycle button state
 let _cycleArmed = false,
