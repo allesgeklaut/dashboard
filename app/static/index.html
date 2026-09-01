@@ -1213,11 +1213,11 @@ async function fetchShellyHistory() {
   if (!_features.shelly) return;
   try {
     const d = await fetch('/api/shelly/history').then(r => r.json());
-    renderShellyChart(d.samples || []);
+    renderShellyChart(d.samples || [], d.day_start_ts || 0);
   } catch(e) { /* ignore */ }
 }
 
-function renderShellyChart(samples) {
+function renderShellyChart(samples, dayStartTs) {
   const chartEl = document.getElementById('shelly-chart');
   const emptyEl = document.getElementById('shelly-chart-empty');
   const maxEl   = document.getElementById('shelly-chart-max');
@@ -1229,9 +1229,14 @@ function renderShellyChart(samples) {
   }
   emptyEl.style.display = 'none';
 
-  // X axis: 00:00 → 24:00 local time
-  const dayStart = new Date(); dayStart.setHours(0,0,0,0);
-  const t0 = dayStart.getTime() / 1000;
+  // X axis: server-local 00:00 → 24:00, anchored to the day the tracker used.
+  // Fall back to the first sample's midnight if the server didn't send it.
+  let t0 = dayStartTs;
+  if (!t0) {
+    const d0 = new Date(samples[0][0] * 1000);
+    d0.setHours(0,0,0,0);
+    t0 = d0.getTime() / 1000;
+  }
   const t1 = t0 + 86400;
   const W = 600, H = 120, PAD_T = 8, PAD_B = 14;
 
@@ -1458,7 +1463,7 @@ async function fetchProcesses() {
 fetchStats();
 fetchStorage();
 fetchContainers();
-fetchProcesses();
+if (document.getElementById('tab-processes').style.display !== 'none') fetchProcesses();
 
 setInterval(fetchStats,      2000);
 setInterval(fetchContainers, 3000);

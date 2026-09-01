@@ -628,14 +628,23 @@ def get_shelly_history() -> dict:
     """Return today's per-minute energy samples, converted to average watts.
 
     The tracker stores [minute_ts, wh_per_minute]; watt = wh * 60.
+    day_start_ts is the unix ts of server-local midnight, so the client can
+    align the chart's 00:00–24:00 axis to the server's day.
     """
     samples = [
-        [int(ts), round(wh * 60.0, 1)]
+        [int(ts), round(float(wh) * 60.0, 1)]
         for ts, wh in _energy_data.get("today_history", [])
+        if isinstance(wh, (int, float))
     ]
+    today = _energy_data.get("today", "")
+    try:
+        day_start_ts = int(_dt.datetime.fromisoformat(today).timestamp()) if today else 0
+    except ValueError:
+        day_start_ts = 0
     return {
-        "date":   _energy_data.get("today", ""),
-        "samples": samples,
+        "date":        today,
+        "day_start_ts": day_start_ts,
+        "samples":     samples,
     }
 
 
