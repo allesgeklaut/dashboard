@@ -29,23 +29,41 @@ while ! pgrep -x cosmic-session > /dev/null; do
     fi
     sleep 2
 done
-sleep 3  # compositor + outputs settle
 
 # Best-effort 16:10 mode for the Deck's Remote Play client.
 # This script runs as a system service, outside the desktop session — export
 # the session env explicitly or cosmic-randr fails with NoCompositor.
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}"
-OUTPUT=$(cosmic-randr list 2>/dev/null | awk '/^Output/ {print $2; exit}')
+
+# Wait for the compositor to actually expose an output — launching Steam while
+# outputs are still being created can crash it at startup (seen in practice).
+# Use --kdl: the plain format is ANSI-decorated and its layout changed across
+# cosmic-randr versions; KDL gives `output "DP-2" enabled=#true`.
+OUTPUT_WAIT="${OUTPUT_WAIT:-30}"
+deadline=$(( $(date +%s) + OUTPUT_WAIT ))
+while :; do
+    OUTPUT=$(cosmic-randr list --kdl 2>/dev/null \
+        | awk '$1=="output" && $0 ~ /enabled=#true/ {gsub(/"/, "", $2); print $2; exit}')
+    [ -n "$OUTPUT" ] && break
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        log "WARN: no output detected within ${OUTPUT_WAIT}s (continuing)"
+        break
+    fi
+    sleep 2
+done
 if [ -n "$OUTPUT" ]; then
     if cosmic-randr mode "$OUTPUT" "$DECK_WIDTH" "$DECK_HEIGHT" 2>>"$LOG_FILE"; then
         log "mode ${DECK_WIDTH}x${DECK_HEIGHT} set on ${OUTPUT}"
     else
         log "WARN: cosmic-randr mode failed on ${OUTPUT} (continuing)"
     fi
-else
-    log "WARN: no output detected for cosmic-randr (continuing)"
 fi
+
+# Steam/CEF fall back through Xwayland and need the session bus — these were
+# absent when launched from the service context and can crash the client.
+export DISPLAY="${DISPLAY:-:0}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 
 # Launch Steam detached from this service context.
 if pgrep -x steam > /dev/null; then
