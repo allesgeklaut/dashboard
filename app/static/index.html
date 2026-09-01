@@ -102,6 +102,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   border-radius:3px;
   padding:8px 10px;
 }
+.stat-card.wide { grid-column: span 2; }
 .stat-label { font-size:10px; color:var(--g-dim); letter-spacing:0.08em; }
 .stat-val {
   font-size:18px; font-weight:700; color:var(--g-bright);
@@ -144,6 +145,23 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 }
 .shelly-power { display:flex; flex-direction:column; min-width:90px; }
 .shelly-power .pbar { margin-top:6px; width:100%; }
+
+/* ── SHELLY POWER HISTORY CHART ── */
+.shelly-chart-card {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 10px 4px; margin-top:6px;
+  position:relative;
+}
+.shelly-chart-head {
+  display:flex; justify-content:space-between; align-items:baseline;
+  margin-bottom:4px;
+}
+.shelly-chart-max { font-size:10px; color:var(--g-dim); }
+#shelly-chart svg { display:block; width:100%; height:auto; }
+.shelly-chart-empty {
+  font-size:10px; color:var(--g-dim); text-align:center;
+  padding:6px 0 2px;
+}
 
 
 /* ── POWER CYCLE BUTTON ── */
@@ -358,10 +376,16 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .col-pid  { width:52px; color:var(--g-dim) !important; }
 .col-name { max-width:140px; }
 .col-cpu, .col-mem { width:60px; text-align:right; }
+.col-rss { width:70px; text-align:right; }
 .cpu-val { font-weight:600; }
 .cpu-val.warn  { color:var(--yellow); }
 .cpu-val.alert { color:var(--red); }
 .mem-val { color:var(--g-dim); }
+.rss-val { color:var(--g-dim); }
+.proc-sortable { cursor:pointer; user-select:none; -webkit-tap-highlight-color:transparent; }
+.proc-sortable:hover { color:var(--g); }
+.proc-sortable.sorted-asc::after  { content:' ▲'; font-size:8px; }
+.proc-sortable.sorted-desc::after { content:' ▼'; font-size:8px; }
 
 
 /* ── LOAD TRIO ── */
@@ -452,6 +476,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="server"     onclick="switchTab('server',this)">SERVER</button>
     <button class="tab-btn"        data-tab="containers" onclick="switchTab('containers',this)">CONTAINERS</button>
+    <button class="tab-btn"        data-tab="processes"  onclick="switchTab('processes',this)">PROCESSES</button>
   </div>
 
   <!-- ═══════════ SERVER TAB ═══════════ -->
@@ -498,6 +523,14 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <!-- Shelly Plug 1 -->
     <div class="sec-label" id="shelly-label" style="display:none">shelly plug</div>
     <div class="shelly-row" id="shelly-row" style="display:none"></div>
+    <div class="shelly-chart-card" id="shelly-chart-card" style="display:none">
+      <div class="shelly-chart-head">
+        <span class="ag-label">POWER TODAY</span>
+        <span class="shelly-chart-max" id="shelly-chart-max"></span>
+      </div>
+      <div id="shelly-chart"></div>
+      <div class="shelly-chart-empty" id="shelly-chart-empty">collecting data… first samples after ~3 min</div>
+    </div>
     <button class="btn-cycle" id="btn-cycle" style="display:none" onclick="shellyCycle()">⟳ POWER CYCLE</button>
 
     <!-- Shelly Plug 2 (Router) -->
@@ -528,24 +561,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <div class="sec-label">storage</div>
     <div class="stor-list" id="stor-list"></div>
 
-    <!-- Processes -->
-    <div class="sec-label">top processes</div>
-    <div class="proc-table-wrap">
-      <table class="proc-table" id="proc-table">
-        <thead>
-          <tr>
-            <th class="col-pid">PID</th>
-            <th class="col-name">NAME</th>
-            <th class="col-cpu">CPU%</th>
-            <th class="col-mem">MEM%</th>
-          </tr>
-        </thead>
-        <tbody id="proc-tbody">
-          <tr><td colspan="4" class="empty">loading…</td></tr>
-        </tbody>
-      </table>
-    </div>
-
   </div><!-- /#tab-server -->
 
   <!-- ═══════════ CONTAINERS TAB ═══════════ -->
@@ -560,6 +575,29 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     </div>
     <div class="ctr-list" id="ctr-list"></div>
   </div><!-- /#tab-containers -->
+
+  <!-- ═══════════ PROCESSES TAB ═══════════ -->
+  <div id="tab-processes" class="tab-pane" style="display:none">
+    <div class="sec-label">
+      processes <span id="proc-count" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
+    </div>
+    <div class="proc-table-wrap">
+      <table class="proc-table" id="proc-table">
+        <thead>
+          <tr>
+            <th class="col-pid proc-sortable" data-key="pid" onclick="sortProcesses('pid')">PID</th>
+            <th class="col-name proc-sortable" data-key="name" onclick="sortProcesses('name')">NAME</th>
+            <th class="col-cpu proc-sortable" data-key="cpu_percent" onclick="sortProcesses('cpu_percent')">CPU%</th>
+            <th class="col-mem proc-sortable" data-key="memory_percent" onclick="sortProcesses('memory_percent')">MEM%</th>
+            <th class="col-rss proc-sortable" data-key="rss_mb" onclick="sortProcesses('rss_mb')">RSS</th>
+          </tr>
+        </thead>
+        <tbody id="proc-tbody">
+          <tr><td colspan="5" class="empty">loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div><!-- /#tab-processes -->
 
 </main>
 
@@ -599,7 +637,10 @@ async function fetchFeatures() {
   }
   // Feature-gated polls
   if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
-  if (_features.shelly)  { fetchShelly();  setInterval(fetchShelly,   5000); }
+  if (_features.shelly)  {
+    fetchShelly();        setInterval(fetchShelly,        5000);
+    fetchShellyHistory(); setInterval(fetchShellyHistory, 60000);
+  }
   if (_features.shelly2) { fetchShelly2(); setInterval(fetchShelly2,  5000); }
   if (_features.stream)  { fetchStream();  setInterval(fetchStream,   5000); }
 }
@@ -622,10 +663,9 @@ function switchTab(name, btn) {
 (function() {
   try {
     const saved = localStorage.getItem('activeTab');
-    if (saved === 'containers') {
-      const btn = document.querySelector('.tab-btn[data-tab="containers"]');
-      if (btn) switchTab('containers', btn);
-    }
+    if (!saved) return;
+    const btn = document.querySelector(`.tab-btn[data-tab="${saved}"]`);
+    if (btn) switchTab(saved, btn);
   } catch(e) {}
 })();
 
@@ -918,7 +958,7 @@ async function fetchStats() {
     }
 
     document.getElementById('stat-grid').innerHTML = items.map(it => {
-      if (it.load) return `<div class="stat-card">
+      if (it.load) return `<div class="stat-card wide">
         <div class="stat-label">${it.label}</div>
         <div class="load-trio">
           <span class="load-val">${it.load[0]}</span>
@@ -960,7 +1000,7 @@ function renderGpu(gpu) {
   // VRAM card (only shown when vram data is available)
   if (gpu.vram_used_gb != null && gpu.vram_total_gb != null) {
     const vPct = gpu.vram_pct ?? round(gpu.vram_used_gb / gpu.vram_total_gb * 100, 1);
-    items.push({ label:'VRAM', val: gpu.vram_used_gb+'GB', pct: vPct, sub: gpu.vram_total_gb+'GB total' });
+    items.push({ label:'VRAM', val: gpu.vram_used_gb+'GB', pct: vPct, sub: gpu.vram_total_gb+'GB total', wide: true });
   }
 
   grid.innerHTML = items.map(it => {
@@ -979,7 +1019,7 @@ function renderGpu(gpu) {
       <div class="stat-sub">${it.fan_rpm !== null ? it.fan_rpm+' RPM' : ''}</div>
     </div>`;
     const cls = it.cls || (it.pct !== null ? pctClass(it.pct) : '');
-    return `<div class="stat-card">
+    return `<div class="stat-card ${it.wide ? 'wide' : ''}">
       <div class="stat-label">${it.label}</div>
       <div class="stat-val ${cls}">${it.val}</div>
       ${it.pct !== null ? bar(it.pct) : ''}
@@ -1091,8 +1131,14 @@ async function fetchShelly() {
     const row = document.getElementById('shelly-row');
     const lbl = document.getElementById('shelly-label');
     const btn = document.getElementById('btn-cycle');
-    if (d.error) { row.style.display='none'; lbl.style.display='none'; btn.style.display='none'; return; }
+    const chartCard = document.getElementById('shelly-chart-card');
+    if (d.error) {
+      row.style.display='none'; lbl.style.display='none'; btn.style.display='none';
+      chartCard.style.display='none';
+      return;
+    }
     row.style.display = 'flex'; lbl.style.display = 'flex'; btn.style.display = 'inline-block';
+    chartCard.style.display = 'block';
     const pwrPct = Math.min(100, (d.apower / 2300) * 100).toFixed(1);
     const pwrCls = d.apower >= 2000 ? 'alert' : d.apower >= 1000 ? 'warn' : '';
     const todayRow = d.today_kwh !== null
@@ -1113,6 +1159,62 @@ async function fetchShelly() {
       <div class="ag-item"><span class="ag-label">CURRENT</span><span class="ag-val">${d.current} A</span></div>
       ${todayRow}${ydayRow}`;
   } catch(e) { /* ignore */ }
+}
+
+// ── shelly power history chart ────────────────────────────────────────────────
+async function fetchShellyHistory() {
+  if (!_features.shelly) return;
+  try {
+    const d = await fetch('/api/shelly/history').then(r => r.json());
+    renderShellyChart(d.samples || []);
+  } catch(e) { /* ignore */ }
+}
+
+function renderShellyChart(samples) {
+  const chartEl = document.getElementById('shelly-chart');
+  const emptyEl = document.getElementById('shelly-chart-empty');
+  const maxEl   = document.getElementById('shelly-chart-max');
+  if (!samples.length) {
+    chartEl.innerHTML = '';
+    maxEl.textContent = '';
+    emptyEl.style.display = 'block';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  // X axis: 00:00 → 24:00 local time
+  const dayStart = new Date(); dayStart.setHours(0,0,0,0);
+  const t0 = dayStart.getTime() / 1000;
+  const t1 = t0 + 86400;
+  const W = 600, H = 120, PAD_T = 8, PAD_B = 14;
+
+  const maxW = Math.max(10, ...samples.map(s => s[1]));
+  const x = ts => ((ts - t0) / 86400) * W;
+  const y = w  => PAD_T + (1 - w / maxW) * (H - PAD_T - PAD_B);
+
+  // area + line path
+  const pts = samples.map(s => [x(s[0]), y(s[1])]);
+  const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  const area = line + ` L ${pts[pts.length-1][0].toFixed(1)} ${H-PAD_B} L ${pts[0][0].toFixed(1)} ${H-PAD_B} Z`;
+
+  // grid lines at 06/12/18h + labels
+  const grid = [6, 12, 18].map(h => {
+    const gx = x(t0 + h * 3600).toFixed(1);
+    return `<line x1="${gx}" y1="${PAD_T}" x2="${gx}" y2="${H-PAD_B}" stroke="var(--g-faint)" stroke-width="1"/>
+            <text x="${gx}" y="${H-3}" fill="var(--g-dim)" font-size="9" text-anchor="middle" font-family="var(--font)">${String(h).padStart(2,'0')}h</text>`;
+  }).join('');
+
+  chartEl.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <defs><linearGradient id="pgrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--g)" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="var(--g)" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${grid}
+    <path d="${area}" fill="url(#pgrad)"/>
+    <path d="${line}" fill="none" stroke="var(--g)" stroke-width="1.5"/>
+    <circle cx="${pts[pts.length-1][0].toFixed(1)}" cy="${pts[pts.length-1][1].toFixed(1)}" r="2.5" fill="var(--g-bright)"/>
+  </svg>`;
+  maxEl.textContent = `max ${maxW.toFixed(0)} W`;
 }
 
 // ── fetch containers ──────────────────────────────────────────────────────────
@@ -1234,26 +1336,73 @@ async function doAction(action) {
 }
 
 
-// ── fetch processes ───────────────────────────────────────────────────────────
+// ── processes: data + sorting ────────────────────────────────────────────────
+let processes = [];
+let procSortKey   = 'cpu_percent';
+let procSortDesc  = true;
+
+(function restoreProcSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('procSort') || 'null');
+    if (saved && saved.key) {
+      procSortKey  = saved.key;
+      procSortDesc = !!saved.desc;
+    }
+  } catch(e) {}
+})();
+
+function sortProcesses(key) {
+  if (procSortKey === key) procSortDesc = !procSortDesc;
+  else { procSortKey = key; procSortDesc = (key === 'name' || key === 'pid') ? false : true; }
+  try { localStorage.setItem('procSort', JSON.stringify({ key: procSortKey, desc: procSortDesc })); } catch(e) {}
+  renderProcesses();
+}
+
+function procValue(p, key) {
+  const v = p[key];
+  return (v === null || v === undefined) ? (key === 'name' ? '' : 0) : v;
+}
+
+function renderProcesses() {
+  const tbody = document.getElementById('proc-tbody');
+  // header indicators
+  document.querySelectorAll('.proc-sortable').forEach(th => {
+    th.classList.toggle('sorted-asc',  th.dataset.key === procSortKey && !procSortDesc);
+    th.classList.toggle('sorted-desc', th.dataset.key === procSortKey &&  procSortDesc);
+  });
+  if (!processes.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">no data</td></tr>';
+    return;
+  }
+  const sorted = [...processes].sort((a, b) => {
+    const va = procValue(a, procSortKey), vb = procValue(b, procSortKey);
+    const cmp = (typeof va === 'string')
+      ? va.localeCompare(vb)
+      : va - vb;
+    return procSortDesc ? -cmp : cmp;
+  });
+  document.getElementById('proc-count').textContent = `— ${processes.length} total`;
+  const frag = sorted.map(p => {
+    const cpu = (p.cpu_percent || 0).toFixed(1);
+    const mem = (p.memory_percent || 0).toFixed(1);
+    const rss = p.rss_mb != null ? p.rss_mb.toFixed(0) + 'M' : '—';
+    const cpuCls = p.cpu_percent >= 50 ? 'alert' : p.cpu_percent >= 20 ? 'warn' : '';
+    return `<tr>
+      <td class="col-pid" style="color:var(--g-dim)">${p.pid}</td>
+      <td class="col-name">${escHtml(p.name)}</td>
+      <td class="col-cpu"><span class="cpu-val ${cpuCls}">${cpu}</span></td>
+      <td class="col-mem"><span class="mem-val">${mem}</span></td>
+      <td class="col-rss"><span class="rss-val">${rss}</span></td>
+    </tr>`;
+  }).join('');
+  tbody.innerHTML = frag;
+}
+
 async function fetchProcesses() {
   try {
     const data = await fetch('/api/processes').then(r=>r.json());
-    const tbody = document.getElementById('proc-tbody');
-    if (!data.length) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty">no data</td></tr>';
-      return;
-    }
-    tbody.innerHTML = data.slice(0, 5).map(p => {
-      const cpu = (p.cpu_percent || 0).toFixed(1);
-      const mem = (p.memory_percent || 0).toFixed(1);
-      const cpuCls = p.cpu_percent >= 50 ? 'alert' : p.cpu_percent >= 20 ? 'warn' : '';
-      return `<tr>
-        <td class="col-pid" style="color:var(--g-dim)">${p.pid}</td>
-        <td class="col-name">${escHtml(p.name)}</td>
-        <td class="col-cpu"><span class="cpu-val ${cpuCls}">${cpu}</span></td>
-        <td class="col-mem"><span class="mem-val">${mem}</span></td>
-      </tr>`;
-    }).join('');
+    processes = data;
+    renderProcesses();
   } catch(e) { /* ignore */ }
 }
 
@@ -1267,7 +1416,9 @@ fetchProcesses();
 setInterval(fetchStats,      2000);
 setInterval(fetchContainers, 3000);
 setInterval(fetchStorage,    8000);
-setInterval(fetchProcesses,  3000);
+setInterval(() => {
+  if (document.getElementById('tab-processes').style.display !== 'none') fetchProcesses();
+}, 5000);
 </script>
 </body>
 </html>
