@@ -107,7 +107,10 @@ def api_processes():
             try:
                 info = p.info
                 rss = info.get("memory_info")
-                info["rss_mb"] = round(rss.rss / 1024**2, 1) if rss else None
+                # rss 0 = kernel thread (no userland memory) — hide like top does
+                if not rss or rss.rss == 0:
+                    continue
+                info["rss_mb"] = round(rss.rss / 1024**2, 1)
                 del info["memory_info"]
                 procs.append(info)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
