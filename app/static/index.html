@@ -1011,7 +1011,10 @@ const _vramHist = [];   // rolling vram % history for the sparkline (2s per samp
 
 function vramSpark(hist) {
   const W = 100, H = 40;
-  const max = Math.max(10, ...hist);
+  // Fixed 0–100% scale: VRAM is a capacity metric, so the plot must not
+  // auto-scale to the max history value (that made a mostly-empty card
+  // render as a fully-filled area).
+  const max = 100;
   const step = W / Math.max(1, hist.length - 1);
   const line = hist.map((v, i) =>
     (i ? 'L' : 'M') + (i * step).toFixed(1) + ' ' + (H - (v / max) * H).toFixed(1)
