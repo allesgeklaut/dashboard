@@ -92,6 +92,13 @@ def api_stream_up():
         raise HTTPException(500, msg)
     return {"ok": True, "msg": msg}
 
+@app.post("/api/stream/up-1440p")
+def api_stream_up_1440p():
+    ok, msg = core.request_stream("up-1440p")
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"ok": True, "msg": msg}
+
 @app.post("/api/stream/down")
 def api_stream_down():
     ok, msg = core.request_stream("down")

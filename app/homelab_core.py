@@ -1018,6 +1018,12 @@ def get_llama() -> dict:
 _STREAM_GRAPHICAL_PROCS = ("cosmic-session", "cosmic-comp")
 _STREAM_STEAM_PROCS     = ("steam",)
 
+# Closed set of spool-file action tokens. The host handler only ever matches
+# one of these against a fixed case statement, so a request file's contents
+# can never be interpreted as shell input. "up" = Steam at the Deck's 1680x1050,
+# "up-1440p" = Steam at 2560x1440, "down" = end the session.
+_STREAM_ACTIONS = ("up", "up-1440p", "down")
+
 def _proc_running(names: tuple[str, ...]) -> bool:
     for p in psutil.process_iter(["name"]):
         try:
@@ -1043,8 +1049,8 @@ def get_stream_status() -> dict:
     return {"state": state}
 
 def request_stream(action: str) -> tuple[bool, str]:
-    """Queue 'up'/'down' for the host-side handler by dropping a spool file."""
-    if action not in ("up", "down"):
+    """Queue a stream action ('up'/'up-1440p'/'down') by dropping a spool file."""
+    if action not in _STREAM_ACTIONS:
         return False, "invalid action"
     if not STREAM_SPOOL_DIR:
         return False, "STREAM_SPOOL_DIR not configured"

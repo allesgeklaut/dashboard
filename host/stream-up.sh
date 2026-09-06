@@ -1,11 +1,12 @@
 #!/bin/bash
-# stream-up.sh — prepare headless host for Steam Remote Play to the Steam Deck.
-# isolate graphical.target → wait for autologin session → set 1680x1050 → launch Steam.
+# stream-up.sh — prepare headless host for Steam (Remote Play or local session).
+# isolate graphical.target → wait for autologin session → set target resolution → launch Steam.
+# Resolution comes from STREAM_WIDTH/STREAM_HEIGHT (stream-handler.sh sets it per mode).
 LOG_FILE="${STREAM_LOG_FILE:-$HOME/.homelab-ctrl/stream.log}"
 STEAM_BIN="${STEAM_BIN:-/usr/games/steam}"
 STEAM_ARGS="${STEAM_ARGS:--bigpicture}"
-DECK_WIDTH="${STREAM_WIDTH:-1680}"
-DECK_HEIGHT="${STREAM_HEIGHT:-1050}"
+RES_WIDTH="${STREAM_WIDTH:-1680}"
+RES_HEIGHT="${STREAM_HEIGHT:-1050}"
 SESSION_WAIT="${SESSION_WAIT:-120}"
 STEAM_WAIT="${STEAM_WAIT:-60}"
 
@@ -30,7 +31,7 @@ while ! pgrep -x cosmic-session > /dev/null; do
     sleep 2
 done
 
-# Best-effort 16:10 mode for the Deck's Remote Play client.
+# Best-effort target mode (Deck 16:10 or the host's native 1440p).
 # This script runs as a system service, outside the desktop session — export
 # the session env explicitly or cosmic-randr fails with NoCompositor.
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -53,8 +54,8 @@ while :; do
     sleep 2
 done
 if [ -n "$OUTPUT" ]; then
-    if cosmic-randr mode "$OUTPUT" "$DECK_WIDTH" "$DECK_HEIGHT" 2>>"$LOG_FILE"; then
-        log "mode ${DECK_WIDTH}x${DECK_HEIGHT} set on ${OUTPUT}"
+    if cosmic-randr mode "$OUTPUT" "$RES_WIDTH" "$RES_HEIGHT" 2>>"$LOG_FILE"; then
+        log "mode ${RES_WIDTH}x${RES_HEIGHT} set on ${OUTPUT}"
     else
         log "WARN: cosmic-randr mode failed on ${OUTPUT} (continuing)"
     fi

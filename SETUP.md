@@ -95,24 +95,34 @@ Lets the web dashboard switch the **same host** between headless
 (`multi-user.target`) and a desktop session that launches Steam for
 Remote Play to a Steam Deck — without exposing shell to the container.
 
+The "up" side has **two modes**: **Deck** (1680×1050, for Remote Play) and
+**1440p** (2560×1440, the host's native desktop resolution). Both launch
+Steam; they only differ in the resolution the output is set to first.
+
 ### Architecture
 
 ```
-Web UI ── POST /api/stream/up ──► FastAPI (unprivileged container)
-                                      │  writes .request file (atomic)
-                          bind-mount  ▼
-              ~/.homelab-ctrl/stream-spool/   (on host)
-                                      │ systemd .path unit watches
-                                      ▼
-              stream-handler.sh (as your user, via systemd)
-                  ├─ stream-up.sh   sudo rm /run/greetd.run
-                  │                 sudo systemctl isolate graphical.target
-                  │                 wait for autologin session (greetd)
-                  │                 cosmic-randr mode <out> 1680 1050
-                  │                 steam -bigpicture
-                  └─ stream-down.sh steam -shutdown
-                                    sudo rm /run/greetd.run
-                                    sudo systemctl isolate multi-user.target
+Web UI ── POST /api/stream/{up | up-1440p | down} ──► FastAPI (container)
+                                                       │ writes .request file (atomic)
+                                                       │ content = action token
+                                       bind-mount  ▼
+               ~/.homelab-ctrl/stream-spool/   (on host)
+                                       │ systemd .path unit watches
+                                       ▼
+               stream-handler.sh (as your user, via systemd)
+                   ├─ "up"       → stream-up.sh  @ STREAM_WIDTH/HEIGHT = 1680×1050
+                   ├─ "up-1440p" → stream-up.sh  @ STREAM_WIDTH/HEIGHT = 2560×1440
+                   └─ "down"     → stream-down.sh
+                        stream-up.sh:
+                           sudo rm /run/greetd.run
+                           sudo systemctl isolate graphical.target
+                           wait for autologin session (greetd)
+                           cosmic-randr mode <out> <W> <H>
+                           steam -bigpicture
+                        stream-down.sh:
+                           steam -shutdown
+                           sudo rm /run/greetd.run
+                           sudo systemctl isolate multi-user.target
 ```
 
 Status (HEADLESS / READY / STEAM) is read in-process via psutil (`pid: host`
@@ -194,8 +204,11 @@ sudo -n systemctl reboot   # must FAIL (not in sudoers)
 systemctl status homelab-stream.path
 ```
 
-The scripts read env overrides (`STEAM_ARGS`, `STREAM_WIDTH/HEIGHT`,
-`SESSION_WAIT`, …) — defaults live at the top of `host/stream-up.sh`.
+The scripts read env overrides — `STEAM_ARGS`, `STREAM_WIDTH/HEIGHT`,
+`SESSION_WAIT`, … in `host/stream-up.sh`, and the per-mode resolutions
+`DECK_STREAM_WIDTH/HEIGHT` (default 1680×1050) and
+`HIGHP_STREAM_WIDTH/HEIGHT` (default 2560×1440) in `host/stream-handler.sh`.
+Defaults live at the top of each script.
 Log: `~/.homelab-ctrl/stream.log`.
 
 ---

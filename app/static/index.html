@@ -565,7 +565,8 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
           <span class="stat-sub" id="stream-sub">graphical vs multi-user</span>
         </div>
         <div class="stream-btns">
-          <button class="btn-stream" id="btn-stream-up"   style="display:none" onclick="streamToggle('up')">▲ STREAM UP</button>
+          <button class="btn-stream" id="btn-stream-up-deck"  style="display:none" title="Steam at 1680×1050 (Steam Deck)" onclick="streamToggle('deck')">▲ STREAM UP · DECK</button>
+          <button class="btn-stream" id="btn-stream-up-1440p" style="display:none" title="Steam at 2560×1440 (1440p)" onclick="streamToggle('1440p')">▲ STREAM UP · 1440p</button>
           <button class="btn-stream down" id="btn-stream-down" style="display:none" onclick="streamToggle('down')">▼ STREAM DOWN</button>
         </div>
       </div>
@@ -771,17 +772,31 @@ async function shellyCycle2() {
 let selected = null, containers = [], ctrFilter = 'all', busy = false;
 
 // ── steam stream (target control) ────────────────────────────────────────────
-let _streamArmed = null,          // 'up' | 'down' | null — which button is armed
+let _streamArmed = null,          // key of the armed button | null
     _streamTimer = null,
     _streamBusy  = false,
-    _streamTarget = null;         // pending 'up' | 'down' until status confirms it
+    _streamTarget = null;         // pending key until status confirms it
 
-const STREAM_BTN_LABEL = { up: '▲ STREAM UP', down: '▼ STREAM DOWN' };
+const STREAM_ACTIONS = {
+  deck:    { id: 'btn-stream-up-deck',  api: '/api/stream/up',       side: 'up',
+             label: '▲ STREAM UP · DECK',  busy: 'Switching to deck…'  },
+  '1440p': { id: 'btn-stream-up-1440p', api: '/api/stream/up-1440p', side: 'up',
+             label: '▲ STREAM UP · 1440p', busy: 'Switching to 1440p…' },
+  down:    { id: 'btn-stream-down',     api: '/api/stream/down',     side: 'down',
+             label: '▼ STREAM DOWN',       busy: 'Shutting down…'    },
+};
+const STREAM_TOAST = {
+  deck:    'stream up (deck 1680×1050) — takes ~30-90 s',
+  '1440p': 'stream up (1440p 2560×1440) — takes ~30-90 s',
+  down:    'stream down — takes ~30-90 s',
+};
 const STREAM_STATES = {
   headless:  { label: 'HEADLESS', dot: 'headless'  },
   ready:     { label: 'READY',    dot: 'ready'     },
   streaming: { label: 'STEAM',    dot: 'streaming' },
 };
+function streamBtn(key)  { return document.getElementById(STREAM_ACTIONS[key].id); }
+function eachStreamButton(fn) { Object.keys(STREAM_ACTIONS).forEach(k => fn(k)); }
 
 async function fetchStream() {
   if (!_features.stream) return;
@@ -791,8 +806,6 @@ async function fetchStream() {
     const lbl   = document.getElementById('stream-label');
     const dot   = document.getElementById('stream-dot');
     const state = document.getElementById('stream-state');
-    const btnUp   = document.getElementById('btn-stream-up');
-    const btnDown = document.getElementById('btn-stream-down');
     if (d.error || !STREAM_STATES[d.state]) {
       sec.style.display = 'none'; lbl.style.display = 'none'; return;
     }
@@ -801,17 +814,17 @@ async function fetchStream() {
     dot.className = `stream-dot ${s.dot}`;
     state.textContent = s.label;
     if (!_streamBusy) {
-      // auto-disarm the button that has reached its goal, enable the useful one
-      if (d.state === 'streaming') disarmStream('up');
+      // auto-disarm the button(s) that reached their goal, restore + re-enable
+      if (d.state === 'streaming') { disarmStream('deck'); disarmStream('1440p'); }
       else disarmStream('down');
-      // transition finished (or busy window elapsed) — restore labels
-      btnUp.textContent   = STREAM_BTN_LABEL.up;
-      btnDown.textContent = STREAM_BTN_LABEL.down;
-      btnUp.style.display   = 'inline-block';
-      btnDown.style.display = 'inline-block';
-      btnUp.disabled   = d.state === 'streaming';
-      btnDown.disabled = d.state === 'headless';
-    } else if (_streamTarget === 'up'   && d.state === 'streaming') {
+      eachStreamButton(k => {
+        const a = STREAM_ACTIONS[k], btn = streamBtn(k);
+        btn.textContent = a.label;
+        btn.style.display = 'inline-block';
+        btn.disabled = a.side === 'up' ? d.state === 'streaming'
+                                       : d.state === 'headless';
+      });
+    } else if ((_streamTarget === 'deck' || _streamTarget === '1440p') && d.state === 'streaming') {
       _streamBusy = false; _streamTarget = null;
     } else if (_streamTarget === 'down' && d.state === 'headless') {
       _streamBusy = false; _streamTarget = null;
@@ -819,40 +832,38 @@ async function fetchStream() {
   } catch(e) { /* ignore */ }
 }
 
-function disarmStream(side) {
-  if (_streamArmed !== side) return;
+function disarmStream(key) {
+  if (_streamArmed !== key) return;
   _streamArmed = null;
   clearTimeout(_streamTimer);
-  const btn = document.getElementById(side === 'up' ? 'btn-stream-up' : 'btn-stream-down');
-  btn.textContent = STREAM_BTN_LABEL[side];
+  const btn = streamBtn(key);
+  btn.textContent = STREAM_ACTIONS[key].label;
   btn.classList.remove('armed');
 }
 
-function streamToggle(side) {
-  const btn = document.getElementById(side === 'up' ? 'btn-stream-up' : 'btn-stream-down');
+function streamToggle(key) {
+  const a = STREAM_ACTIONS[key];
+  const btn = streamBtn(key);
   if (_streamBusy) return;
-  if (_streamArmed !== side) {
-    // First press — arm this button, disarm the other
-    disarmStream('up'); disarmStream('down');
-    _streamArmed = side;
+  if (_streamArmed !== key) {
+    // First press — arm this button, disarm the others
+    eachStreamButton(k => disarmStream(k));
+    _streamArmed = key;
     btn.textContent = '⚠ CONFIRM?';
     btn.classList.add('armed');
-    _streamTimer = setTimeout(() => disarmStream(side), 8000);
+    _streamTimer = setTimeout(() => disarmStream(key), 8000);
     return;
   }
   // Second press — fire
-  disarmStream(side);
+  disarmStream(key);
   _streamBusy = true;
-  _streamTarget = side;
-  const btnUp   = document.getElementById('btn-stream-up');
-  const btnDown = document.getElementById('btn-stream-down');
-  btnUp.disabled = btnDown.disabled = true;
-  btn.textContent = side === 'up' ? 'Switching…' : 'Shutting down…';
-  fetch(`/api/stream/${side}`, { method: 'POST' })
+  _streamTarget = key;
+  eachStreamButton(k => { streamBtn(k).disabled = true; });
+  btn.textContent = a.busy;
+  fetch(a.api, { method: 'POST' })
     .then(r => r.json())
     .then(d => {
-      toast(d.ok ? `${side === 'up' ? 'stream up' : 'stream down'} — takes ~30-90 s`
-                 : ('error: ' + (d.detail || 'failed')), !d.ok);
+      toast(d.ok ? STREAM_TOAST[key] : ('error: ' + (d.detail || 'failed')), !d.ok);
       if (!d.ok) { _streamBusy = false; _streamTarget = null; return; }
       // safety net: if status never confirms the target, unstick after 180 s
       // (stream-up can legitimately take up to ~2 min: target switch + session wait)
