@@ -1206,6 +1206,8 @@ async function fetchShelly() {
       ? `<div class="ag-item"><span class="ag-label">TODAY</span><span class="ag-val" style="color:var(--g-bright)">${d.today_kwh.toFixed(4)} kWh</span></div>` : '';
     const ydayRow = (d.yesterday_kwh !== null && d.yesterday_date)
       ? `<div class="ag-item"><span class="ag-label">YDAY (${d.yesterday_date.slice(-5)})</span><span class="ag-val" style="color:var(--g-dim)">${d.yesterday_kwh.toFixed(4)} kWh</span></div>` : '';
+    const avgRow = d.avg_7d_kwh !== null && d.avg_7d_days > 0
+      ? `<div class="ag-item"><span class="ag-label">${d.avg_7d_days >= 7 ? 'AVG 7D' : 'AVG ' + d.avg_7d_days + 'D'}</span><span class="ag-val" style="color:var(--g-dim)">${d.avg_7d_kwh.toFixed(4)} kWh · ${Math.round(d.avg_7d_kwh * 1000 / 24)} W</span></div>` : '';
     row.innerHTML = `
       <div class="ag-item">
         <span class="ag-label">STATE</span>
@@ -1218,7 +1220,7 @@ async function fetchShelly() {
       </div>
       <div class="ag-item"><span class="ag-label">VOLTAGE</span><span class="ag-val">${d.voltage} V</span></div>
       <div class="ag-item"><span class="ag-label">CURRENT</span><span class="ag-val">${d.current} A</span></div>
-      ${todayRow}${ydayRow}`;
+      ${todayRow}${ydayRow}${avgRow}`;
   } catch(e) { /* ignore */ }
 }
 
