@@ -465,6 +465,7 @@ _energy_data: dict = {
     "yesterday_wh":    0.0,
     "_last_minute_ts": 0,     # unix ts of last processed minute
     "today_history":   [],    # [[minute_ts, wh], ...] per-minute energy samples
+    "daily":           {},    # {YYYY-MM-DD: wh} finished-day totals, newest 30 kept
 }
 
 
@@ -486,6 +487,7 @@ def _load_energy() -> None:
         with open(_ENERGY_FILE) as f:
             saved = json.load(f)
         saved.setdefault("today_history", [])
+        saved.setdefault("daily", {})
         # Drop history samples that don't belong to the stored day (safety net
         # against corrupted or hand-edited files).
         day = saved.get("today", "")
@@ -503,6 +505,15 @@ def _load_energy() -> None:
             ]
         else:
             saved["today_history"] = []
+        # Validate daily: must be a dict of {date_str: numeric_wh}.
+        raw_daily = saved.get("daily", {})
+        if isinstance(raw_daily, dict):
+            saved["daily"] = {
+                k: v for k, v in raw_daily.items()
+                if isinstance(k, str) and isinstance(v, (int, float))
+            }
+        else:
+            saved["daily"] = {}
         _energy_data.update(saved)
     except FileNotFoundError:
         pass
@@ -545,6 +556,10 @@ def _accumulate(by_minute: list, minute_ts: int) -> None:
         if _energy_data["today"]:   # not the very first run
             _energy_data["yesterday"]    = _energy_data["today"]
             _energy_data["yesterday_wh"] = _energy_data["today_wh"]
+            daily = _energy_data.setdefault("daily", {})
+            daily[_energy_data["today"]] = round(_energy_data["today_wh"], 3)
+            for old in sorted(daily)[:max(0, len(daily) - 30)]:
+                del daily[old]
         _energy_data["today"]    = today_str
         _energy_data["today_wh"] = 0.0
         _energy_data["today_history"] = []
@@ -595,6 +610,21 @@ def start_energy_tracker() -> None:
     threading.Thread(target=_energy_tracker_loop, daemon=True).start()
 
 
+def _avg_7d() -> tuple[float | None, int]:
+    """Average Wh per finished day over the last up-to-7 days (today excluded).
+
+    Returns (avg_wh, days_used); (None, 0) until at least one finished day
+    is recorded.  While fewer than 7 days of history exist, the average is
+    computed over the days available.
+    """
+    daily = _energy_data.get("daily", {})
+    recent = sorted(daily)[-7:]
+    if not recent:
+        return None, 0
+    avg_wh = sum(float(daily[d]) for d in recent) / len(recent)
+    return round(avg_wh, 3), len(recent)
+
+
 def get_shelly_stats() -> dict:
     """Fetch live Shelly stats and merge in today/yesterday kWh from memory."""
     if not SHELLY_PLUG_URL:
@@ -609,6 +639,7 @@ def get_shelly_stats() -> dict:
             today_kwh     = round(_energy_data["today_wh"]     / 1000, 4)
             yesterday_kwh = round(_energy_data["yesterday_wh"] / 1000, 4)
             yesterday_str = _energy_data["yesterday"]
+            avg_7d_wh, avg_7d_days = _avg_7d()
             return {
                 "output":         d.get("output", False),
                 "apower":         round(d.get("apower",  0.0), 1),
@@ -617,6 +648,8 @@ def get_shelly_stats() -> dict:
                 "today_kwh":      today_kwh,
                 "yesterday_kwh":  yesterday_kwh if yesterday_str else None,
                 "yesterday_date": yesterday_str,
+                "avg_7d_kwh":     round(avg_7d_wh / 1000, 4) if avg_7d_wh is not None else None,
+                "avg_7d_days":    avg_7d_days,
             }
     except Exception:
         pass
