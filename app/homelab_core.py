@@ -505,6 +505,15 @@ def _load_energy() -> None:
             ]
         else:
             saved["today_history"] = []
+        # Validate daily: must be a dict of {date_str: numeric_wh}.
+        raw_daily = saved.get("daily", {})
+        if isinstance(raw_daily, dict):
+            saved["daily"] = {
+                k: v for k, v in raw_daily.items()
+                if isinstance(k, str) and isinstance(v, (int, float))
+            }
+        else:
+            saved["daily"] = {}
         _energy_data.update(saved)
     except FileNotFoundError:
         pass
