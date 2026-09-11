@@ -466,6 +466,7 @@ _energy_data: dict = {
     "_last_minute_ts": 0,     # unix ts of last processed minute
     "today_history":   [],    # [[minute_ts, wh], ...] per-minute energy samples
     "daily":           {},    # {YYYY-MM-DD: wh} finished-day totals, newest 30 kept
+    "daily_min_w":     {},    # {YYYY-MM-DD: W} finished-day min watts, newest 30 kept
 }
 
 
@@ -488,6 +489,7 @@ def _load_energy() -> None:
             saved = json.load(f)
         saved.setdefault("today_history", [])
         saved.setdefault("daily", {})
+        saved.setdefault("daily_min_w", {})
         # Drop history samples that don't belong to the stored day (safety net
         # against corrupted or hand-edited files).
         day = saved.get("today", "")
@@ -514,6 +516,15 @@ def _load_energy() -> None:
             }
         else:
             saved["daily"] = {}
+        # Validate daily_min_w: must be a dict of {date_str: numeric_w}.
+        raw_min_w = saved.get("daily_min_w", {})
+        if isinstance(raw_min_w, dict):
+            saved["daily_min_w"] = {
+                k: v for k, v in raw_min_w.items()
+                if isinstance(k, str) and isinstance(v, (int, float))
+            }
+        else:
+            saved["daily_min_w"] = {}
         _energy_data.update(saved)
     except FileNotFoundError:
         pass
@@ -560,6 +571,18 @@ def _accumulate(by_minute: list, minute_ts: int) -> None:
             daily[_energy_data["today"]] = round(_energy_data["today_wh"], 3)
             for old in sorted(daily)[:max(0, len(daily) - 30)]:
                 del daily[old]
+            # Commit this day's minimum watts before the history is cleared
+            # (w = wh-per-minute * 60, same conversion as get_shelly_history).
+            hist_w = [
+                float(wh) * 60.0
+                for _, wh in _energy_data["today_history"]
+                if isinstance(wh, (int, float))
+            ]
+            if hist_w:
+                min_w = _energy_data.setdefault("daily_min_w", {})
+                min_w[_energy_data["today"]] = round(min(hist_w), 1)
+                for old in sorted(min_w)[:max(0, len(min_w) - 30)]:
+                    del min_w[old]
         _energy_data["today"]    = today_str
         _energy_data["today_wh"] = 0.0
         _energy_data["today_history"] = []
@@ -625,6 +648,21 @@ def _avg_7d() -> tuple[float | None, int]:
     return round(avg_wh, 3), len(recent)
 
 
+def _min_7d() -> tuple[float | None, int]:
+    """Min watts recorded on any of the last up-to-7 finished days (today excluded).
+
+    Returns (min_w, days_with_data); (None, 0) until at least one finished day
+    with history samples is recorded.  Days are only present in daily_min_w if
+    they had at least one sample, so days_with_data may be < 7 while data
+    accumulates.
+    """
+    min_w = _energy_data.get("daily_min_w", {})
+    recent = sorted(min_w)[-7:]
+    if not recent:
+        return None, 0
+    return round(min(float(min_w[d]) for d in recent), 1), len(recent)
+
+
 def get_shelly_stats() -> dict:
     """Fetch live Shelly stats and merge in today/yesterday kWh from memory."""
     if not SHELLY_PLUG_URL:
@@ -640,6 +678,7 @@ def get_shelly_stats() -> dict:
             yesterday_kwh = round(_energy_data["yesterday_wh"] / 1000, 4)
             yesterday_str = _energy_data["yesterday"]
             avg_7d_wh, avg_7d_days = _avg_7d()
+            min_7d_w, min_7d_days = _min_7d()
             return {
                 "output":         d.get("output", False),
                 "apower":         round(d.get("apower",  0.0), 1),
@@ -650,6 +689,8 @@ def get_shelly_stats() -> dict:
                 "yesterday_date": yesterday_str,
                 "avg_7d_kwh":     round(avg_7d_wh / 1000, 4) if avg_7d_wh is not None else None,
                 "avg_7d_days":    avg_7d_days,
+                "min_7d_w":       min_7d_w,
+                "min_7d_days":    min_7d_days,
             }
     except Exception:
         pass
