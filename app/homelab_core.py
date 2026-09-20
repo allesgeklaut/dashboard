@@ -223,12 +223,13 @@ def net_speed() -> tuple[float, float]:
     global _prev_net, _prev_net_t
     with _net_lock:
         n, now = psutil.net_io_counters(), time.monotonic()
-        if _prev_net is None:
+        prev, prev_t = _prev_net, _prev_net_t   # snapshot: narrowed below
+        if prev is None or prev_t is None:
             _prev_net, _prev_net_t = n, now
             return 0.0, 0.0
-        dt = (now - _prev_net_t) or 1e-3
-        tx = (n.bytes_sent - _prev_net.bytes_sent) / dt
-        rx = (n.bytes_recv - _prev_net.bytes_recv) / dt
+        dt = (now - prev_t) or 1e-3
+        tx = (n.bytes_sent - prev.bytes_sent) / dt
+        rx = (n.bytes_recv - prev.bytes_recv) / dt
         _prev_net, _prev_net_t = n, now
         return tx, rx
 
