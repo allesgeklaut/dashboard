@@ -223,12 +223,13 @@ def net_speed() -> tuple[float, float]:
     global _prev_net, _prev_net_t
     with _net_lock:
         n, now = psutil.net_io_counters(), time.monotonic()
-        if _prev_net is None:
+        prev, prev_t = _prev_net, _prev_net_t   # snapshot: narrowed below
+        if prev is None or prev_t is None:
             _prev_net, _prev_net_t = n, now
             return 0.0, 0.0
-        dt = (now - _prev_net_t) or 1e-3
-        tx = (n.bytes_sent - _prev_net.bytes_sent) / dt
-        rx = (n.bytes_recv - _prev_net.bytes_recv) / dt
+        dt = (now - prev_t) or 1e-3
+        tx = (n.bytes_sent - prev.bytes_sent) / dt
+        rx = (n.bytes_recv - prev.bytes_recv) / dt
         _prev_net, _prev_net_t = n, now
         return tx, rx
 
@@ -444,11 +445,14 @@ def get_adguard_stats() -> dict:
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────
-# Energy tracker (180 s loop):  accumulates by_minute kWh into _energy_data
-#                                and persists to disk — nothing else.
+# Energy tracker (90 s loop):    records *finished* minutes from the Shelly's
+#                                by_minute payload into _energy_data and
+#                                persists to disk — nothing else.
 # get_shelly_stats():            always fetches live data fresh from the plug,
 #                                then merges today/yesterday kWh from memory.
 # This keeps the live display snappy while energy bookkeeping stays accurate.
+# The 90 s interval matters: a finished minute stays in the payload for only
+# ~120 s, so slower polling permanently loses minutes and under-counts energy.
 
 import json
 import datetime as _dt
@@ -463,9 +467,10 @@ _energy_data: dict = {
     "today_wh":        0.0,
     "yesterday":       "",
     "yesterday_wh":    0.0,
-    "_last_minute_ts": 0,     # unix ts of last processed minute
+    "_last_minute_ts": 0,     # unix ts (minute start) of last committed minute
     "today_history":   [],    # [[minute_ts, wh], ...] per-minute energy samples
     "daily":           {},    # {YYYY-MM-DD: wh} finished-day totals, newest 30 kept
+    "daily_min_w":     {},    # {YYYY-MM-DD: W} finished-day min watts, newest 30 kept
 }
 
 
@@ -488,6 +493,7 @@ def _load_energy() -> None:
             saved = json.load(f)
         saved.setdefault("today_history", [])
         saved.setdefault("daily", {})
+        saved.setdefault("daily_min_w", {})
         # Drop history samples that don't belong to the stored day (safety net
         # against corrupted or hand-edited files).
         day = saved.get("today", "")
@@ -514,6 +520,26 @@ def _load_energy() -> None:
             }
         else:
             saved["daily"] = {}
+        # Validate daily_min_w: must be a dict of {date_str: numeric_w}.
+        raw_min_w = saved.get("daily_min_w", {})
+        if isinstance(raw_min_w, dict):
+            saved["daily_min_w"] = {
+                k: v for k, v in raw_min_w.items()
+                if isinstance(k, str) and isinstance(v, (int, float))
+            }
+        else:
+            saved["daily_min_w"] = {}
+        # Resume from the newest committed minute (minute start) so a restart
+        # does not re-ingest minutes that were already stored.
+        saved["_last_minute_ts"] = max(
+            (
+                (int(s[0]) // 60) * 60
+                for s in saved["today_history"]
+                if isinstance(s, (list, tuple)) and len(s) == 2
+                and isinstance(s[0], (int, float))
+            ),
+            default=0,
+        )
         _energy_data.update(saved)
     except FileNotFoundError:
         pass
@@ -535,61 +561,116 @@ def _save_energy() -> None:
         pass
 
 
-def _accumulate(by_minute: list, minute_ts: int) -> None:
-    """Add newly seen per-minute mWh values to today's Wh accumulator and
-    append them as history samples."""
-    if not by_minute or not minute_ts:
-        return
-    today_str = _dt.date.today().isoformat()
-    last_ts = _energy_data["_last_minute_ts"]
+def _prune_days(mapping: dict) -> None:
+    """Keep only the newest 30 entries of a {date: value} mapping."""
+    for old in sorted(mapping)[:max(0, len(mapping) - 30)]:
+        del mapping[old]
 
-    # How many fresh minutes does this payload contain?
-    if last_ts:
-        new_mins = min(len(by_minute), round((minute_ts - last_ts) / 60))
-    else:
-        new_mins = len(by_minute)   # first ever poll — use all 3
-    if new_mins <= 0:
-        return
 
-    # Midnight rollover
-    if _energy_data["today"] != today_str:
-        if _energy_data["today"]:   # not the very first run
-            _energy_data["yesterday"]    = _energy_data["today"]
-            _energy_data["yesterday_wh"] = _energy_data["today_wh"]
-            daily = _energy_data.setdefault("daily", {})
-            daily[_energy_data["today"]] = round(_energy_data["today_wh"], 3)
-            for old in sorted(daily)[:max(0, len(daily) - 30)]:
-                del daily[old]
-        _energy_data["today"]    = today_str
-        _energy_data["today_wh"] = 0.0
-        _energy_data["today_history"] = []
+def _commit_finished_day() -> None:
+    """Commit the day currently in `today` to the daily maps and reset it."""
+    if _energy_data["today"]:
+        _energy_data["yesterday"]    = _energy_data["today"]
+        _energy_data["yesterday_wh"] = _energy_data["today_wh"]
+        daily = _energy_data.setdefault("daily", {})
+        daily[_energy_data["today"]] = round(_energy_data["today_wh"], 3)
+        _prune_days(daily)
+        # Commit this day's minimum watts before the history is cleared
+        # (w = wh-per-minute * 60, same conversion as get_shelly_history).
+        hist_w = [
+            float(wh) * 60.0
+            for _, wh in _energy_data["today_history"]
+            if isinstance(wh, (int, float))
+        ]
+        if hist_w:
+            min_w = _energy_data.setdefault("daily_min_w", {})
+            min_w[_energy_data["today"]] = round(min(hist_w), 1)
+            _prune_days(min_w)
+    _energy_data["today_wh"] = 0.0
+    _energy_data["today_history"] = []
 
-    # by_minute[0] = most recent complete minute, [1] = one before, etc.
-    fresh = [float(v) for v in by_minute[:new_mins]]
-    added_wh = sum(fresh) / 1000.0   # mWh → Wh
-    _energy_data["today_wh"]        = round(_energy_data["today_wh"] + added_wh, 3)
-    _energy_data["_last_minute_ts"] = minute_ts
 
-    # Append chronologically (oldest first): fresh = [newest, ..., oldest].
+def _add_sample(ts: int, wh_mwh: float) -> None:
+    """Add one finished minute to the current day's total and history."""
+    _energy_data["today_wh"] = round(_energy_data["today_wh"] + wh_mwh / 1000.0, 3)
     hist = _energy_data["today_history"]
-    for ts, wh in zip(
-        range(minute_ts - (len(fresh) - 1) * 60, minute_ts + 1, 60),
-        reversed(fresh),
-    ):
-        hist.append([ts, round(wh / 1000.0, 5)])   # mWh → Wh
+    hist.append([ts, round(wh_mwh / 1000.0, 5)])   # mWh → Wh
     # Cap at one full day of samples (safety net; rollover clears it anyway).
     if len(hist) > 1440:
         del hist[:len(hist) - 1440]
 
 
+def _accumulate(by_minute: list, minute_ts: int) -> bool:
+    """Record *finished* minutes from a Shelly by_minute payload.
+
+    `by_minute` holds [0] = the minute still in progress, [1] and [2] =
+    finished minutes.  Only finished minutes are recorded: element [0] holds
+    just the energy so far into the current minute, so treating it as a full
+    minute scales both its watts and its energy by (elapsed/60).
+
+    Every finished minute is committed exactly once, documented by its start
+    timestamp.  Returns True when something changed (so the caller persists).
+
+    NOTE: a finished minute stays in the payload for only ~120 s (60 s as [1],
+    then 60 s as [2]) before it scrolls away, so the caller must poll well
+    under that — see _energy_tracker_loop().
+    """
+    if not by_minute or not minute_ts or len(by_minute) < 2:
+        return False
+    cur_min = int(minute_ts) // 60
+    last_ts = int(_energy_data.get("_last_minute_ts") or 0)
+
+    # Finished minutes, oldest first; never re-commit one already stored.
+    commits: list[tuple[int, float]] = []
+    for i, value in enumerate(by_minute[1:3], start=1):
+        if not isinstance(value, (int, float)):
+            continue
+        ts = (cur_min - i) * 60
+        if ts > last_ts:
+            commits.append((ts, float(value)))
+    if not commits:
+        return False
+    commits.sort()
+
+    changed = False
+    for ts, wh_mwh in commits:
+        day = _dt.datetime.fromtimestamp(ts).date().isoformat()
+        if day == _energy_data["today"]:
+            _add_sample(ts, wh_mwh)
+            changed = True
+        elif day > (_energy_data["today"] or ""):
+            # First minute of a new day: close out the old one, then record.
+            _commit_finished_day()
+            _energy_data["today"] = day
+            _add_sample(ts, wh_mwh)
+            changed = True
+        elif day == _energy_data["yesterday"]:
+            # Straggler from just before midnight that arrived after the
+            # rollover — add it to the day that was already committed.
+            _energy_data["yesterday_wh"] = round(
+                _energy_data["yesterday_wh"] + wh_mwh / 1000.0, 3)
+            daily = _energy_data.setdefault("daily", {})
+            if day in daily:
+                daily[day] = round(float(daily[day]) + wh_mwh / 1000.0, 3)
+            changed = True
+        _energy_data["_last_minute_ts"] = ts
+    return changed
+
+
 def _energy_tracker_loop() -> None:
-    """Background loop: poll every 180 s purely for energy accumulation."""
+    """Background loop: poll every 90 s purely for energy accumulation.
+
+    The interval is tied to the Shelly's payload: each finished minute is only
+    available for ~120 s (60 s as by_minute[1], then 60 s as by_minute[2]).
+    Polling at 180 s dropped one minute per cycle — permanently under-counting
+    energy and recording fake-low watts from the partial current minute.
+    """
     if not SHELLY_PLUG_URL:
         return
     _check_energy_file()
     _load_energy()
     while True:
-        time.sleep(180)
+        time.sleep(90)
         try:
             r = requests.get(
                 f"{SHELLY_PLUG_URL}/rpc/Switch.GetStatus?id=0",
@@ -597,8 +678,8 @@ def _energy_tracker_loop() -> None:
             )
             if r.ok:
                 ae = r.json().get("aenergy", {})
-                _accumulate(ae.get("by_minute", []), ae.get("minute_ts", 0))
-                _save_energy()
+                if _accumulate(ae.get("by_minute", []), ae.get("minute_ts", 0)):
+                    _save_energy()
         except Exception:
             pass
 
@@ -625,6 +706,21 @@ def _avg_7d() -> tuple[float | None, int]:
     return round(avg_wh, 3), len(recent)
 
 
+def _min_7d() -> tuple[float | None, int]:
+    """Min watts recorded on any of the last up-to-7 finished days (today excluded).
+
+    Returns (min_w, days_with_data); (None, 0) until at least one finished day
+    with history samples is recorded.  Days are only present in daily_min_w if
+    they had at least one sample, so days_with_data may be < 7 while data
+    accumulates.
+    """
+    min_w = _energy_data.get("daily_min_w", {})
+    recent = sorted(min_w)[-7:]
+    if not recent:
+        return None, 0
+    return round(min(float(min_w[d]) for d in recent), 1), len(recent)
+
+
 def get_shelly_stats() -> dict:
     """Fetch live Shelly stats and merge in today/yesterday kWh from memory."""
     if not SHELLY_PLUG_URL:
@@ -640,6 +736,7 @@ def get_shelly_stats() -> dict:
             yesterday_kwh = round(_energy_data["yesterday_wh"] / 1000, 4)
             yesterday_str = _energy_data["yesterday"]
             avg_7d_wh, avg_7d_days = _avg_7d()
+            min_7d_w, min_7d_days = _min_7d()
             return {
                 "output":         d.get("output", False),
                 "apower":         round(d.get("apower",  0.0), 1),
@@ -650,6 +747,8 @@ def get_shelly_stats() -> dict:
                 "yesterday_date": yesterday_str,
                 "avg_7d_kwh":     round(avg_7d_wh / 1000, 4) if avg_7d_wh is not None else None,
                 "avg_7d_days":    avg_7d_days,
+                "min_7d_w":       min_7d_w,
+                "min_7d_days":    min_7d_days,
             }
     except Exception:
         pass
