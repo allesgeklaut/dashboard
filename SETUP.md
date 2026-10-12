@@ -23,6 +23,31 @@ homelab-ctrl container
 
 ---
 
+## Local development (desktop workhorse)
+
+Development happens on the desktop; the Pop!_OS server is deploy-only.
+Run the app without Docker, using `uv`:
+
+```bash
+uv venv                           # creates .venv/
+uv pip install -r requirements.txt
+uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
+```
+
+Then open **http://127.0.0.1:7681**. (`--app-dir app` mirrors the container,
+which copies `app/` to `/app` and imports `main`.)
+
+All optional features — Portainer, AdGuard, Shelly, Ollama, LLaMA, stream
+spool — are env-gated and stay **off** unless enabled via `.env` in the repo
+root. Keep `SHELLY_PLUG_URL` unset locally unless you deliberately want to
+test the Shelly integration: it makes the energy tracker poll that device,
+and Shelly polling is kept minimal on purpose.
+
+> `dashboard.py` (the Textual terminal TUI) is **deprecated** — the web
+> dashboard is the product.
+
+---
+
 ## 1 — Configure
 
 ```bash
