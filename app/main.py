@@ -39,6 +39,10 @@ def api_storage():
 def api_adguard():
     return core.get_adguard_stats()
 
+@app.get("/api/opencode-go")
+def api_opencode_go():
+    return core.get_opencode_go_usage()
+
 @app.get("/api/containers")
 def api_containers():
     containers, _ = core.get_containers()

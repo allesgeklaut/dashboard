@@ -43,6 +43,13 @@ root. Keep `SHELLY_PLUG_URL` unset locally unless you deliberately want to
 test the Shelly integration: it makes the energy tracker poll that device,
 and Shelly polling is kept minimal on purpose.
 
+The **OpenCode Go usage** card shows the plan's rolling 5h / weekly / monthly
+usage while the dashboard page is open (nothing polls in the background). It
+is enabled by setting `OPENCODE_GO_API_KEY` — use the same token the CLI uses
+(read it on the server from `~/.local/share/opencode/auth.json`, see
+`.env.example`). Locally the card works with no configuration: it falls back
+to the auth store on the dev machine (`OPENCODE_AUTH_FILE` overrides the path).
+
 > `dashboard.py` (the Textual terminal TUI) is **deprecated** — the web
 > dashboard is the product.
 

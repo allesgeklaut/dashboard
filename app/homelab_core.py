@@ -25,6 +25,16 @@ SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → featur
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
 STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
+# ── OpenCode Go usage (opencode go card) ─────────────────────────────────────
+# The key normally comes from OPENCODE_GO_API_KEY.  For local development the
+# fallback reads opencode's own auth store (the same token the CLI uses) —
+# the server container should get the env var instead (see .env.example).
+OPENCODE_GO_API_KEY  = os.getenv("OPENCODE_GO_API_KEY")  # None → read auth store
+OPENCODE_AUTH_FILE   = os.getenv(
+    "OPENCODE_AUTH_FILE", os.path.expanduser("~/.local/share/opencode/auth.json")
+)
+OPENCODE_USAGE_URL   = "https://opencode.ai/zen/go/v1/usage"
+OPENCODE_GO_TTL      = 60  # seconds to cache a successful upstream response
 # ── Desktop control (Wake-on-LAN + remote power off) — see SETUP.md § 6 ──────
 # Request files are action selectors only; the WoL magic packet itself is
 # broadcast on the LAN by the host-side handler (host/desktop-power-handler.sh),
@@ -455,6 +465,87 @@ def get_adguard_stats() -> dict:
     except Exception:
         pass
     return {"error": "unavailable"}
+
+
+# ── OpenCode Go usage ─────────────────────────────────────────────────────────
+# GET /zen/go/v1/usage (Bearer) returns the Go plan's rolling 5h / weekly /
+# monthly windows: {status: ok|rate-limited, percent: 0-100 used, resetsAt}.
+# The endpoint is request-driven (no background polling): the browser only
+# calls it while the dashboard is open and visible, and a short TTL cache
+# coalesces concurrent callers into at most one upstream call per minute.
+
+_opencode_lock = threading.Lock()
+_opencode_cache: dict = {"ts": 0.0, "data": None}
+
+
+def _read_opencode_go_key() -> str | None:
+    """Resolve the OpenCode Go API key: OPENCODE_GO_API_KEY if set, else the
+    'opencode-go' entry in opencode's auth store.  None if neither exists."""
+    if OPENCODE_GO_API_KEY:
+        return OPENCODE_GO_API_KEY
+    try:
+        with open(OPENCODE_AUTH_FILE) as fh:
+            entry = (json.load(fh) or {}).get("opencode-go") or {}
+        key = entry.get("key") if isinstance(entry, dict) else None
+        return key.strip() if isinstance(key, str) and key.strip() else None
+    except (OSError, ValueError):
+        return None
+
+
+def get_opencode_go_usage() -> dict:
+    """Return the Go plan usage windows, or {'error': ...} on failure.
+
+    Errors are mapped for the UI: 'auth' (bad key / no Go plan — upstream
+    surfaces both as 401/403), 'unavailable' (network / unexpected shape).
+    Successful responses are cached for OPENCODE_GO_TTL seconds in memory.
+    """
+    key = _read_opencode_go_key()
+    if not key:
+        return {"error": "not configured"}
+
+    now = time.time()
+    with _opencode_lock:
+        cached = _opencode_cache["data"]
+        if cached is not None and now - _opencode_cache["ts"] < OPENCODE_GO_TTL:
+            return dict(cached)
+
+    try:
+        r = requests.get(
+            OPENCODE_USAGE_URL,
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            timeout=5,
+            # Never let a redirect forward the Bearer token to another host.
+            allow_redirects=False,
+        )
+        if r.status_code in (401, 403):
+            return {"error": "auth"}
+        if r.status_code != 200:
+            return {"error": "unavailable"}
+        usage = r.json().get("usage") or {}
+    except Exception:
+        return {"error": "unavailable"}
+
+    out: dict = {}
+    for name in ("rolling", "weekly", "monthly"):
+        w = usage.get(name)
+        if not isinstance(w, dict):
+            continue
+        try:
+            pct = max(0.0, min(100.0, float(w.get("percent"))))
+        except (TypeError, ValueError):
+            continue
+        out[name] = {
+            "percent":   pct,
+            "resets_at": w.get("resetsAt"),
+            "status":    w.get("status") or "ok",
+        }
+    if not out:
+        return {"error": "unavailable"}
+
+    with _opencode_lock:
+        _opencode_cache["ts"]   = now
+        _opencode_cache["data"] = out
+    return dict(out)
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────
@@ -1348,4 +1439,5 @@ def get_features() -> dict:
         "wake":           bool(WOL_DESKTOP_MAC) and bool(DESKTOP_SPOOL_DIR),
         "desktop_power":  bool(DESKTOP_SPOOL_DIR),
         "desktop_status": bool(WOL_DESKTOP_IP),
+        "opencode_go":    _read_opencode_go_key() is not None,
     }

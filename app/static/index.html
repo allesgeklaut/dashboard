@@ -136,6 +136,21 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .ag-label { font-size:10px; color:var(--g-dim); }
 .ag-val { font-size:15px; font-weight:600; color:var(--g); }
 
+/* ── OPENCODE GO USAGE ── */
+.ocg-list { display:flex; flex-direction:column; gap:5px; }
+.ocg-row {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:7px 10px;
+}
+.ocg-top {
+  display:flex; justify-content:space-between; align-items:baseline;
+  margin-bottom:4px;
+}
+.ocg-name { font-size:11px; color:var(--g); }
+.ocg-info { font-size:10px; color:var(--g-dim); }
+.ocg-info.warn  { color:var(--yellow); }
+.ocg-info.alert { color:var(--red); }
+
 
 /* ── SHELLY PLUG ROW ── */
 .shelly-row {
@@ -539,6 +554,10 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <div class="sec-label" id="ag-label" style="display:none">adguard</div>
     <div class="ag-row" id="ag-row" style="display:none"></div>
 
+    <!-- OpenCode Go usage (shown only when a key is configured) -->
+    <div class="sec-label" id="ocg-label" style="display:none">opencode go</div>
+    <div class="ocg-list" id="ocg-list" style="display:none"></div>
+
     <!-- Shelly Plug 1 -->
     <div class="sec-label" id="shelly-label" style="display:none">shelly plug</div>
     <div class="shelly-row" id="shelly-row" style="display:none"></div>
@@ -657,7 +676,7 @@ const round = (n, d=1) => Number(n.toFixed(d));
 
 // ── feature flags ─────────────────────────────────────────────────────────────
 let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false,
-                  wake:false, desktop_power:false, desktop_status:false };
+                  wake:false, desktop_power:false, desktop_status:false, opencode_go:false };
 
 async function fetchFeatures() {
   try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
@@ -677,6 +696,15 @@ async function fetchFeatures() {
   }
   // Feature-gated polls
   if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
+  // OpenCode Go usage — poll only while the page is really visible; the server
+  // additionally caches upstream for 60 s, so nothing runs in the background.
+  if (_features.opencode_go) {
+    document.getElementById('ocg-label').style.display = 'flex';
+    document.getElementById('ocg-list').style.display  = 'flex';
+    fetchOpenCodeGo();
+    setInterval(fetchOpenCodeGo, 60000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) fetchOpenCodeGo(); });
+  }
   if (_features.shelly)  {
     fetchShelly();        setInterval(fetchShelly,        5000);
     fetchShellyHistory(); setInterval(fetchShellyHistory, 60000);
@@ -1290,6 +1318,55 @@ async function fetchAdGuard() {
       { label:'BLOCK%',  val: d.blocked_pct+'%' },
     ].map(i => `<div class="ag-item"><span class="ag-label">${i.label}</span><span class="ag-val">${i.val}</span></div>`).join('');
   } catch(e) { /* ignore */ }
+}
+
+// ── fetch opencode go usage ───────────────────────────────────────────────────
+const OCG_WINDOWS = [['rolling','5H'], ['weekly','WEEK'], ['monthly','MONTH']];
+let _ocgLast = null;
+
+function fmtReset(iso) {
+  if (!iso) return '—';
+  const ms = new Date(iso).getTime() - Date.now();
+  if (isNaN(ms)) return '—';
+  const mins = Math.max(0, Math.ceil(ms / 60000));
+  const d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+async function fetchOpenCodeGo() {
+  if (!_features.opencode_go) return;
+  if (document.hidden) return; // don't poll while the dashboard is in the background
+  try {
+    const d = await fetch('/api/opencode-go').then(r => r.json());
+    if (d.error) {
+      if (_ocgLast) { renderOpenCodeGo(_ocgLast, true); return; }
+      document.getElementById('ocg-list').innerHTML = `<div class="ocg-row">
+        <span class="ocg-info alert">${
+          d.error === 'auth' ? 'key rejected or no go plan' : 'unavailable'}</span></div>`;
+      return;
+    }
+    _ocgLast = d;
+    renderOpenCodeGo(d, false);
+  } catch(e) { /* ignore */ }
+}
+
+function renderOpenCodeGo(d, stale) {
+  document.getElementById('ocg-list').innerHTML = OCG_WINDOWS.map(([key, label]) => {
+    const w = d[key];
+    if (!w) return '';
+    const pct = Math.round(w.percent);
+    const cls = w.status === 'rate-limited' ? 'alert' : pctClass(w.percent);
+    return `<div class="ocg-row">
+      <div class="ocg-top">
+        <span class="ocg-name">${label}</span>
+        <span class="ocg-info ${cls}">${pct}% · resets in ${fmtReset(w.resets_at)}${
+          stale ? ' · stale' : ''}${w.status === 'rate-limited' ? ' · rate-limited' : ''}</span>
+      </div>
+      <div class="pbar"><div class="pbar-fill ${cls}" style="width:${w.percent}%"></div></div>
+    </div>`;
+  }).join('');
 }
 
 // ── fetch shelly plug ─────────────────────────────────────────────────────────
