@@ -21,7 +21,8 @@ uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
 ```
 
 - All optional features (Portainer, AdGuard, Shelly, Ollama, LLaMA, stream
-  spool) are env-gated and auto-disabled without `.env` (gitignored).
+  spool, desktop wake/power) are env-gated and auto-disabled without `.env`
+  (gitignored).
 - Do **not** set `SHELLY_PLUG_URL` locally unless deliberately testing it —
   the energy tracker polls that device and Shelly polling stays minimal.
 - Local test = uvicorn smoke run. Docker/compose checks happen on the server.

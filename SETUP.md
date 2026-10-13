@@ -238,6 +238,63 @@ Log: `~/.homelab-ctrl/stream.log`.
 
 ---
 
+## 6 — Desktop control (wake + power off)
+
+The DESKTOP card wakes the desktop machine (Wake-on-LAN), shuts it down over
+SSH, and shows its up/down state:
+
+- **Wake** — the container sends a WoL magic packet (unprivileged UDP broadcast,
+  no root, no host involvement).
+- **Power off** — the container queues `poweroff` in a spool dir; the host-side
+  systemd unit (`host/desktop-power-handler.sh`) then ssh'es to the desktop and
+  runs `systemctl poweroff`. The container never holds an SSH key or a shell.
+- **Status** — cached TCP probe to the desktop's sshd (`:22`); even a refused
+  connection counts as UP (the kernel answered a SYN with a RST).
+
+### Server side (one-time)
+
+Add to `.env` (see `.env.example` → Desktop control):
+
+```bash
+WOL_DESKTOP_MAC=e0:d5:5e:ab:78:f6   # feature on when set
+WOL_DESKTOP_IP=192.168.0.45         # optional — enables the UP/OFF status
+WOL_BROADCAST=192.168.0.255         # optional — default 255.255.255.255
+```
+
+Then run the spool installer (installs `homelab-desktop.{path,service}`,
+creates the spool dir, appends `DESKTOP_SPOOL_DIR` to `.env`, rebuilds):
+
+```bash
+/opt/stacks/dashboard/host/setup-desktop-power-spool.sh
+```
+
+### Desktop side (one-time, run ON THE DESKTOP)
+
+1. **BIOS**: enable "Wake on LAN" / "Power on by PCI-E device"; disable
+   ErP/Deep Sleep if present — required for wake from full shutdown (S5).
+
+2. Run the installer (enables WoL on the NIC + a boot unit re-applying it,
+   installs the polkit rule allowing password-free poweroff over SSH):
+
+   ```bash
+   /opt/stacks/dashboard/host/setup-desktop-remote-control.sh
+   ```
+
+3. Verify from the **server** (expect `exit:0`):
+
+   ```bash
+   ssh johannes@192.168.0.45 'pkcheck --action-id org.freedesktop.login1.power-off --process $$; echo exit:$?'
+   ```
+
+### Testing the full loop
+
+1. **⏻ POWER OFF** (two presses — arm, then confirm) → desktop shuts down.
+2. **⚡ WAKE** → desktop boots; the status dot flips to UP once sshd is up.
+3. Logs on the server host: `~/.homelab-ctrl/desktop.log` (same file is
+   visible inside the container at `/data/desktop.log`).
+
+---
+
 ## Container Controls
 
 - **Tap** any container row to select it

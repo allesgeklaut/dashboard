@@ -1,0 +1,14 @@
+// HOMELAB//CTRL — allow user johannes to power off from any session type.
+//
+// Installed at /etc/polkit-1/rules.d/49-homelab-poweroff.rules **on the
+// desktop** by host/setup-desktop-remote-control.sh. Without it, the default
+// policy (allow_inactive=auth_admin_keep) rejects poweroff from the server's
+// ssh session with "interactive authentication required".
+//
+// Scope: exactly org.freedesktop.login1.power-off for johannes. Nothing else.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.login1.power-off" &&
+        subject.user == "johannes") {
+        return polkit.Result.YES;
+    }
+});

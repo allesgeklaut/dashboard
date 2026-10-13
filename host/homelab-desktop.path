@@ -1,0 +1,13 @@
+[Unit]
+Description=HOMELAB//CTRL desktop power request spool watcher
+# Triggers homelab-desktop.service when the dashboard container queues a
+# poweroff request by creating a .request file in the desktop spool dir.
+
+[Path]
+# NOTE: %h is NOT used here — in the system manager it resolves to /root,
+# not to the User= of the triggered unit. Hardcode the dashboard user's home.
+PathExistsGlob=/home/johannes/.homelab-ctrl/desktop-spool/*.request
+Unit=homelab-desktop.service
+
+[Install]
+WantedBy=multi-user.target

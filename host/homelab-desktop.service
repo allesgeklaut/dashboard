@@ -1,0 +1,11 @@
+[Unit]
+Description=HOMELAB//CTRL desktop power handler
+After=multi-user.target
+
+[Service]
+Type=oneshot
+User=johannes
+ExecStart=/opt/stacks/dashboard/host/desktop-power-handler.sh
+# ssh + systemctl poweroff: the box goes down before ssh can return cleanly,
+# so give it room but don't hang forever waiting on a dead connection.
+TimeoutStartSec=120

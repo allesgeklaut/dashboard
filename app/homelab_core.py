@@ -3,8 +3,8 @@ homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
 Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
-import os, socket, threading, time, json
-from datetime import timedelta
+import os, re, socket, threading, time, json
+from datetime import datetime, timedelta
 
 import psutil, requests, urllib3
 from dotenv import load_dotenv
@@ -25,6 +25,20 @@ SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → featur
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
 STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
+# ── Desktop control (Wake-on-LAN + remote power off) — see SETUP.md § 6 ──────
+_MAC_RE   = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+WOL_MAC_ERROR = ""
+_WOL_RAW_MAC  = (os.getenv("WOL_DESKTOP_MAC") or "").strip().lower()
+if _WOL_RAW_MAC and not _MAC_RE.match(_WOL_RAW_MAC):
+    WOL_MAC_ERROR = f"WOL_DESKTOP_MAC is not a valid MAC: {_WOL_RAW_MAC!r}"
+WOL_DESKTOP_MAC   = _WOL_RAW_MAC if _WOL_RAW_MAC and not WOL_MAC_ERROR else None
+WOL_DESKTOP_IP    = os.getenv("WOL_DESKTOP_IP")           # None → status probe disabled
+WOL_BROADCAST     = os.getenv("WOL_BROADCAST", "255.255.255.255")
+DESKTOP_SPOOL_DIR = os.getenv("DESKTOP_SPOOL_DIR")        # None → poweroff disabled
+try:
+    WOL_PORT = int(os.getenv("WOL_PORT", "9"))
+except ValueError:
+    WOL_PORT = 9
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
@@ -1199,6 +1213,117 @@ def request_stream(action: str) -> tuple[bool, str]:
     return True, "queued"
 
 
+# ── Desktop control (Wake-on-LAN + power off) ─────────────────────────────────
+# Wake: pure unprivileged UDP broadcast — no host involvement, no root.
+# Power off: write a closed-set token to the spool dir; the host-side systemd
+# unit (host/desktop-power-handler.sh) then ssh'es to the desktop and powers
+# it off. The container never gets a shell or an SSH key.
+# Status: cached TCP probe to :22 (sshd) — ECONNREFUSED still counts as UP
+# (the kernel answered with a RST); only timeout/unreachable means OFF.
+
+_DESKTOP_WAKE_MIN_GAP_S  = 10
+_DESKTOP_POWER_MIN_GAP_S = 30
+_DESKTOP_PROBE_INTERVAL  = 15
+_desktop_lock  = threading.Lock()
+_last_wake_ts  = 0.0
+_last_power_ts = 0.0
+_desktop_state: dict = {"up": None, "since": None, "checked": None}
+
+
+def _desktop_log(line: str) -> None:
+    msg = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [desktop] {line}"
+    print(msg, flush=True)  # shows in docker logs
+    try:
+        # /data == ~/.homelab-ctrl on the host — the power handler logs here too
+        with open(os.path.join(os.path.dirname(_ENERGY_FILE) or ".", "desktop.log"), "a") as f:
+            f.write(msg + "\n")
+    except OSError:
+        pass
+
+
+def wake_desktop() -> tuple[bool, str]:
+    """Send a Wake-on-LAN magic packet to the desktop."""
+    global _last_wake_ts
+    if WOL_MAC_ERROR:
+        return False, WOL_MAC_ERROR
+    if not WOL_DESKTOP_MAC:
+        return False, "WOL_DESKTOP_MAC not configured"
+    with _desktop_lock:
+        now  = time.monotonic()
+        wait = _DESKTOP_WAKE_MIN_GAP_S - (now - _last_wake_ts)
+        if wait > 0:
+            return False, f"rate limited — retry in {int(wait) + 1}s"
+        _last_wake_ts = now
+    payload = b"\xff" * 6 + bytes.fromhex(WOL_DESKTOP_MAC.replace(":", "")) * 16
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            s.sendto(payload, (WOL_BROADCAST, WOL_PORT))
+    except OSError as exc:
+        _desktop_log(f"wake FAILED: {exc}")
+        return False, f"send failed: {exc}"
+    _desktop_log(f"wake sent → {WOL_DESKTOP_MAC} via {WOL_BROADCAST}:{WOL_PORT}")
+    return True, f"magic packet sent via {WOL_BROADCAST}:{WOL_PORT}"
+
+
+def poweroff_desktop() -> tuple[bool, str]:
+    """Queue a poweroff request for the desktop (host-side ssh handler)."""
+    global _last_power_ts
+    if not DESKTOP_SPOOL_DIR:
+        return False, "DESKTOP_SPOOL_DIR not configured"
+    with _desktop_lock:
+        now  = time.monotonic()
+        wait = _DESKTOP_POWER_MIN_GAP_S - (now - _last_power_ts)
+        if wait > 0:
+            return False, f"rate limited — retry in {int(wait) + 1}s"
+        _last_power_ts = now
+    try:
+        os.makedirs(DESKTOP_SPOOL_DIR, exist_ok=True)
+        uid = f"{os.getpid()}.{threading.get_ident()}"
+        tmp = os.path.join(DESKTOP_SPOOL_DIR, f".poweroff.{uid}.tmp")
+        with open(tmp, "w") as f:
+            f.write("poweroff")
+        # atomic publish so the .path glob never sees a half-written file
+        os.replace(tmp, os.path.join(DESKTOP_SPOOL_DIR, f"poweroff.{uid}.request"))
+    except OSError as exc:
+        return False, str(exc)
+    _desktop_log("poweroff queued")
+    return True, "queued"
+
+
+def get_desktop_status() -> dict:
+    """Cached up/down state of the desktop (background TCP probe to :22)."""
+    if not WOL_DESKTOP_IP:
+        return {"error": "WOL_DESKTOP_IP not configured"}
+    with _desktop_lock:
+        return dict(_desktop_state)
+
+
+def _desktop_probe_loop() -> None:
+    while True:
+        try:
+            with socket.create_connection((WOL_DESKTOP_IP, 22), timeout=2):
+                up = True
+        except ConnectionRefusedError:
+            up = True   # kernel sent a RST — host is up, only sshd is closed
+        except OSError:
+            up = False
+        now = time.time()
+        with _desktop_lock:
+            if _desktop_state["up"] != up:
+                _desktop_state["since"] = now
+            _desktop_state["up"] = up
+            _desktop_state["checked"] = now
+        time.sleep(_DESKTOP_PROBE_INTERVAL)
+
+
+def start_desktop_monitor() -> None:
+    """Daemon thread probing the desktop's reachability (only if configured)."""
+    if not WOL_DESKTOP_IP:
+        return
+    threading.Thread(target=_desktop_probe_loop, daemon=True).start()
+
+
 # ── Feature flags ──────────────────────────────────────────────────────────────
 
 def get_features() -> dict:
@@ -1210,4 +1335,7 @@ def get_features() -> dict:
         "ollama":  bool(OLLAMA_URL),
         "llama":   bool(LLAMA_SERVER_URL),
         "stream":  bool(STREAM_SPOOL_DIR),
+        "wake":           bool(WOL_DESKTOP_MAC),
+        "desktop_power":  bool(DESKTOP_SPOOL_DIR),
+        "desktop_status": bool(WOL_DESKTOP_IP),
     }

@@ -106,6 +106,24 @@ def api_stream_down():
         raise HTTPException(500, msg)
     return {"ok": True, "msg": msg}
 
+@app.post("/api/wake")
+def api_wake():
+    ok, msg = core.wake_desktop()
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"ok": True, "msg": msg}
+
+@app.post("/api/desktop/power")
+def api_desktop_power():
+    ok, msg = core.poweroff_desktop()
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"ok": True, "msg": msg}
+
+@app.get("/api/desktop")
+def api_desktop():
+    return core.get_desktop_status()
+
 @app.get("/api/processes")
 def api_processes():
     try:
@@ -134,3 +152,4 @@ def root():
 # prime rolling counters and start background Shelly energy tracking
 core.prime_counters()
 core.start_energy_tracker()
+core.start_desktop_monitor()
