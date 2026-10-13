@@ -931,15 +931,15 @@ async function fetchDesktop() {
 let _wakeBusy = false, _desktopBusy = false;
 
 async function wakeDesktop() {
-  if (_wakeBusy) return;
+  if (_wakeBusy || _desktopBusy) return;
   const btn = document.getElementById('btn-wake');
   _wakeBusy = true;
   btn.disabled = true;
   btn.textContent = 'Waking…';
   try {
     const d = await fetch('/api/wake', { method: 'POST' }).then(r => r.json());
-    toast(d.ok ? ('magic packet sent — desktop should come up') : ('error: ' + (d.detail || 'failed')), !d.ok);
-    btn.textContent = d.ok ? '✓ SENT' : '✗ failed';
+    toast(d.ok ? ('wake request queued — magic packet follows') : ('error: ' + (d.detail || 'failed')), !d.ok);
+    btn.textContent = d.ok ? '✓ QUEUED' : '✗ failed';
   } catch(e) {
     toast('network error', true);
     btn.textContent = '✗ failed';
