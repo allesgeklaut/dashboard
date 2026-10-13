@@ -243,11 +243,14 @@ Log: `~/.homelab-ctrl/stream.log`.
 The DESKTOP card wakes the desktop machine (Wake-on-LAN), shuts it down over
 SSH, and shows its up/down state:
 
-- **Wake** — the container sends a WoL magic packet (unprivileged UDP broadcast,
-  no root, no host involvement).
-- **Power off** — the container queues `poweroff` in a spool dir; the host-side
-  systemd unit (`host/desktop-power-handler.sh`) then ssh'es to the desktop and
-  runs `systemctl poweroff`. The container never holds an SSH key or a shell.
+- **Wake** — the container queues a `wake` request in the spool dir; the
+  host-side systemd unit (`host/desktop-power-handler.sh`) then broadcasts the
+  magic packet from the server's LAN interface (a directed broadcast can't
+  traverse the docker bridge the web container lives on — the kernel drops
+  forwarded directed broadcasts, `bc_forwarding=0`).
+- **Power off** — the container queues `poweroff` in the same spool dir; the
+  host-side unit then ssh'es to the desktop and runs `systemctl poweroff`.
+  The container never holds an SSH key or a shell.
 - **Status** — cached TCP probe to the desktop's sshd (`:22`); even a refused
   connection counts as UP (the kernel answered a SYN with a RST).
 
@@ -256,9 +259,10 @@ SSH, and shows its up/down state:
 Add to `.env` (see `.env.example` → Desktop control):
 
 ```bash
-WOL_DESKTOP_MAC=<desktop-mac>       # feature on when set
+WOL_DESKTOP_MAC=<desktop-mac>       # feature on when set; packet broadcast by the host handler
 WOL_DESKTOP_IP=<desktop-ip>         # optional — enables the UP/OFF status
-WOL_BROADCAST=<lan-broadcast>       # optional — default 255.255.255.255
+WOL_BROADCAST=<lan-broadcast>       # optional — default 255.255.255.255 (host wake handler)
+WOL_PORT=9                          # optional — default 9
 DESKTOP_SSH=johannes@<desktop-ip>   # target for the poweroff ssh handler
 ```
 

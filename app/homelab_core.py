@@ -26,6 +26,10 @@ OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
 STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
 # ── Desktop control (Wake-on-LAN + remote power off) — see SETUP.md § 6 ──────
+# Request files are action selectors only; the WoL magic packet itself is
+# broadcast on the LAN by the host-side handler (host/desktop-power-handler.sh),
+# which reads WOL_BROADCAST / WOL_PORT from the repo .env. The container only
+# needs the MAC (feature flag + validation) and the IP (UP/OFF status probe).
 _MAC_RE   = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 WOL_MAC_ERROR = ""
 _WOL_RAW_MAC  = (os.getenv("WOL_DESKTOP_MAC") or "").strip().lower()
@@ -33,12 +37,7 @@ if _WOL_RAW_MAC and not _MAC_RE.match(_WOL_RAW_MAC):
     WOL_MAC_ERROR = f"WOL_DESKTOP_MAC is not a valid MAC: {_WOL_RAW_MAC!r}"
 WOL_DESKTOP_MAC   = _WOL_RAW_MAC if _WOL_RAW_MAC and not WOL_MAC_ERROR else None
 WOL_DESKTOP_IP    = os.getenv("WOL_DESKTOP_IP")           # None → status probe disabled
-WOL_BROADCAST     = os.getenv("WOL_BROADCAST", "255.255.255.255")
-DESKTOP_SPOOL_DIR = os.getenv("DESKTOP_SPOOL_DIR")        # None → poweroff disabled
-try:
-    WOL_PORT = int(os.getenv("WOL_PORT", "9"))
-except ValueError:
-    WOL_PORT = 9
+DESKTOP_SPOOL_DIR = os.getenv("DESKTOP_SPOOL_DIR")        # None → wake/poweroff disabled
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
 
@@ -1214,10 +1213,12 @@ def request_stream(action: str) -> tuple[bool, str]:
 
 
 # ── Desktop control (Wake-on-LAN + power off) ─────────────────────────────────
-# Wake: pure unprivileged UDP broadcast — no host involvement, no root.
-# Power off: write a closed-set token to the spool dir; the host-side systemd
-# unit (host/desktop-power-handler.sh) then ssh'es to the desktop and powers
-# it off. The container never gets a shell or an SSH key.
+# Wake + power off: write a closed-set token to the spool dir; the host-side
+# systemd unit (host/desktop-power-handler.sh) broadcasts the WoL magic packet
+# from the server's LAN interface / ssh'es to the desktop for poweroff. (The
+# container sits on a docker bridge where the kernel drops directed broadcasts
+# — bc_forwarding=0 — so a packet sent from here never reaches the LAN.)
+# The container never gets a shell or an SSH key.
 # Status: cached TCP probe to :22 (sshd) — ECONNREFUSED still counts as UP
 # (the kernel answered with a RST); only timeout/unreachable means OFF.
 
@@ -1242,30 +1243,35 @@ def _desktop_log(line: str) -> None:
 
 
 def wake_desktop() -> tuple[bool, str]:
-    """Send a Wake-on-LAN magic packet to the desktop."""
+    """Queue a wake request (host-side handler broadcasts the magic packet)."""
     global _last_wake_ts
     if WOL_MAC_ERROR:
         return False, WOL_MAC_ERROR
     if not WOL_DESKTOP_MAC:
         return False, "WOL_DESKTOP_MAC not configured"
+    if not DESKTOP_SPOOL_DIR:
+        return False, "DESKTOP_SPOOL_DIR not configured"
     with _desktop_lock:
         now  = time.monotonic()
         wait = _DESKTOP_WAKE_MIN_GAP_S - (now - _last_wake_ts)
         if wait > 0:
             return False, f"rate limited — retry in {int(wait) + 1}s"
-        _last_wake_ts = now   # committed pre-send; reset below if the send fails
-    payload = b"\xff" * 6 + bytes.fromhex(WOL_DESKTOP_MAC.replace(":", "")) * 16
+        _last_wake_ts = now
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            s.sendto(payload, (WOL_BROADCAST, WOL_PORT))
+        os.makedirs(DESKTOP_SPOOL_DIR, exist_ok=True)
+        uid = f"{os.getpid()}.{threading.get_ident()}"
+        tmp = os.path.join(DESKTOP_SPOOL_DIR, f".wake.{uid}.tmp")
+        with open(tmp, "w") as f:
+            f.write("wake")
+        # atomic publish so the .path glob never sees a half-written file
+        os.replace(tmp, os.path.join(DESKTOP_SPOOL_DIR, f"wake.{uid}.request"))
     except OSError as exc:
         with _desktop_lock:
-            _last_wake_ts = 0.0   # send failed → allow an immediate retry
+            _last_wake_ts = 0.0   # write failed → allow an immediate retry
         _desktop_log(f"wake FAILED: {exc}")
-        return False, f"send failed: {exc}"
-    _desktop_log(f"wake sent → {WOL_DESKTOP_MAC} via {WOL_BROADCAST}:{WOL_PORT}")
-    return True, f"magic packet sent via {WOL_BROADCAST}:{WOL_PORT}"
+        return False, str(exc)
+    _desktop_log("wake queued → host handler broadcasts the magic packet")
+    return True, "queued — host handler sends the magic packet"
 
 
 def poweroff_desktop() -> tuple[bool, str]:
@@ -1339,7 +1345,7 @@ def get_features() -> dict:
         "ollama":  bool(OLLAMA_URL),
         "llama":   bool(LLAMA_SERVER_URL),
         "stream":  bool(STREAM_SPOOL_DIR),
-        "wake":           bool(WOL_DESKTOP_MAC),
+        "wake":           bool(WOL_DESKTOP_MAC) and bool(DESKTOP_SPOOL_DIR),
         "desktop_power":  bool(DESKTOP_SPOOL_DIR),
         "desktop_status": bool(WOL_DESKTOP_IP),
     }
