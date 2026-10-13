@@ -1341,7 +1341,9 @@ async function fetchOpenCodeGo() {
   try {
     const d = await fetch('/api/opencode-go').then(r => r.json());
     if (d.error) {
-      if (_ocgLast) { renderOpenCodeGo(_ocgLast, true); return; }
+      // Last good numbers stay visible for transient failures only — an auth
+      // error is actionable, so surface it even when stale data exists.
+      if (d.error !== 'auth' && _ocgLast) { renderOpenCodeGo(_ocgLast, true); return; }
       document.getElementById('ocg-list').innerHTML = `<div class="ocg-row">
         <span class="ocg-info alert">${
           d.error === 'auth' ? 'key rejected or no go plan' : 'unavailable'}</span></div>`;

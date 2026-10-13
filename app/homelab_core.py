@@ -481,11 +481,13 @@ _opencode_cache: dict = {"ts": 0.0, "data": None}
 def _read_opencode_go_key() -> str | None:
     """Resolve the OpenCode Go API key: OPENCODE_GO_API_KEY if set, else the
     'opencode-go' entry in opencode's auth store.  None if neither exists."""
-    if OPENCODE_GO_API_KEY:
-        return OPENCODE_GO_API_KEY
+    env_key = (OPENCODE_GO_API_KEY or "").strip()
+    if env_key:
+        return env_key
     try:
         with open(OPENCODE_AUTH_FILE) as fh:
-            entry = (json.load(fh) or {}).get("opencode-go") or {}
+            data = json.load(fh)
+        entry = data.get("opencode-go") if isinstance(data, dict) else None
         key = entry.get("key") if isinstance(entry, dict) else None
         return key.strip() if isinstance(key, str) and key.strip() else None
     except (OSError, ValueError):
