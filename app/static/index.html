@@ -928,12 +928,12 @@ async function fetchDesktop() {
   } catch(e) { /* ignore */ }
 }
 
-let _desktopBusy = false;
+let _wakeBusy = false, _desktopBusy = false;
 
 async function wakeDesktop() {
-  if (_desktopBusy) return;
+  if (_wakeBusy) return;
   const btn = document.getElementById('btn-wake');
-  _desktopBusy = true;
+  _wakeBusy = true;
   btn.disabled = true;
   btn.textContent = 'Waking…';
   try {
@@ -944,7 +944,7 @@ async function wakeDesktop() {
     toast('network error', true);
     btn.textContent = '✗ failed';
   }
-  setTimeout(() => { btn.textContent = '⚡ WAKE'; btn.disabled = false; _desktopBusy = false; }, 8000);
+  setTimeout(() => { btn.textContent = '⚡ WAKE'; btn.disabled = false; _wakeBusy = false; }, 8000);
 }
 
 // POWER OFF: two-press arm pattern (single button, like the router cycle)
@@ -957,7 +957,7 @@ function disarmDesktopPower() {
   btn.classList.remove('armed');
 }
 function desktopPowerToggle() {
-  if (_desktopBusy) return;
+  if (_desktopBusy || _wakeBusy) return;
   const btn = document.getElementById('btn-desktop-off');
   if (!_desktopArmed) {
     _desktopArmed = true;

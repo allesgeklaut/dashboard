@@ -38,13 +38,18 @@ sudo -v || exit 1
 
 # ── connectivity + authorization check (desktop side must be set up first) ────
 echo "— checking desktop poweroff authorization (polkit) —"
-if ssh -o BatchMode=yes -o ConnectTimeout=5 "$DESKTOP_SSH" \
-       'pkcheck --action-id org.freedesktop.login1.power-off --process $$' 2>/dev/null; then
-    echo "✓ poweroff authorized for $DESKTOP_SSH"
+if ssh -o BatchMode=yes -o ConnectTimeout=5 "$DESKTOP_SSH" true 2>/dev/null; then
+    if ssh -o BatchMode=yes -o ConnectTimeout=5 "$DESKTOP_SSH" \
+           'pkcheck --action-id org.freedesktop.login1.power-off --process $$' 2>/dev/null; then
+        echo "✓ poweroff authorized for $DESKTOP_SSH"
+    else
+        echo "⚠ desktop reachable, but poweroff is NOT authorized yet — install the polkit rule:"
+        echo "    host/setup-desktop-remote-control.sh   (run ON the desktop)"
+        echo "  continuing installation anyway — the dashboard button will fail until fixed."
+    fi
 else
-    echo "⚠ poweroff NOT authorized yet — install the polkit rule on the desktop:"
-    echo "    host/setup-desktop-remote-control.sh   (run ON the desktop)"
-    echo "  continuing installation anyway — the dashboard button will fail until fixed."
+    echo "⚠ desktop unreachable via ssh ($DESKTOP_SSH) right now — cannot verify authorization."
+    echo "  continuing installation anyway; re-run the pkcheck later (see SETUP.md § 6)."
 fi
 
 # ── spool dir must exist BEFORE the path unit is enabled ─────────────────────

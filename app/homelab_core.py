@@ -1253,13 +1253,15 @@ def wake_desktop() -> tuple[bool, str]:
         wait = _DESKTOP_WAKE_MIN_GAP_S - (now - _last_wake_ts)
         if wait > 0:
             return False, f"rate limited — retry in {int(wait) + 1}s"
-        _last_wake_ts = now
+        _last_wake_ts = now   # committed pre-send; reset below if the send fails
     payload = b"\xff" * 6 + bytes.fromhex(WOL_DESKTOP_MAC.replace(":", "")) * 16
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             s.sendto(payload, (WOL_BROADCAST, WOL_PORT))
     except OSError as exc:
+        with _desktop_lock:
+            _last_wake_ts = 0.0   # send failed → allow an immediate retry
         _desktop_log(f"wake FAILED: {exc}")
         return False, f"send failed: {exc}"
     _desktop_log(f"wake sent → {WOL_DESKTOP_MAC} via {WOL_BROADCAST}:{WOL_PORT}")
@@ -1286,6 +1288,8 @@ def poweroff_desktop() -> tuple[bool, str]:
         # atomic publish so the .path glob never sees a half-written file
         os.replace(tmp, os.path.join(DESKTOP_SPOOL_DIR, f"poweroff.{uid}.request"))
     except OSError as exc:
+        with _desktop_lock:
+            _last_power_ts = 0.0   # write failed → allow an immediate retry
         return False, str(exc)
     _desktop_log("poweroff queued")
     return True, "queued"
