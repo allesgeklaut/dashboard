@@ -222,6 +222,11 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .stream-dot.streaming { color:var(--g);      background:var(--g);
   animation:pulse 0.8s ease-in-out infinite; }
 
+/* ── DESKTOP CARD (wake / power off) ── */
+.desktop-dot.up      { color:var(--g);      background:var(--g); }
+.desktop-dot.off     { color:var(--red);    background:var(--red); }
+.desktop-dot.unknown { color:var(--yellow); background:var(--yellow); }
+
 /* ── STORAGE ROWS ── */
 .stor-list { display:flex; flex-direction:column; gap:5px; }
 .stor-row {
@@ -572,6 +577,25 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
       </div>
     </div>
 
+    <!-- Desktop control: Wake-on-LAN + remote power off -->
+    <div class="sec-label" id="desktop-label" style="display:none">desktop</div>
+    <div id="desktop-section" style="display:none">
+      <div class="stream-row">
+        <div class="stream-state">
+          <span class="ag-label">POWER</span>
+          <div style="display:flex;align-items:center;gap:7px;margin-top:2px">
+            <span class="stream-dot desktop-dot unknown" id="desktop-dot"></span>
+            <span class="ag-val" id="desktop-state">—</span>
+          </div>
+          <span class="stat-sub" id="desktop-sub">wol wake · ssh poweroff</span>
+        </div>
+        <div class="stream-btns">
+          <button class="btn-stream" style="display:none" id="btn-wake" onclick="wakeDesktop()">⚡ WAKE</button>
+          <button class="btn-stream down" style="display:none" id="btn-desktop-off" onclick="desktopPowerToggle()">⏻ POWER OFF</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Storage -->
     <div class="sec-label">storage</div>
     <div class="stor-list" id="stor-list"></div>
@@ -632,7 +656,8 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 const round = (n, d=1) => Number(n.toFixed(d));
 
 // ── feature flags ─────────────────────────────────────────────────────────────
-let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false };
+let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false,
+                  wake:false, desktop_power:false, desktop_status:false };
 
 async function fetchFeatures() {
   try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
@@ -658,6 +683,7 @@ async function fetchFeatures() {
   }
   if (_features.shelly2) { fetchShelly2(); setInterval(fetchShelly2,  5000); }
   if (_features.stream)  { fetchStream();  setInterval(fetchStream,   5000); }
+  if (_features.wake || _features.desktop_power) { fetchDesktop(); setInterval(fetchDesktop, 5000); }
 }
 
 // ── tab switching ─────────────────────────────────────────────────────────────
@@ -872,6 +898,88 @@ function streamToggle(key) {
     .catch(() => {
       toast('network error', true);
       _streamBusy = false;
+    });
+}
+
+// ── desktop control (wake-on-LAN + remote power off) ─────────────────────────
+async function fetchDesktop() {
+  if (!_features.wake && !_features.desktop_power) return;
+  document.getElementById('desktop-label').style.display   = 'flex';
+  document.getElementById('desktop-section').style.display = 'block';
+  document.getElementById('btn-wake').style.display        = _features.wake ? 'inline-block' : 'none';
+  document.getElementById('btn-desktop-off').style.display = _features.desktop_power ? 'inline-block' : 'none';
+  if (!_features.desktop_status) return;
+  try {
+    const d = await fetch('/api/desktop').then(r => r.json());
+    const dot = document.getElementById('desktop-dot');
+    const st  = document.getElementById('desktop-state');
+    const sub = document.getElementById('desktop-sub');
+    if (d.error || d.up === null || d.up === undefined) {
+      dot.className = 'stream-dot desktop-dot unknown';
+      st.textContent = '—';
+      return;
+    }
+    dot.className = `stream-dot desktop-dot ${d.up ? 'up' : 'off'}`;
+    st.textContent = d.up ? 'UP' : 'OFF';
+    if (d.since) {
+      sub.textContent = (d.up ? 'since ' : 'off since ') +
+                        new Date(d.since * 1000).toLocaleTimeString();
+    }
+  } catch(e) { /* ignore */ }
+}
+
+let _wakeBusy = false, _desktopBusy = false;
+
+async function wakeDesktop() {
+  if (_wakeBusy || _desktopBusy) return;
+  const btn = document.getElementById('btn-wake');
+  _wakeBusy = true;
+  btn.disabled = true;
+  btn.textContent = 'Waking…';
+  try {
+    const d = await fetch('/api/wake', { method: 'POST' }).then(r => r.json());
+    toast(d.ok ? ('wake request queued — magic packet follows') : ('error: ' + (d.detail || 'failed')), !d.ok);
+    btn.textContent = d.ok ? '✓ QUEUED' : '✗ failed';
+  } catch(e) {
+    toast('network error', true);
+    btn.textContent = '✗ failed';
+  }
+  setTimeout(() => { btn.textContent = '⚡ WAKE'; btn.disabled = false; _wakeBusy = false; }, 8000);
+}
+
+// POWER OFF: two-press arm pattern (single button, like the router cycle)
+let _desktopArmed = false, _desktopArmTimer = null;
+function disarmDesktopPower() {
+  _desktopArmed = false;
+  if (_desktopArmTimer) { clearTimeout(_desktopArmTimer); _desktopArmTimer = null; }
+  const btn = document.getElementById('btn-desktop-off');
+  btn.textContent = '⏻ POWER OFF';
+  btn.classList.remove('armed');
+}
+function desktopPowerToggle() {
+  if (_desktopBusy || _wakeBusy) return;
+  const btn = document.getElementById('btn-desktop-off');
+  if (!_desktopArmed) {
+    _desktopArmed = true;
+    btn.textContent = '⚠ CONFIRM POWER OFF?';
+    btn.classList.add('armed');
+    _desktopArmTimer = setTimeout(disarmDesktopPower, 8000);
+    return;
+  }
+  disarmDesktopPower();
+  _desktopBusy = true;
+  btn.disabled = true;
+  btn.textContent = 'Requesting…';
+  fetch('/api/desktop/power', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      toast(d.ok ? 'power off requested — desktop shuts down in a few seconds'
+                 : ('error: ' + (d.detail || 'failed')), !d.ok);
+      btn.textContent = d.ok ? '✓ REQUESTED' : '✗ failed';
+    })
+    .catch(() => { toast('network error', true); btn.textContent = '✗ failed'; })
+    .finally(() => {
+      setTimeout(() => { btn.textContent = '⏻ POWER OFF'; btn.disabled = false; _desktopBusy = false; }, 10000);
     });
 }
 

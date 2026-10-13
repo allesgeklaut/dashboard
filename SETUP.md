@@ -23,6 +23,31 @@ homelab-ctrl container
 
 ---
 
+## Local development (desktop workhorse)
+
+Development happens on the desktop; the Pop!_OS server is deploy-only.
+Run the app without Docker, using `uv`:
+
+```bash
+uv venv                           # creates .venv/
+uv pip install -r requirements.txt
+uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
+```
+
+Then open **http://127.0.0.1:7681**. (`--app-dir app` mirrors the container,
+which copies `app/` to `/app` and imports `main`.)
+
+All optional features — Portainer, AdGuard, Shelly, Ollama, LLaMA, stream
+spool — are env-gated and stay **off** unless enabled via `.env` in the repo
+root. Keep `SHELLY_PLUG_URL` unset locally unless you deliberately want to
+test the Shelly integration: it makes the energy tracker poll that device,
+and Shelly polling is kept minimal on purpose.
+
+> `dashboard.py` (the Textual terminal TUI) is **deprecated** — the web
+> dashboard is the product.
+
+---
+
 ## 1 — Configure
 
 ```bash
@@ -210,6 +235,68 @@ The scripts read env overrides — `STEAM_ARGS`, `STREAM_WIDTH/HEIGHT`,
 `HIGHP_STREAM_WIDTH/HEIGHT` (default 2560×1440) in `host/stream-handler.sh`.
 Defaults live at the top of each script.
 Log: `~/.homelab-ctrl/stream.log`.
+
+---
+
+## 6 — Desktop control (wake + power off)
+
+The DESKTOP card wakes the desktop machine (Wake-on-LAN), shuts it down over
+SSH, and shows its up/down state:
+
+- **Wake** — the container queues a `wake` request in the spool dir; the
+  host-side systemd unit (`host/desktop-power-handler.sh`) then broadcasts the
+  magic packet from the server's LAN interface (a directed broadcast can't
+  traverse the docker bridge the web container lives on — the kernel drops
+  forwarded directed broadcasts, `bc_forwarding=0`).
+- **Power off** — the container queues `poweroff` in the same spool dir; the
+  host-side unit then ssh'es to the desktop and runs `systemctl poweroff`.
+  The container never holds an SSH key or a shell.
+- **Status** — cached TCP probe to the desktop's sshd (`:22`); even a refused
+  connection counts as UP (the kernel answered a SYN with a RST).
+
+### Server side (one-time)
+
+Add to `.env` (see `.env.example` → Desktop control):
+
+```bash
+WOL_DESKTOP_MAC=<desktop-mac>       # feature on when set; packet broadcast by the host handler
+WOL_DESKTOP_IP=<desktop-ip>         # optional — enables the UP/OFF status
+WOL_BROADCAST=<lan-broadcast>       # optional — default 255.255.255.255 (host wake handler)
+WOL_PORT=9                          # optional — default 9
+DESKTOP_SSH=johannes@<desktop-ip>   # target for the poweroff ssh handler
+```
+
+Then run the spool installer (installs `homelab-desktop.{path,service}`,
+creates the spool dir, appends `DESKTOP_SPOOL_DIR` to `.env`, rebuilds):
+
+```bash
+/opt/stacks/dashboard/host/setup-desktop-power-spool.sh
+```
+
+### Desktop side (one-time, run ON THE DESKTOP)
+
+1. **BIOS**: enable "Wake on LAN" / "Power on by PCI-E device"; disable
+   ErP/Deep Sleep if present — required for wake from full shutdown (S5).
+
+2. Run the installer (enables WoL on the NIC + a boot unit re-applying it,
+   installs the polkit rule allowing password-free poweroff over SSH):
+
+   ```bash
+   /opt/stacks/dashboard/host/setup-desktop-remote-control.sh
+   ```
+
+3. Verify from the **server** (expect `exit:0`):
+
+   ```bash
+   ssh johannes@<desktop-ip> 'pkcheck --action-id org.freedesktop.login1.power-off --process $$; echo exit:$?'
+   ```
+
+### Testing the full loop
+
+1. **⏻ POWER OFF** (two presses — arm, then confirm) → desktop shuts down.
+2. **⚡ WAKE** → desktop boots; the status dot flips to UP once sshd is up.
+3. Logs on the server host: `~/.homelab-ctrl/desktop.log` (same file is
+   visible inside the container at `/data/desktop.log`).
 
 ---
 

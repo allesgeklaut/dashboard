@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 """
+DEPRECATED — unmaintained.
+
+The Textual TUI has been superseded by the web dashboard
+(app/main.py + app/static, served by uvicorn — see SETUP.md).
+Do not extend this file or fix its bugs; it is kept for reference
+only and will eventually be removed from the repo.
+
 HOMELAB//CTRL v2 - Interactive Terminal Dashboard
 pip install textual psutil requests python-dotenv
 Optional (touchscreen): pip install evdev

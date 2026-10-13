@@ -1,5 +1,11 @@
 # HOMELAB//CTRL — Terminal Dashboard
 
+> **DEPRECATED (2026-10)** — this document and the Textual TUI it describes
+> (`dashboard.py`) are deprecated. The product is the **web dashboard**
+> (FastAPI, `app/main.py` + `app/static/`, container `homelab-ctrl`) — see
+> **SETUP.md** for setup and deployment. Everything below is kept only as
+> historical reference for the old TUI.
+
 A hacker-style interactive terminal dashboard for Ubuntu Server. Shows live system stats, Docker containers (via Portainer or CLI), NFS storage, and network info. Supports touch input on the ThinkPad Yoga's screen.
 
 ***
