@@ -24,6 +24,7 @@ SHELLY_PLUG_URL   = os.getenv("SHELLY_PLUG_URL")    # None if not set → featur
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → feature disabled
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
+LLAMA_COMPANION_URL = os.getenv("LLAMA_COMPANION_URL")    # None if not set → feature disabled
 STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
 # ── OpenCode Go usage (opencode go card) ─────────────────────────────────────
 # The key normally comes from OPENCODE_GO_API_KEY.  For local development the
@@ -1083,6 +1084,7 @@ _LLM_LAST: dict[str, float] = {}
 _LLM_SLOT = {"id_task": None, "t": 0.0, "n_decoded": 0, "n_prompt": 0}
 _LLM_AVG: dict[str, float] = {}  # *_tokens_seconds gauges read 0 mid-request
 _LLM_MIN: dict[str, float] = {}  # lowest seen *_total counters — restart baseline
+_LLM_ACTIVE = {"name": None}     # which instance the cached baselines belong to
 
 def _llm_restarted(m: dict[str, float]) -> bool:
     """Return True when a cumulative *_total counter dropped below the lowest
@@ -1162,23 +1164,42 @@ def _slot_rates(slots: list, now: float) -> tuple[float | None, float | None, st
     return gen_tps, prompt_tps, ("generation" if n_dec > 0 else "prompt")
 
 def get_llama() -> dict:
-    """Scrape llama-server /metrics + /slots and report the latest activity.
+    """Scrape /metrics + /slots from whichever llama instance is up.
 
-    Returns ``{"url", "running", ...}`` or ``{"error": ...}``.
+    llama-server and llama-companion expose the same stacks but normally only
+    one runs at a time, so probe them in order and use the first that
+    responds.  Returns ``{"server", "url", "running", ...}`` or ``{"error": ...}``.
     """
-    if not LLAMA_SERVER_URL:
-        return {"error": "LLAMA_SERVER_URL not configured"}
-    base = LLAMA_SERVER_URL.rstrip("/")
-    try:
-        r = requests.get(f"{base}/metrics", timeout=3)
-        r.raise_for_status()
-        m = _parse_prometheus(r.text)
-        slots = requests.get(f"{base}/slots", timeout=3).json()
-        if not isinstance(slots, list):
-            slots = []
-    except Exception as exc:
+    candidates = [(name, url.rstrip("/")) for name, url in (
+        ("llama-server",    LLAMA_SERVER_URL),
+        ("llama-companion", LLAMA_COMPANION_URL),
+    ) if url]
+    if not candidates:
+        return {"error": "no llama server configured"}
+
+    last_exc: Exception | None = None
+    for name, base in candidates:
+        try:
+            r = requests.get(f"{base}/metrics", timeout=3)
+            r.raise_for_status()
+            m = _parse_prometheus(r.text)
+            slots = requests.get(f"{base}/slots", timeout=3).json()
+            if not isinstance(slots, list):
+                slots = []
+            break
+        except Exception as exc:
+            last_exc = exc
+    else:
         _LLM_LAST.clear()
-        return {"error": f"llama-server unreachable at {base}: {exc}"}
+        return {"error": f"llama servers unreachable: {last_exc}"}
+
+    if _LLM_ACTIVE["name"] != name:
+        # A different instance answered than last time (they alternate) — its
+        # counters belong to an independent process, so drop every derived
+        # baseline instead of computing deltas across two servers.
+        _LLM_LAST.clear(); _LLM_AVG.clear(); _LLM_MIN.clear()
+        _LLM_SLOT.update(id_task=None, t=0.0, n_decoded=0, n_prompt=0)
+        _LLM_ACTIVE["name"] = name
 
     prev = dict(_LLM_LAST)
     _LLM_LAST.update({k: m[k] for k in _LLM_TRACKED if k in m})
@@ -1231,6 +1252,7 @@ def get_llama() -> dict:
     draft    = m.get("llamacpp:spec_decode_num_draft_tokens_total", 0)
     accepted = m.get("llamacpp:spec_decode_num_accepted_tokens_total", 0)
     return {
+        "server":            name,
         "url":               base,
         "running":           True,
         "phase":             phase,
@@ -1436,7 +1458,7 @@ def get_features() -> dict:
         "shelly2": bool(SHELLY_PLUG_2_URL),
         "adguard": bool(ADGUARD_URL),
         "ollama":  bool(OLLAMA_URL),
-        "llama":   bool(LLAMA_SERVER_URL),
+        "llama":   bool(LLAMA_SERVER_URL or LLAMA_COMPANION_URL),
         "stream":  bool(STREAM_SPOOL_DIR),
         "wake":           bool(WOL_DESKTOP_MAC) and bool(DESKTOP_SPOOL_DIR),
         "desktop_power":  bool(DESKTOP_SPOOL_DIR),
