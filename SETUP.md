@@ -256,9 +256,10 @@ SSH, and shows its up/down state:
 Add to `.env` (see `.env.example` → Desktop control):
 
 ```bash
-WOL_DESKTOP_MAC=e0:d5:5e:ab:78:f6   # feature on when set
-WOL_DESKTOP_IP=192.168.0.45         # optional — enables the UP/OFF status
-WOL_BROADCAST=192.168.0.255         # optional — default 255.255.255.255
+WOL_DESKTOP_MAC=<desktop-mac>       # feature on when set
+WOL_DESKTOP_IP=<desktop-ip>         # optional — enables the UP/OFF status
+WOL_BROADCAST=<lan-broadcast>       # optional — default 255.255.255.255
+DESKTOP_SSH=johannes@<desktop-ip>   # target for the poweroff ssh handler
 ```
 
 Then run the spool installer (installs `homelab-desktop.{path,service}`,
@@ -283,7 +284,7 @@ creates the spool dir, appends `DESKTOP_SPOOL_DIR` to `.env`, rebuilds):
 3. Verify from the **server** (expect `exit:0`):
 
    ```bash
-   ssh johannes@192.168.0.45 'pkcheck --action-id org.freedesktop.login1.power-off --process $$; echo exit:$?'
+   ssh johannes@<desktop-ip> 'pkcheck --action-id org.freedesktop.login1.power-off --process $$; echo exit:$?'
    ```
 
 ### Testing the full loop

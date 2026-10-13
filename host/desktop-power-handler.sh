@@ -6,8 +6,9 @@
 # closed set, so the file contents can never be interpreted as code.
 SPOOL_DIR="${DESKTOP_SPOOL_DIR:-$HOME/.homelab-ctrl/desktop-spool}"
 LOG_FILE="${DESKTOP_LOG_FILE:-$HOME/.homelab-ctrl/desktop.log}"
-# The desktop to power off (override via env in the .service if needed).
-DESKTOP_SSH="${DESKTOP_SSH:-johannes@192.168.0.45}"
+# The desktop to power off: resolved from $DESKTOP_SSH if set, otherwise from
+# the repo .env (gitignored) — real targets are never committed.
+DESKTOP_SSH="${DESKTOP_SSH:-}"
 
 shopt -s nullglob
 requests=("$SPOOL_DIR"/*.request)
@@ -16,6 +17,17 @@ if [ ${#requests[@]} -eq 0 ]; then
 fi
 
 log() { printf '%s [desktop-handler] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_FILE"; }
+
+if [ -z "$DESKTOP_SSH" ]; then
+    ENV_FILE="${DESKTOP_ENV_FILE:-/opt/stacks/dashboard/.env}"
+    if [ -f "$ENV_FILE" ]; then
+        DESKTOP_SSH="$(sed -n 's/^DESKTOP_SSH=//p' "$ENV_FILE" | sed 's/[[:space:]]*#.*//' | tail -1 | tr -d '[:space:]')"
+    fi
+fi
+if [ -z "$DESKTOP_SSH" ]; then
+    log "ERROR: DESKTOP_SSH not set (env or the repo .env) — cannot act"
+    exit 1
+fi
 
 # Execute every queued request, oldest first. Note: the while loop below runs
 # in a pipeline subshell, so failures do not affect this script's exit status.

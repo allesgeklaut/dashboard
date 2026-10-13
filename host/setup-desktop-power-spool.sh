@@ -8,11 +8,18 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SPOOL_DIR="$HOME/.homelab-ctrl/desktop-spool"
 ENV_FILE="$REPO_DIR/.env"
-DESKTOP_SSH="${DESKTOP_SSH:-johannes@192.168.0.45}"
-
+DESKTOP_SSH="${DESKTOP_SSH:-}"
+if [ -z "$DESKTOP_SSH" ] && [ -f "$ENV_FILE" ]; then
+    DESKTOP_SSH="$(sed -n 's/^DESKTOP_SSH=//p' "$ENV_FILE" | sed 's/[[:space:]]*#.*//' | tail -1 | tr -d '[:space:]')"
+fi
+if [ -z "$DESKTOP_SSH" ]; then
+    echo "✗ DESKTOP_SSH not set — export it, or add 'DESKTOP_SSH=johannes@<desktop-ip>' to $ENV_FILE"
+    exit 1
+fi
 echo "── HOMELAB//CTRL desktop power spool installer (server side) ───"
-echo "repo:  $REPO_DIR"
-echo "spool: $SPOOL_DIR"
+echo "repo:   $REPO_DIR"
+echo "spool:  $SPOOL_DIR"
+echo "target: $DESKTOP_SSH"
 echo
 
 # ── preflight ─────────────────────────────────────────────────────────────────
