@@ -730,33 +730,42 @@ def _parse_bench_page(text: str) -> dict[str, dict[str, float]]:
     return {k: v for k, v in out.items() if v}
 
 
+_bench_fetch_lock = threading.Lock()   # one fetch at a time (button spam / two clients)
+
+
 def fetch_opencode_go_benchmarks() -> dict:
     """Fetch + parse the AA leaderboard page and store it to HOMELAB_BENCH_FILE.
 
     Only called from the dashboard's explicit "fetch scores" button — nothing
-    here runs on a schedule.
+    here runs on a schedule.  A non-blocking lock keeps concurrent clicks from
+    duplicating the upstream request or racing on the temp file.
     """
     if not _read_opencode_go_key():
         return {"ok": False, "error": "not configured"}
+    if not _bench_fetch_lock.acquire(blocking=False):
+        return {"ok": False, "error": "fetch already running"}
     try:
-        r = requests.get(OPENCODE_BENCH_URL, timeout=25)
-        if r.status_code != 200:
-            return {"ok": False, "error": f"upstream HTTP {r.status_code}"}
-        models = _parse_bench_page(r.text)
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)[:200]}
-    if not models:
-        return {"ok": False, "error": "no scores found (page layout changed?)"}
-    data = {"fetched_at": time.time(), "source": OPENCODE_BENCH_URL, "models": models}
-    try:
-        os.makedirs(os.path.dirname(HOMELAB_BENCH_FILE) or ".", exist_ok=True)
-        tmp = HOMELAB_BENCH_FILE + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(data, fh)
-        os.replace(tmp, HOMELAB_BENCH_FILE)
-    except OSError as exc:
-        return {"ok": False, "error": f"cannot store: {exc}"}
-    return {"ok": True, "fetched_at": data["fetched_at"], "models": len(models)}
+        try:
+            r = requests.get(OPENCODE_BENCH_URL, timeout=25)
+            if r.status_code != 200:
+                return {"ok": False, "error": f"upstream HTTP {r.status_code}"}
+            models = _parse_bench_page(r.text)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+        if not models:
+            return {"ok": False, "error": "no scores found (page layout changed?)"}
+        data = {"fetched_at": time.time(), "source": OPENCODE_BENCH_URL, "models": models}
+        try:
+            os.makedirs(os.path.dirname(HOMELAB_BENCH_FILE) or ".", exist_ok=True)
+            tmp = HOMELAB_BENCH_FILE + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(data, fh)
+            os.replace(tmp, HOMELAB_BENCH_FILE)
+        except OSError as exc:
+            return {"ok": False, "error": f"cannot store: {exc}"}
+        return {"ok": True, "fetched_at": data["fetched_at"], "models": len(models)}
+    finally:
+        _bench_fetch_lock.release()
 
 
 def get_opencode_go_benchmarks() -> dict | None:
