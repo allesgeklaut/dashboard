@@ -45,13 +45,19 @@ and Shelly polling is kept minimal on purpose.
 
 The **OPENCODE** tab (visible when a key is configured) shows the Go plan's
 rolling 5h / weekly / monthly usage plus the per-model limits table (est.
-requests per 5h and monthly $ — Go plan, parsed from the opencode docs source
-with a 1 h cache). The usage card polls only while the page is open (nothing
-runs in the background). Enable it by setting `OPENCODE_GO_API_KEY` — use the
-same token the CLI uses (read it on the server from
-`~/.local/share/opencode/auth.json`, see `.env.example`). Locally it works with
-no configuration: it falls back to the auth store on the dev machine
-(`OPENCODE_AUTH_FILE` overrides the path).
+requests per 5h, monthly $, and a benchmark score column — pick the benchmark
+from the dropdown). Limits come from the opencode docs source (1 h cache).
+Benchmark scores (Intelligence, Terminal-Bench, HLE, GPQA …) come from
+Artificial Analysis' public leaderboard and are fetched **only when you press
+⟳ FETCH SCORES** — nothing polls their site automatically; the result is
+stored in `HOMELAB_BENCH_FILE` (`/data/benchmarks.json` in the container) so
+restarts keep it. Attribution is shown; the fetch is an unofficial scrape of
+a public page (see their ToS). The usage card polls only while the page is
+open (nothing runs in the background). Enable it by setting
+`OPENCODE_GO_API_KEY` — use the same token the CLI uses (read it on the
+server from `~/.local/share/opencode/auth.json`, see `.env.example`). Locally
+it works with no configuration: it falls back to the auth store on the dev
+machine (`OPENCODE_AUTH_FILE` overrides the path).
 
 > `dashboard.py` (the Textual terminal TUI) is **deprecated** — the web
 > dashboard is the product.

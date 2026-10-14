@@ -152,6 +152,14 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .ocg-info.alert { color:var(--red); }
 .ocg-num   { text-align:right !important; }
 .ocg-stale { color:var(--g-dim); font-size:10px; }
+#ocgl-attrib { margin-top:4px; }
+#ocgl-attrib a { color:var(--g-dim); }
+.ocgl-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
+.ocgl-controls select {
+  font-family:var(--font); font-size:10px; letter-spacing:0.05em;
+  background:var(--bg-card); color:var(--g);
+  border:1px solid var(--border); border-radius:2px; padding:4px 6px;
+}
 #ocgl-wrap { overflow-x:auto; } /* scroll instead of clipping on narrow phones */
 
 
@@ -457,6 +465,8 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .tab-btn.active { color:var(--g-bright); border-bottom-color:var(--g); }
 @media (max-width:480px) {
   .tab-btn { padding:8px 11px; letter-spacing:0.07em; font-size:10.5px; }
+  /* compact limits table so all four columns fit without sideways scrolling */
+  #ocgl-table th, #ocgl-table td { padding:5px 6px; font-size:10px; }
 }
 
 /* ── FAN ANIMATION ── */
@@ -639,6 +649,11 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 
     <!-- Limits (Go plan, from the docs table) -->
     <div class="sec-label" id="ocgl-label" style="display:none">limits · go plan</div>
+    <div class="ocgl-controls" id="ocgl-controls" style="display:none">
+      <select id="ocgl-metric" onchange="setMetric(this.value)" title="score column"></select>
+      <button class="btn-stream" id="btn-ocgl-fetch" onclick="fetchBenchmarks()">⟳ FETCH SCORES</button>
+      <span class="ocg-stale" id="ocgl-updated"></span>
+    </div>
     <div class="proc-table-wrap" id="ocgl-wrap" style="display:none">
       <table class="proc-table" id="ocgl-table">
         <thead>
@@ -646,13 +661,16 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
             <th class="proc-sortable" data-key="name" onclick="sortLimits('name')">MODEL</th>
             <th class="ocg-num proc-sortable" data-key="req_5h" onclick="sortLimits('req_5h')">REQ / 5H</th>
             <th class="ocg-num proc-sortable" data-key="monthly" onclick="sortLimits('monthly')">MONTHLY</th>
+            <th class="ocg-num proc-sortable" data-key="bench" id="ocgl-bench-th" onclick="sortLimits('bench')">TB4</th>
           </tr>
         </thead>
         <tbody id="ocgl-tbody">
-          <tr><td colspan="3" class="empty">loading…</td></tr>
+          <tr><td colspan="4" class="empty">loading…</td></tr>
         </tbody>
       </table>
     </div>
+    <div class="ocg-stale" id="ocgl-attrib" style="display:none">tb4 scores ·
+      <a href="https://artificialanalysis.ai/leaderboards/models" target="_blank" rel="noopener">artificial analysis</a></div>
     <div class="stor-error" id="ocgl-error" style="display:none"></div>
 
   </div><!-- /#tab-opencode -->
@@ -740,6 +758,8 @@ async function fetchFeatures() {
     document.getElementById('ocg-list').style.display  = 'flex';
     document.getElementById('ocgl-label').style.display = 'flex';
     document.getElementById('ocgl-wrap').style.display  = 'block';
+    document.getElementById('ocgl-controls').style.display = 'flex';
+    document.getElementById('ocgl-attrib').style.display = 'block';
     fetchOpenCodeGo();
     setInterval(fetchOpenCodeGo, 60000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) fetchOpenCodeGo(); });
@@ -1431,6 +1451,45 @@ function renderOpenCodeGo(d, stale) {
 
 // ── fetch opencode go limits (docs table, Go plan, sortable) ─────────────────
 let _ocglData = null, _ocglSort = { key: 'monthly', dir: 1 }; // default: cheap → expensive
+let _ocglMetric = 'tb4';   // which benchmark column is shown
+try { _ocglMetric = localStorage.getItem('ocglMetric') || 'tb4'; } catch(e) {}
+
+function setMetric(key) {
+  _ocglMetric = key;
+  try { localStorage.setItem('ocglMetric', key); } catch(e) {}
+  renderLimits();
+}
+
+function relTime(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+async function fetchBenchmarks() {
+  if (!_features.opencode_go) return;
+  const btn = document.getElementById('btn-ocgl-fetch');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = '… FETCHING';
+  try {
+    const r = await fetch('/api/opencode-go-benchmarks/fetch', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      toast(`scores updated · ${d.models} models`);
+      await fetchOpenCodeGoLimits();
+    } else {
+      toast('fetch failed: ' + (d.detail || d.error || r.status), true);
+    }
+  } catch(e) {
+    toast('network error', true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⟳ FETCH SCORES';
+  }
+}
 
 function sortLimits(key) {
   if (_ocglSort.key === key) _ocglSort.dir *= -1;
@@ -1441,10 +1500,22 @@ function sortLimits(key) {
 function renderLimits() {
   if (!_ocglData) return;
   const { key, dir } = _ocglSort;
-  // "unlimited" sorts to the end of ascending numeric sorts
-  const val = m => key === 'name' ? m.name.toLowerCase()
-              : key === 'req_5h' ? (typeof m.req_5h === 'number' ? m.req_5h : Infinity)
-              : (typeof m.monthly === 'number' ? m.monthly : Infinity);
+  const metric = ((_ocglData.bench_metrics || []).find(m => m.key === _ocglMetric))
+                 || { label: 'SCORE', unit: 'pct' };
+  const benchVal = m => (m.bench && typeof m.bench[_ocglMetric] === 'number') ? m.bench[_ocglMetric] : null;
+  // Numbers sort naturally; "unlimited" is a real ∞ (first when descending);
+  // missing values (—) always sort last, in both directions.
+  const val = m => {
+    if (key === 'name') return m.name.toLowerCase();
+    if (key === 'bench') {
+      const v = benchVal(m);
+      return v !== null ? v : (dir === 1 ? Infinity : -Infinity);
+    }
+    const v = m[key];
+    if (typeof v === 'number') return v;
+    if (v === 'unlimited') return Infinity;
+    return dir === 1 ? Infinity : -Infinity;
+  };
   const models = [..._ocglData.models].sort((a, b) => {
     const va = val(a), vb = val(b);
     return (typeof va === 'string' ? va.localeCompare(vb) : va - vb) * dir;
@@ -1453,12 +1524,19 @@ function renderLimits() {
                  : v === 'unlimited' ? 'unlimited' : '—';
   const money = v => typeof v === 'number' ? '$' + v
                    : v === 'unlimited' ? 'unlimited' : '—';
+  const bench = m => {
+    const v = benchVal(m);
+    if (v === null) return '—';
+    return metric.unit === 'index' ? v.toFixed(1) : (v * 100).toFixed(1) + '%';
+  };
+  document.getElementById('ocgl-bench-th').textContent = metric.label;
   const rows = models.map(m => `<tr>
       <td>${escHtml(m.name)}</td>
       <td class="ocg-num">${num(m.req_5h)}</td>
       <td class="ocg-num">${money(m.monthly)}</td>
+      <td class="ocg-num">${bench(m)}</td>
     </tr>`);
-  if (_ocglData.stale) rows.push('<tr><td colspan="3" class="ocg-stale">stale — docs source unreachable</td></tr>');
+  if (_ocglData.stale) rows.push('<tr><td colspan="4" class="ocg-stale">stale — docs source unreachable</td></tr>');
   document.getElementById('ocgl-tbody').innerHTML = rows.join('');
   document.querySelectorAll('#ocgl-table th').forEach(th => {
     th.classList.toggle('sorted-asc',  th.dataset.key === key && dir === 1);
@@ -1477,12 +1555,24 @@ async function fetchOpenCodeGoLimits() {
       err.style.display = 'block';
       if (!_ocglData) {
         document.getElementById('ocgl-tbody').innerHTML =
-          '<tr><td colspan="3" class="empty">unavailable</td></tr>';
+          '<tr><td colspan="4" class="empty">unavailable</td></tr>';
       }
       return;
     }
     err.style.display = 'none';
     _ocglData = d;
+    // metric dropdown + "scores fetched …" line
+    const sel = document.getElementById('ocgl-metric');
+    const metrics = d.bench_metrics || [];
+    if (metrics.length && sel.options.length !== metrics.length) {
+      sel.innerHTML = metrics.map(m => `<option value="${m.key}">${m.label}</option>`).join('');
+    }
+    if (metrics.length) {
+      if (!metrics.some(m => m.key === _ocglMetric)) _ocglMetric = metrics[0].key;
+      sel.value = _ocglMetric;
+    }
+    document.getElementById('ocgl-updated').textContent =
+      d.bench_fetched_at ? `scores ${relTime(d.bench_fetched_at)}` : 'no scores yet — press fetch';
     renderLimits();
   } catch(e) { /* ignore */ }
 }
