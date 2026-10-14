@@ -709,6 +709,7 @@ _BENCH_METRICS = (
     ("critpt",            "critpt",       "CRITPT",  "CritPt",                "pct"),
 )
 _BENCH_ALIASES = {                      # opencode name → AA name (both normalized)
+    "gemini4argoncontributor": "gemini4argon",
     "musespark13contributor": "musespark13",
     "musespark12contributor": "musespark12",
     "step5previewfree":       "step5preview",
