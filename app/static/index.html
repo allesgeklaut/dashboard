@@ -438,7 +438,10 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .tab-bar {
   display:flex; gap:0; margin-bottom:12px;
   border-bottom:1px solid var(--border);
+  overflow-x:auto; /* never push the page sideways on narrow screens */
+  scrollbar-width:none;
 }
+.tab-bar::-webkit-scrollbar { display:none; }
 .tab-btn {
   font-family:var(--font); font-size:11px; font-weight:700;
   letter-spacing:0.12em; text-transform:uppercase;
@@ -446,9 +449,13 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   border:none; border-bottom:2px solid transparent;
   margin-bottom:-1px; cursor:pointer;
   transition:color 0.15s, border-color 0.15s;
+  white-space:nowrap;
 }
 .tab-btn:hover { color:var(--g); }
 .tab-btn.active { color:var(--g-bright); border-bottom-color:var(--g); }
+@media (max-width:480px) {
+  .tab-btn { padding:8px 11px; letter-spacing:0.07em; font-size:10.5px; }
+}
 
 /* ── FAN ANIMATION ── */
 @keyframes fan-spin { to { transform:rotate(360deg); } }
@@ -631,12 +638,12 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <!-- Limits (Go plan, from the docs table) -->
     <div class="sec-label" id="ocgl-label" style="display:none">limits · go plan</div>
     <div class="proc-table-wrap" id="ocgl-wrap" style="display:none">
-      <table class="proc-table">
+      <table class="proc-table" id="ocgl-table">
         <thead>
           <tr>
-            <th>MODEL</th>
-            <th class="ocg-num">REQ / 5H</th>
-            <th class="ocg-num">MONTHLY</th>
+            <th class="proc-sortable" data-key="name" onclick="sortLimits('name')">MODEL</th>
+            <th class="ocg-num proc-sortable" data-key="req_5h" onclick="sortLimits('req_5h')">REQ / 5H</th>
+            <th class="ocg-num proc-sortable" data-key="monthly" onclick="sortLimits('monthly')">MONTHLY</th>
           </tr>
         </thead>
         <tbody id="ocgl-tbody">
@@ -1420,8 +1427,42 @@ function renderOpenCodeGo(d, stale) {
   }).join('');
 }
 
-// ── fetch opencode go limits (docs table, Go plan) ───────────────────────────
-let _ocglLoaded = false;
+// ── fetch opencode go limits (docs table, Go plan, sortable) ─────────────────
+let _ocglData = null, _ocglSort = { key: 'monthly', dir: 1 }; // default: cheap → expensive
+
+function sortLimits(key) {
+  if (_ocglSort.key === key) _ocglSort.dir *= -1;
+  else _ocglSort = { key, dir: 1 };
+  renderLimits();
+}
+
+function renderLimits() {
+  if (!_ocglData) return;
+  const { key, dir } = _ocglSort;
+  // "unlimited" sorts to the end of ascending numeric sorts
+  const val = m => key === 'name' ? m.name.toLowerCase()
+              : key === 'req_5h' ? (typeof m.req_5h === 'number' ? m.req_5h : Infinity)
+              : (typeof m.monthly === 'number' ? m.monthly : Infinity);
+  const models = [..._ocglData.models].sort((a, b) => {
+    const va = val(a), vb = val(b);
+    return (typeof va === 'string' ? va.localeCompare(vb) : va - vb) * dir;
+  });
+  const num = v => typeof v === 'number' ? v.toLocaleString()
+                 : v === 'unlimited' ? 'unlimited' : '—';
+  const money = v => typeof v === 'number' ? '$' + v
+                   : v === 'unlimited' ? 'unlimited' : '—';
+  const rows = models.map(m => `<tr>
+      <td>${escHtml(m.name)}</td>
+      <td class="ocg-num">${num(m.req_5h)}</td>
+      <td class="ocg-num">${money(m.monthly)}</td>
+    </tr>`);
+  if (_ocglData.stale) rows.push('<tr><td colspan="3" class="ocg-stale">stale — docs source unreachable</td></tr>');
+  document.getElementById('ocgl-tbody').innerHTML = rows.join('');
+  document.querySelectorAll('#ocgl-table th').forEach(th => {
+    th.classList.toggle('sorted-asc',  th.dataset.key === key && dir === 1);
+    th.classList.toggle('sorted-desc', th.dataset.key === key && dir === -1);
+  });
+}
 
 async function fetchOpenCodeGoLimits() {
   if (!_features.opencode_go) return;
@@ -1431,25 +1472,15 @@ async function fetchOpenCodeGoLimits() {
     if (d.error) {
       err.textContent = 'limits unavailable';
       err.style.display = 'block';
-      if (!_ocglLoaded) {
+      if (!_ocglData) {
         document.getElementById('ocgl-tbody').innerHTML =
           '<tr><td colspan="3" class="empty">unavailable</td></tr>';
       }
       return;
     }
     err.style.display = 'none';
-    const num = v => typeof v === 'number' ? v.toLocaleString()
-                   : v === 'unlimited' ? 'unlimited' : '—';
-    const money = v => typeof v === 'number' ? '$' + v
-                     : v === 'unlimited' ? 'unlimited' : '—';
-    const rows = d.models.map(m => `<tr>
-      <td>${escHtml(m.name)}</td>
-      <td class="ocg-num">${num(m.req_5h)}</td>
-      <td class="ocg-num">${money(m.monthly)}</td>
-    </tr>`);
-    if (d.stale) rows.push('<tr><td colspan="3" class="ocg-stale">stale — docs source unreachable</td></tr>');
-    document.getElementById('ocgl-tbody').innerHTML = rows.join('');
-    _ocglLoaded = true;
+    _ocglData = d;
+    renderLimits();
   } catch(e) { /* ignore */ }
 }
 
