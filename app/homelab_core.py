@@ -689,15 +689,15 @@ def get_opencode_go_limits() -> dict:
 # HOMELAB_BENCH_FILE.  Reads never touch the network.
 
 _BENCH_METRICS = (
-    # payload key,        our key,       label,     unit ("index" 0-100 | "pct" 0-1)
-    ("intelligenceIndex", "intelligence", "INTEL",   "index"),
-    ("terminalBench40",   "tb4",          "TB4",     "pct"),
-    ("terminalBench21",   "tb21",         "TB2.1",   "pct"),
-    ("terminalbenchHard", "tbh",          "TB-HARD", "pct"),
-    ("hle",               "hle",          "HLE",     "pct"),
-    ("gpqa",              "gpqa",         "GPQA",    "pct"),
-    ("tauBanking",        "taub",         "τ-BANK",  "pct"),
-    ("critpt",            "critpt",       "CRITPT",  "pct"),
+    # payload key,        our key,       label,     friendly name,           unit
+    ("intelligenceIndex", "intelligence", "INTEL",   "Intelligence Index",    "index"),
+    ("terminalBench40",   "tb4",          "TB4",     "Terminal-Bench 4.0",    "pct"),
+    ("terminalBench21",   "tb21",         "TB2.1",   "Terminal-Bench 2.1",    "pct"),
+    ("terminalbenchHard", "tbh",          "TB-HARD", "Terminal-Bench Hard",   "pct"),
+    ("hle",               "hle",          "HLE",     "Humanity's Last Exam",  "pct"),
+    ("gpqa",              "gpqa",         "GPQA",    "GPQA Diamond",          "pct"),
+    ("tauBanking",        "taub",         "τ-BANK",  "τ²-Banking",            "pct"),
+    ("critpt",            "critpt",       "CRITPT",  "CritPt",                "pct"),
 )
 _BENCH_ALIASES = {                      # opencode name → AA name (both normalized)
     "musespark13contributor": "musespark13",
@@ -716,7 +716,7 @@ def _parse_bench_page(text: str) -> dict[str, dict[str, float]]:
     for m in re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text):
         base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", m.group(1)))  # strip "(max …)"
         slot = out.setdefault(base, {})
-        for payload_key, key, _label, _unit in _BENCH_METRICS:
+        for payload_key, key, _label, _name, _unit in _BENCH_METRICS:
             pat = '\\"' + payload_key + '\\":'
             nxt = text.find(pat, m.end())
             if nxt < 0 or nxt - m.end() > 3000:   # pairing must stay within one model object
@@ -785,8 +785,8 @@ def _attach_benchmarks(payload: dict) -> dict:
     return {
         **payload,
         "models": models,
-        "bench_metrics": [{"key": k, "label": lbl, "unit": u}
-                          for _pk, k, lbl, u in _BENCH_METRICS],
+        "bench_metrics": [{"key": k, "label": lbl, "name": nm, "unit": u}
+                          for _pk, k, lbl, nm, u in _BENCH_METRICS],
         "bench_fetched_at": (data or {}).get("fetched_at"),
     }
 
