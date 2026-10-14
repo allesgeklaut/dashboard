@@ -608,11 +608,16 @@ def _parse_go_limits_mdx(text: str) -> list[dict]:
         return out
 
     def value(cell: str):
-        v = cell.replace("**", "").split("<br")[0].strip()
-        if v.lower().startswith("unlimited"):
+        # "2x · Limited time" promo rows carry the old value struck through
+        # (~~$30~~) and the current one bold (**$60**).  Drop the struck-out
+        # value, the annotations, and all markup, then parse what remains.
+        s = re.sub(r"~~.*?~~", "", cell)
+        s = re.sub(r"<small>.*?</small>", "", s, flags=re.S)
+        s = re.sub(r"<[^>]+>", " ", s).replace("**", "").strip()
+        if s.lower().startswith("unlimited"):
             return "unlimited"
         try:
-            return int(round(float(v.replace("$", "").replace(",", ""))))
+            return int(round(float(s.replace("$", "").replace(",", ""))))
         except (ValueError, OverflowError):
             return None
 
@@ -631,10 +636,14 @@ def _parse_go_limits_mdx(text: str) -> list[dict]:
         req = value(r[1])
         if req is None:   # a row whose count won't parse is junk (header/shape change)
             continue
+        # strip promo annotations ("…<br /><small>2x · Limited time</small>") so
+        # the name matches the pricing table and renders cleanly
+        name = re.sub(r"<small>.*?</small>", "", r[0], flags=re.S)
+        name = re.sub(r"<br\s*/?>", " ", name).strip()
         models.append({
-            "name":    r[0],
+            "name":    name,
             "req_5h":  req,
-            "monthly": monthly.get(r[0]),
+            "monthly": monthly.get(name),
         })
     return models
 
