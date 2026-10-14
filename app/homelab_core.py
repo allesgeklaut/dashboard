@@ -44,6 +44,7 @@ OPENCODE_LIMITS_URLS = (
     "https://raw.githubusercontent.com/anomalyco/opencode/master/services/www/src/docs/content/console/go.mdx",
 )
 OPENCODE_LIMITS_TTL  = 3600  # seconds between docs refetches
+OPENCODE_LIMITS_RETRY = 300  # seconds to back off after a failed refetch
 # ── Desktop control (Wake-on-LAN + remote power off) — see SETUP.md § 6 ──────
 # Request files are action selectors only; the WoL magic packet itself is
 # broadcast on the LAN by the host-side handler (host/desktop-power-handler.sh),
@@ -560,7 +561,7 @@ def get_opencode_go_usage() -> dict:
 
 
 _opencode_limits_lock = threading.Lock()
-_opencode_limits_cache: dict = {"ts": 0.0, "data": None}
+_opencode_limits_cache: dict = {"ts": 0.0, "data": None, "fail_ts": 0.0}
 
 
 def _parse_go_limits_mdx(text: str) -> list[dict]:
@@ -603,8 +604,8 @@ def _parse_go_limits_mdx(text: str) -> list[dict]:
         if v.lower().startswith("unlimited"):
             return "unlimited"
         try:
-            return int(float(v.replace("$", "").replace(",", "")))
-        except ValueError:
+            return int(round(float(v.replace("$", "").replace(",", ""))))
+        except (ValueError, OverflowError):
             return None
 
     monthly: dict[str, object] = {}
@@ -619,9 +620,12 @@ def _parse_go_limits_mdx(text: str) -> list[dict]:
     for r in rows(slot(block("go-requests"), "go")):
         if len(r) < 2:
             continue
+        req = value(r[1])
+        if req is None:   # a row whose count won't parse is junk (header/shape change)
+            continue
         models.append({
             "name":    r[0],
-            "req_5h":  value(r[1]),
+            "req_5h":  req,
             "monthly": monthly.get(r[0]),
         })
     return models
@@ -631,11 +635,17 @@ def get_opencode_go_limits() -> dict:
     """Go plan per-model limits (est. requests/5h + monthly $), from the docs
     source.  Cached for OPENCODE_LIMITS_TTL; on failure the last-known-good
     copy is served with "stale": true (cold start with no source → error)."""
+    if not _read_opencode_go_key():
+        return {"error": "not configured"}
+
     now = time.time()
     with _opencode_limits_lock:
         cached = _opencode_limits_cache["data"]
         if cached is not None and now - _opencode_limits_cache["ts"] < OPENCODE_LIMITS_TTL:
             return dict(cached)
+        if now - _opencode_limits_cache["fail_ts"] < OPENCODE_LIMITS_RETRY:
+            # the last refetch failed — back off instead of retrying every request
+            return {**cached, "stale": True} if cached is not None else {"error": "unavailable"}
 
     models: list[dict] = []
     for url in OPENCODE_LIMITS_URLS:
@@ -648,12 +658,13 @@ def get_opencode_go_limits() -> dict:
         except Exception:
             continue
 
-    if models:
-        data = {"models": models}
-        with _opencode_limits_lock:
+    with _opencode_limits_lock:
+        _opencode_limits_cache["fail_ts"] = 0.0 if models else now
+        if models:
             _opencode_limits_cache["ts"]   = now
-            _opencode_limits_cache["data"] = data
-        return dict(data)
+            _opencode_limits_cache["data"] = {"models": models}
+    if models:
+        return {"models": models}
     if cached is not None:
         return {**cached, "stale": True}
     return {"error": "unavailable"}

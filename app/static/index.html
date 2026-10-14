@@ -152,6 +152,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .ocg-info.alert { color:var(--red); }
 .ocg-num   { text-align:right !important; }
 .ocg-stale { color:var(--g-dim); font-size:10px; }
+#ocgl-wrap { overflow-x:auto; } /* scroll instead of clipping on narrow phones */
 
 
 /* ── SHELLY PLUG ROW ── */
@@ -439,6 +440,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   display:flex; gap:0; margin-bottom:12px;
   border-bottom:1px solid var(--border);
   overflow-x:auto; /* never push the page sideways on narrow screens */
+  padding-bottom:1px; /* keep the 2px active underline visible (overflow clips it otherwise) */
   scrollbar-width:none;
 }
 .tab-bar::-webkit-scrollbar { display:none; }
@@ -1466,6 +1468,7 @@ function renderLimits() {
 
 async function fetchOpenCodeGoLimits() {
   if (!_features.opencode_go) return;
+  if (document.hidden) return; // don't poll while the dashboard is in the background
   try {
     const d = await fetch('/api/opencode-go-limits').then(r => r.json());
     const err = document.getElementById('ocgl-error');
@@ -1736,7 +1739,7 @@ function procValue(p, key) {
 function renderProcesses() {
   const tbody = document.getElementById('proc-tbody');
   // header indicators
-  document.querySelectorAll('.proc-sortable').forEach(th => {
+  document.querySelectorAll('#proc-table .proc-sortable').forEach(th => {
     th.classList.toggle('sorted-asc',  th.dataset.key === procSortKey && !procSortDesc);
     th.classList.toggle('sorted-desc', th.dataset.key === procSortKey &&  procSortDesc);
   });
