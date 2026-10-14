@@ -43,6 +43,10 @@ def api_adguard():
 def api_opencode_go():
     return core.get_opencode_go_usage()
 
+@app.get("/api/opencode-go-limits")
+def api_opencode_go_limits():
+    return core.get_opencode_go_limits()
+
 @app.get("/api/containers")
 def api_containers():
     containers, _ = core.get_containers()

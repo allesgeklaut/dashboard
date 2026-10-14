@@ -36,6 +36,14 @@ OPENCODE_AUTH_FILE   = os.getenv(
 )
 OPENCODE_USAGE_URL   = "https://opencode.ai/zen/go/v1/usage"
 OPENCODE_GO_TTL      = 60  # seconds to cache a successful upstream response
+# Go plan limits/pricing table — parsed from the docs source that builds
+# https://opencode.ai/docs/go (no JSON API exists for it).  Unofficial, so the
+# parser degrades gracefully: last-known-good is served as "stale".
+OPENCODE_LIMITS_URLS = (
+    "https://raw.githubusercontent.com/anomalyco/opencode/dev/services/www/src/docs/content/console/go.mdx",
+    "https://raw.githubusercontent.com/anomalyco/opencode/master/services/www/src/docs/content/console/go.mdx",
+)
+OPENCODE_LIMITS_TTL  = 3600  # seconds between docs refetches
 # ── Desktop control (Wake-on-LAN + remote power off) — see SETUP.md § 6 ──────
 # Request files are action selectors only; the WoL magic packet itself is
 # broadcast on the LAN by the host-side handler (host/desktop-power-handler.sh),
@@ -549,6 +557,106 @@ def get_opencode_go_usage() -> dict:
         _opencode_cache["ts"]   = now
         _opencode_cache["data"] = out
     return dict(out)
+
+
+_opencode_limits_lock = threading.Lock()
+_opencode_limits_cache: dict = {"ts": 0.0, "data": None}
+
+
+def _parse_go_limits_mdx(text: str) -> list[dict]:
+    """Parse the go-pricing + go-requests PlanTabs tables (Go slot) from the
+    docs mdx into one row per model: {"name", "req_5h", "monthly"}.
+
+    Values are ints, or the string "unlimited"; None means unknown/missing.
+    """
+
+    def block(tab_id: str) -> str:
+        i = text.find(f'<PlanTabs id="{tab_id}"')
+        if i < 0:
+            return ""
+        j = text.find("</PlanTabs>", i)
+        return text[i:j if j >= 0 else len(text)]
+
+    def slot(block_text: str, name: str) -> str:
+        i = block_text.find(f'<div slot="{name}">')
+        if i < 0:
+            return ""
+        j = block_text.find('<div slot="', i + 1)
+        return block_text[i:j if j >= 0 else len(block_text)]
+
+    def rows(block_text: str) -> list[list[str]]:
+        out = []
+        for line in block_text.splitlines():
+            line = line.strip()
+            if not line.startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(set(c) <= {"-", ":", " "} for c in cells):  # separator row
+                continue
+            if cells and cells[0].lower() == "model":          # header row
+                continue
+            out.append(cells)
+        return out
+
+    def value(cell: str):
+        v = cell.replace("**", "").split("<br")[0].strip()
+        if v.lower().startswith("unlimited"):
+            return "unlimited"
+        try:
+            return int(float(v.replace("$", "").replace(",", "")))
+        except ValueError:
+            return None
+
+    monthly: dict[str, object] = {}
+    for r in rows(slot(block("go-pricing"), "go")):
+        if len(r) >= 6:
+            # variant rows ("... (Peak)", "... (≤ 256K tokens)") share a
+            # monthly limit — merge them onto the base model name
+            base = re.sub(r"\s*\(.*\)$", "", r[0])
+            monthly.setdefault(base, value(r[5]))
+
+    models = []
+    for r in rows(slot(block("go-requests"), "go")):
+        if len(r) < 2:
+            continue
+        models.append({
+            "name":    r[0],
+            "req_5h":  value(r[1]),
+            "monthly": monthly.get(r[0]),
+        })
+    return models
+
+
+def get_opencode_go_limits() -> dict:
+    """Go plan per-model limits (est. requests/5h + monthly $), from the docs
+    source.  Cached for OPENCODE_LIMITS_TTL; on failure the last-known-good
+    copy is served with "stale": true (cold start with no source → error)."""
+    now = time.time()
+    with _opencode_limits_lock:
+        cached = _opencode_limits_cache["data"]
+        if cached is not None and now - _opencode_limits_cache["ts"] < OPENCODE_LIMITS_TTL:
+            return dict(cached)
+
+    models: list[dict] = []
+    for url in OPENCODE_LIMITS_URLS:
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                models = _parse_go_limits_mdx(r.text)
+            if models:
+                break
+        except Exception:
+            continue
+
+    if models:
+        data = {"models": models}
+        with _opencode_limits_lock:
+            _opencode_limits_cache["ts"]   = now
+            _opencode_limits_cache["data"] = data
+        return dict(data)
+    if cached is not None:
+        return {**cached, "stale": True}
+    return {"error": "unavailable"}
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────

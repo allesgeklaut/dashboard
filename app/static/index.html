@@ -150,6 +150,8 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .ocg-info { font-size:10px; color:var(--g-dim); }
 .ocg-info.warn  { color:var(--yellow); }
 .ocg-info.alert { color:var(--red); }
+.ocg-num   { text-align:right !important; }
+.ocg-stale { color:var(--g-dim); font-size:10px; }
 
 
 /* ── SHELLY PLUG ROW ── */
@@ -227,6 +229,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .btn-stream:disabled { opacity:0.5; cursor:not-allowed; }
 .btn-stream.down { border-color:#330a0a; color:var(--red-dim); }
 .btn-stream.down:hover { border-color:var(--red-dim); background:#1a0505; color:var(--red); }
+#btn-desktop-off { min-width:146px; } /* keep width stable while armed (countdown label) */
 .stream-dot {
   width:8px; height:8px; border-radius:50%; flex-shrink:0;
   align-self:center;
@@ -509,6 +512,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <!-- Tab bar -->
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="server"     onclick="switchTab('server',this)">SERVER</button>
+    <button class="tab-btn"        data-tab="opencode"   onclick="switchTab('opencode',this)" style="display:none">OPENCODE</button>
     <button class="tab-btn"        data-tab="containers" onclick="switchTab('containers',this)">CONTAINERS</button>
     <button class="tab-btn"        data-tab="processes"  onclick="switchTab('processes',this)">PROCESSES</button>
   </div>
@@ -549,10 +553,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
         </div>
       </div>
     </div>
-
-    <!-- OpenCode Go usage (shown only when a key is configured) -->
-    <div class="sec-label" id="ocg-label" style="display:none">opencode go</div>
-    <div class="ocg-list" id="ocg-list" style="display:none"></div>
 
     <!-- AdGuard -->
     <div class="sec-label" id="ag-label" style="display:none">adguard</div>
@@ -620,6 +620,33 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <div class="stor-list" id="stor-list"></div>
 
   </div><!-- /#tab-server -->
+
+  <!-- ═══════════ OPENCODE TAB ═══════════ -->
+  <div id="tab-opencode" class="tab-pane" style="display:none">
+
+    <!-- Usage (rolling 5h / weekly / monthly) — shown only when a key is configured -->
+    <div class="sec-label" id="ocg-label" style="display:none">usage</div>
+    <div class="ocg-list" id="ocg-list" style="display:none"></div>
+
+    <!-- Limits (Go plan, from the docs table) -->
+    <div class="sec-label" id="ocgl-label" style="display:none">limits · go plan</div>
+    <div class="proc-table-wrap" id="ocgl-wrap" style="display:none">
+      <table class="proc-table">
+        <thead>
+          <tr>
+            <th>MODEL</th>
+            <th class="ocg-num">REQ / 5H</th>
+            <th class="ocg-num">MONTHLY</th>
+          </tr>
+        </thead>
+        <tbody id="ocgl-tbody">
+          <tr><td colspan="3" class="empty">loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="stor-error" id="ocgl-error" style="display:none"></div>
+
+  </div><!-- /#tab-opencode -->
 
   <!-- ═══════════ CONTAINERS TAB ═══════════ -->
   <div id="tab-containers" class="tab-pane" style="display:none">
@@ -696,14 +723,25 @@ async function fetchFeatures() {
   }
   // Feature-gated polls
   if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
-  // OpenCode Go usage — poll only while the page is really visible; the server
-  // additionally caches upstream for 60 s, so nothing runs in the background.
+  // OpenCode tab — usage card polls only while the page is really visible
+  // (server caches upstream for 60 s); the limits table is docs data (1 h cache).
   if (_features.opencode_go) {
+    document.querySelector('.tab-btn[data-tab="opencode"]').style.display = 'inline-block';
     document.getElementById('ocg-label').style.display = 'flex';
     document.getElementById('ocg-list').style.display  = 'flex';
+    document.getElementById('ocgl-label').style.display = 'flex';
+    document.getElementById('ocgl-wrap').style.display  = 'block';
     fetchOpenCodeGo();
     setInterval(fetchOpenCodeGo, 60000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) fetchOpenCodeGo(); });
+    fetchOpenCodeGoLimits();
+    setInterval(fetchOpenCodeGoLimits, 3600000);
+  } else {
+    // don't let a saved OPENCODE tab stick when the feature is off
+    const active = document.querySelector('.tab-btn.active');
+    if (active && active.dataset.tab === 'opencode') {
+      switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'));
+    }
   }
   if (_features.shelly)  {
     fetchShelly();        setInterval(fetchShelly,        5000);
@@ -976,10 +1014,11 @@ async function wakeDesktop() {
 }
 
 // POWER OFF: two-press arm pattern (single button, like the router cycle)
-let _desktopArmed = false, _desktopArmTimer = null;
+let _desktopArmed = false, _desktopArmTimer = null, _desktopArmInterval = null;
 function disarmDesktopPower() {
   _desktopArmed = false;
-  if (_desktopArmTimer) { clearTimeout(_desktopArmTimer); _desktopArmTimer = null; }
+  if (_desktopArmTimer)    { clearTimeout(_desktopArmTimer); _desktopArmTimer = null; }
+  if (_desktopArmInterval) { clearInterval(_desktopArmInterval); _desktopArmInterval = null; }
   const btn = document.getElementById('btn-desktop-off');
   btn.textContent = '⏻ POWER OFF';
   btn.classList.remove('armed');
@@ -988,9 +1027,17 @@ function desktopPowerToggle() {
   if (_desktopBusy || _wakeBusy) return;
   const btn = document.getElementById('btn-desktop-off');
   if (!_desktopArmed) {
+    // First press – arm with the same short countdown label as the cycle
+    // buttons (the button has a fixed min-width, so nothing moves/resizes).
     _desktopArmed = true;
-    btn.textContent = '⚠ CONFIRM POWER OFF?';
+    let remaining = 8;
+    btn.textContent = `⚠ CONFIRM? (${remaining}s)`;
     btn.classList.add('armed');
+    _desktopArmInterval = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) { disarmDesktopPower(); return; }
+      btn.textContent = `⚠ CONFIRM? (${remaining}s)`;
+    }, 1000);
     _desktopArmTimer = setTimeout(disarmDesktopPower, 8000);
     return;
   }
@@ -1371,6 +1418,39 @@ function renderOpenCodeGo(d, stale) {
       <div class="pbar"><div class="pbar-fill ${cls}" style="width:${w.percent}%"></div></div>
     </div>`;
   }).join('');
+}
+
+// ── fetch opencode go limits (docs table, Go plan) ───────────────────────────
+let _ocglLoaded = false;
+
+async function fetchOpenCodeGoLimits() {
+  if (!_features.opencode_go) return;
+  try {
+    const d = await fetch('/api/opencode-go-limits').then(r => r.json());
+    const err = document.getElementById('ocgl-error');
+    if (d.error) {
+      err.textContent = 'limits unavailable';
+      err.style.display = 'block';
+      if (!_ocglLoaded) {
+        document.getElementById('ocgl-tbody').innerHTML =
+          '<tr><td colspan="3" class="empty">unavailable</td></tr>';
+      }
+      return;
+    }
+    err.style.display = 'none';
+    const num = v => typeof v === 'number' ? v.toLocaleString()
+                   : v === 'unlimited' ? 'unlimited' : '—';
+    const money = v => typeof v === 'number' ? '$' + v
+                     : v === 'unlimited' ? 'unlimited' : '—';
+    const rows = d.models.map(m => `<tr>
+      <td>${escHtml(m.name)}</td>
+      <td class="ocg-num">${num(m.req_5h)}</td>
+      <td class="ocg-num">${money(m.monthly)}</td>
+    </tr>`);
+    if (d.stale) rows.push('<tr><td colspan="3" class="ocg-stale">stale — docs source unreachable</td></tr>');
+    document.getElementById('ocgl-tbody').innerHTML = rows.join('');
+    _ocglLoaded = true;
+  } catch(e) { /* ignore */ }
 }
 
 // ── fetch shelly plug ─────────────────────────────────────────────────────────
