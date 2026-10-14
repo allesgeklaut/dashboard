@@ -43,6 +43,17 @@ def api_adguard():
 def api_opencode_go():
     return core.get_opencode_go_usage()
 
+@app.get("/api/opencode-go-limits")
+def api_opencode_go_limits():
+    return core.get_opencode_go_limits()
+
+@app.post("/api/opencode-go-benchmarks/fetch")
+def api_opencode_go_benchmarks_fetch():
+    res = core.fetch_opencode_go_benchmarks()
+    if not res.get("ok"):
+        raise HTTPException(500, res.get("error", "fetch failed"))
+    return res
+
 @app.get("/api/containers")
 def api_containers():
     containers, _ = core.get_containers()

@@ -36,6 +36,23 @@ OPENCODE_AUTH_FILE   = os.getenv(
 )
 OPENCODE_USAGE_URL   = "https://opencode.ai/zen/go/v1/usage"
 OPENCODE_GO_TTL      = 60  # seconds to cache a successful upstream response
+# Go plan limits/pricing table — parsed from the docs source that builds
+# https://opencode.ai/docs/go (no JSON API exists for it).  Unofficial, so the
+# parser degrades gracefully: last-known-good is served as "stale".
+OPENCODE_LIMITS_URLS = (
+    "https://raw.githubusercontent.com/anomalyco/opencode/dev/services/www/src/docs/content/console/go.mdx",
+    "https://raw.githubusercontent.com/anomalyco/opencode/master/services/www/src/docs/content/console/go.mdx",
+)
+OPENCODE_LIMITS_TTL  = 3600  # seconds between docs refetches
+OPENCODE_LIMITS_RETRY = 300  # seconds to back off after a failed refetch
+# Model benchmark scores for the limits table (Artificial Analysis' public
+# leaderboard page — the official API's per-benchmark scores are Pro-only).
+# Nothing is fetched automatically: the dashboard's "fetch scores" button
+# pulls + parses the page and stores the result in HOMELAB_BENCH_FILE.
+OPENCODE_BENCH_URL = "https://artificialanalysis.ai/leaderboards/models"
+HOMELAB_BENCH_FILE = os.getenv(
+    "HOMELAB_BENCH_FILE", os.path.expanduser("~/.homelab-ctrl/benchmarks.json")
+)
 # ── Desktop control (Wake-on-LAN + remote power off) — see SETUP.md § 6 ──────
 # Request files are action selectors only; the WoL magic packet itself is
 # broadcast on the LAN by the host-side handler (host/desktop-power-handler.sh),
@@ -549,6 +566,238 @@ def get_opencode_go_usage() -> dict:
         _opencode_cache["ts"]   = now
         _opencode_cache["data"] = out
     return dict(out)
+
+
+_opencode_limits_lock = threading.Lock()
+_opencode_limits_cache: dict = {"ts": 0.0, "data": None, "fail_ts": 0.0}
+
+
+def _parse_go_limits_mdx(text: str) -> list[dict]:
+    """Parse the go-pricing + go-requests PlanTabs tables (Go slot) from the
+    docs mdx into one row per model: {"name", "req_5h", "monthly"}.
+
+    Values are ints, or the string "unlimited"; None means unknown/missing.
+    """
+
+    def block(tab_id: str) -> str:
+        i = text.find(f'<PlanTabs id="{tab_id}"')
+        if i < 0:
+            return ""
+        j = text.find("</PlanTabs>", i)
+        return text[i:j if j >= 0 else len(text)]
+
+    def slot(block_text: str, name: str) -> str:
+        i = block_text.find(f'<div slot="{name}">')
+        if i < 0:
+            return ""
+        j = block_text.find('<div slot="', i + 1)
+        return block_text[i:j if j >= 0 else len(block_text)]
+
+    def rows(block_text: str) -> list[list[str]]:
+        out = []
+        for line in block_text.splitlines():
+            line = line.strip()
+            if not line.startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(set(c) <= {"-", ":", " "} for c in cells):  # separator row
+                continue
+            if cells and cells[0].lower() == "model":          # header row
+                continue
+            out.append(cells)
+        return out
+
+    def value(cell: str):
+        v = cell.replace("**", "").split("<br")[0].strip()
+        if v.lower().startswith("unlimited"):
+            return "unlimited"
+        try:
+            return int(round(float(v.replace("$", "").replace(",", ""))))
+        except (ValueError, OverflowError):
+            return None
+
+    monthly: dict[str, object] = {}
+    for r in rows(slot(block("go-pricing"), "go")):
+        if len(r) >= 6:
+            # variant rows ("... (Peak)", "... (≤ 256K tokens)") share a
+            # monthly limit — merge them onto the base model name
+            base = re.sub(r"\s*\(.*\)$", "", r[0])
+            monthly.setdefault(base, value(r[5]))
+
+    models = []
+    for r in rows(slot(block("go-requests"), "go")):
+        if len(r) < 2:
+            continue
+        req = value(r[1])
+        if req is None:   # a row whose count won't parse is junk (header/shape change)
+            continue
+        models.append({
+            "name":    r[0],
+            "req_5h":  req,
+            "monthly": monthly.get(r[0]),
+        })
+    return models
+
+
+def get_opencode_go_limits() -> dict:
+    """Go plan per-model limits (est. requests/5h + monthly $), from the docs
+    source.  Cached for OPENCODE_LIMITS_TTL; on failure the last-known-good
+    copy is served with "stale": true (cold start with no source → error)."""
+    if not _read_opencode_go_key():
+        return {"error": "not configured"}
+
+    now = time.time()
+    with _opencode_limits_lock:
+        cached = _opencode_limits_cache["data"]
+        if cached is not None and now - _opencode_limits_cache["ts"] < OPENCODE_LIMITS_TTL:
+            return _attach_benchmarks(dict(cached))
+        if now - _opencode_limits_cache["fail_ts"] < OPENCODE_LIMITS_RETRY:
+            # the last refetch failed — back off instead of retrying every request
+            if cached is not None:
+                return _attach_benchmarks({**cached, "stale": True})
+            return {"error": "unavailable"}
+
+    models: list[dict] = []
+    for url in OPENCODE_LIMITS_URLS:
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                models = _parse_go_limits_mdx(r.text)
+            if models:
+                break
+        except Exception:
+            continue
+
+    with _opencode_limits_lock:
+        _opencode_limits_cache["fail_ts"] = 0.0 if models else now
+        if models:
+            _opencode_limits_cache["ts"]   = now
+            _opencode_limits_cache["data"] = {"models": models}
+    if models:
+        return _attach_benchmarks({"models": models})
+    if cached is not None:
+        return _attach_benchmarks({**cached, "stale": True})
+    return {"error": "unavailable"}
+
+
+# ── Benchmark scores (Artificial Analysis, on-demand fetch) ──────────────────
+# The public leaderboard page embeds per-model scores in its payload as
+#  \"shortName\":\"...\" ... \"intelligenceIndex\":56.0 ... pairs.  Parsing is
+# deliberately *not* automated on a schedule (AA's terms prohibit automated
+# scraping): the dashboard's "fetch scores" button calls
+# fetch_opencode_go_benchmarks(), which parses and stores the scores to
+# HOMELAB_BENCH_FILE.  Reads never touch the network.
+
+_BENCH_METRICS = (
+    # payload key,        our key,       label,     friendly name,           unit
+    ("intelligenceIndex", "intelligence", "INTEL",   "Intelligence Index",    "index"),
+    ("terminalBench40",   "tb4",          "TB4",     "Terminal-Bench 4.0",    "pct"),
+    ("terminalBench21",   "tb21",         "TB2.1",   "Terminal-Bench 2.1",    "pct"),
+    ("terminalbenchHard", "tbh",          "TB-HARD", "Terminal-Bench Hard",   "pct"),
+    ("hle",               "hle",          "HLE",     "Humanity's Last Exam",  "pct"),
+    ("gpqa",              "gpqa",         "GPQA",    "GPQA Diamond",          "pct"),
+    ("tauBanking",        "taub",         "τ-BANK",  "τ²-Banking",            "pct"),
+    ("critpt",            "critpt",       "CRITPT",  "CritPt",                "pct"),
+)
+_BENCH_ALIASES = {                      # opencode name → AA name (both normalized)
+    "musespark13contributor": "musespark13",
+    "musespark12contributor": "musespark12",
+    "step5previewfree":       "step5preview",
+}
+
+
+def _norm_model_name(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _parse_bench_page(text: str) -> dict[str, dict[str, float]]:
+    """{normalized base model name: {our metric key: best raw value}}"""
+    out: dict[str, dict[str, float]] = {}
+    for m in re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text):
+        base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", m.group(1)))  # strip "(max …)"
+        slot = out.setdefault(base, {})
+        for payload_key, key, _label, _name, _unit in _BENCH_METRICS:
+            pat = '\\"' + payload_key + '\\":'
+            nxt = text.find(pat, m.end())
+            if nxt < 0 or nxt - m.end() > 3000:   # pairing must stay within one model object
+                continue
+            vm = re.match(re.escape(pat) + r'(null|-?[0-9.]+)', text[nxt:])
+            if not vm or vm.group(1) == "null":
+                continue
+            val = float(vm.group(1))
+            if val > slot.get(key, -1e9):
+                slot[key] = val
+    return {k: v for k, v in out.items() if v}
+
+
+_bench_fetch_lock = threading.Lock()   # one fetch at a time (button spam / two clients)
+
+
+def fetch_opencode_go_benchmarks() -> dict:
+    """Fetch + parse the AA leaderboard page and store it to HOMELAB_BENCH_FILE.
+
+    Only called from the dashboard's explicit "fetch scores" button — nothing
+    here runs on a schedule.  A non-blocking lock keeps concurrent clicks from
+    duplicating the upstream request or racing on the temp file.
+    """
+    if not _read_opencode_go_key():
+        return {"ok": False, "error": "not configured"}
+    if not _bench_fetch_lock.acquire(blocking=False):
+        return {"ok": False, "error": "fetch already running"}
+    try:
+        try:
+            r = requests.get(OPENCODE_BENCH_URL, timeout=25)
+            if r.status_code != 200:
+                return {"ok": False, "error": f"upstream HTTP {r.status_code}"}
+            models = _parse_bench_page(r.text)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+        if not models:
+            return {"ok": False, "error": "no scores found (page layout changed?)"}
+        data = {"fetched_at": time.time(), "source": OPENCODE_BENCH_URL, "models": models}
+        try:
+            os.makedirs(os.path.dirname(HOMELAB_BENCH_FILE) or ".", exist_ok=True)
+            tmp = HOMELAB_BENCH_FILE + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(data, fh)
+            os.replace(tmp, HOMELAB_BENCH_FILE)
+        except OSError as exc:
+            return {"ok": False, "error": f"cannot store: {exc}"}
+        return {"ok": True, "fetched_at": data["fetched_at"], "models": len(models)}
+    finally:
+        _bench_fetch_lock.release()
+
+
+def get_opencode_go_benchmarks() -> dict | None:
+    """Read the stored benchmark scores; None when never fetched."""
+    try:
+        with open(HOMELAB_BENCH_FILE) as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and isinstance(data.get("models"), dict):
+            return data
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _attach_benchmarks(payload: dict) -> dict:
+    """Copy the limits rows, adding {"bench": {metric: raw value}} + metadata."""
+    data = get_opencode_go_benchmarks()
+    scores = (data or {}).get("models") or {}
+    models = []
+    for m in payload.get("models", []):
+        mm = dict(m)
+        key = _norm_model_name(mm["name"])
+        key = _BENCH_ALIASES.get(key, key)
+        mm["bench"] = scores.get(key) or {}
+        models.append(mm)
+    return {
+        **payload,
+        "models": models,
+        "bench_metrics": [{"key": k, "label": lbl, "name": nm, "unit": u}
+                          for _pk, k, lbl, nm, u in _BENCH_METRICS],
+        "bench_fetched_at": (data or {}).get("fetched_at"),
+    }
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────

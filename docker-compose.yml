@@ -10,6 +10,7 @@ services:
     environment:
       - TZ=Europe/Vienna
       - HOMELAB_ENERGY_FILE=/data/energy.json
+      - HOMELAB_BENCH_FILE=/data/benchmarks.json   # on-demand model scores (see OPENCODE tab)
       - HOST_NAME=${SYS_HOST_NAME}   # show real host identity (container runs on a bridge net)
       - HOST_IP=${SYS_HOST_IP}
       # feature flag — set STREAM_SPOOL_DIR= in .env to disable the stream feature

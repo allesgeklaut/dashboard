@@ -150,6 +150,34 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .ocg-info { font-size:10px; color:var(--g-dim); }
 .ocg-info.warn  { color:var(--yellow); }
 .ocg-info.alert { color:var(--red); }
+.ocg-num   { text-align:right !important; }
+.ocg-stale { color:var(--g-dim); font-size:10px; }
+#ocgl-attrib { margin-top:4px; }
+#ocgl-attrib a { color:var(--g-dim); }
+.ocgl-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
+.ocgl-dd { position:relative; }
+.ocgl-dd-btn {
+  font-family:var(--font); font-size:10px; letter-spacing:0.05em;
+  background:var(--bg-card); color:var(--g);
+  border:1px solid var(--border); border-radius:2px; padding:4px 8px;
+  cursor:pointer;
+}
+.ocgl-dd-btn:hover { border-color:var(--border-hi); }
+.ocgl-caret { color:var(--g-dim); }
+.ocgl-dd-menu {
+  position:absolute; top:calc(100% + 2px); left:0; z-index:30;
+  background:var(--bg-card); border:1px solid var(--border-hi); border-radius:2px;
+  min-width:100%; max-height:260px; overflow-y:auto;
+}
+.ocgl-dd-item {
+  display:flex; gap:8px; align-items:baseline;
+  padding:5px 10px; font-size:10px; cursor:pointer; white-space:nowrap;
+}
+.ocgl-dd-item:hover { background:var(--g-faint); }
+.ocgl-dd-abbr { color:var(--g); font-weight:700; min-width:52px; }
+.ocgl-dd-name { color:var(--g-dim); }
+.ocgl-dd-item.sel .ocgl-dd-abbr { color:var(--g-bright); }
+#ocgl-wrap { overflow-x:auto; } /* scroll instead of clipping on narrow phones */
 
 
 /* ── SHELLY PLUG ROW ── */
@@ -227,6 +255,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .btn-stream:disabled { opacity:0.5; cursor:not-allowed; }
 .btn-stream.down { border-color:#330a0a; color:var(--red-dim); }
 .btn-stream.down:hover { border-color:var(--red-dim); background:#1a0505; color:var(--red); }
+#btn-desktop-off { min-width:146px; } /* keep width stable while armed (countdown label) */
 .stream-dot {
   width:8px; height:8px; border-radius:50%; flex-shrink:0;
   align-self:center;
@@ -435,7 +464,11 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .tab-bar {
   display:flex; gap:0; margin-bottom:12px;
   border-bottom:1px solid var(--border);
+  overflow-x:auto; /* never push the page sideways on narrow screens */
+  padding-bottom:1px; /* keep the 2px active underline visible (overflow clips it otherwise) */
+  scrollbar-width:none;
 }
+.tab-bar::-webkit-scrollbar { display:none; }
 .tab-btn {
   font-family:var(--font); font-size:11px; font-weight:700;
   letter-spacing:0.12em; text-transform:uppercase;
@@ -443,9 +476,15 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   border:none; border-bottom:2px solid transparent;
   margin-bottom:-1px; cursor:pointer;
   transition:color 0.15s, border-color 0.15s;
+  white-space:nowrap;
 }
 .tab-btn:hover { color:var(--g); }
 .tab-btn.active { color:var(--g-bright); border-bottom-color:var(--g); }
+@media (max-width:480px) {
+  .tab-btn { padding:8px 11px; letter-spacing:0.07em; font-size:10.5px; }
+  /* compact limits table so all four columns fit without sideways scrolling */
+  #ocgl-table th, #ocgl-table td { padding:5px 6px; font-size:10px; }
+}
 
 /* ── FAN ANIMATION ── */
 @keyframes fan-spin { to { transform:rotate(360deg); } }
@@ -509,6 +548,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <!-- Tab bar -->
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="server"     onclick="switchTab('server',this)">SERVER</button>
+    <button class="tab-btn"        data-tab="opencode"   onclick="switchTab('opencode',this)" style="display:none">OPENCODE</button>
     <button class="tab-btn"        data-tab="containers" onclick="switchTab('containers',this)">CONTAINERS</button>
     <button class="tab-btn"        data-tab="processes"  onclick="switchTab('processes',this)">PROCESSES</button>
   </div>
@@ -549,10 +589,6 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
         </div>
       </div>
     </div>
-
-    <!-- OpenCode Go usage (shown only when a key is configured) -->
-    <div class="sec-label" id="ocg-label" style="display:none">opencode go</div>
-    <div class="ocg-list" id="ocg-list" style="display:none"></div>
 
     <!-- AdGuard -->
     <div class="sec-label" id="ag-label" style="display:none">adguard</div>
@@ -620,6 +656,44 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
     <div class="stor-list" id="stor-list"></div>
 
   </div><!-- /#tab-server -->
+
+  <!-- ═══════════ OPENCODE TAB ═══════════ -->
+  <div id="tab-opencode" class="tab-pane" style="display:none">
+
+    <!-- Usage (rolling 5h / weekly / monthly) — shown only when a key is configured -->
+    <div class="sec-label" id="ocg-label" style="display:none">usage</div>
+    <div class="ocg-list" id="ocg-list" style="display:none"></div>
+
+    <!-- Limits (Go plan, from the docs table) -->
+    <div class="sec-label" id="ocgl-label" style="display:none">limits · go plan</div>
+    <div class="ocgl-controls" id="ocgl-controls" style="display:none">
+      <div class="ocgl-dd">
+        <button class="ocgl-dd-btn" id="ocgl-metric-btn" onclick="toggleMetricMenu(event)" title="score column">TB4 <span class="ocgl-caret">▾</span></button>
+        <div class="ocgl-dd-menu" id="ocgl-metric-menu" style="display:none"></div>
+      </div>
+      <button class="btn-stream" id="btn-ocgl-fetch" onclick="fetchBenchmarks()">⟳ FETCH SCORES</button>
+      <span class="ocg-stale" id="ocgl-updated"></span>
+    </div>
+    <div class="proc-table-wrap" id="ocgl-wrap" style="display:none">
+      <table class="proc-table" id="ocgl-table">
+        <thead>
+          <tr>
+            <th class="proc-sortable" data-key="name" onclick="sortLimits('name')">MODEL</th>
+            <th class="ocg-num proc-sortable" data-key="req_5h" onclick="sortLimits('req_5h')">REQ / 5H</th>
+            <th class="ocg-num proc-sortable" data-key="monthly" onclick="sortLimits('monthly')">MONTHLY</th>
+            <th class="ocg-num proc-sortable" data-key="bench" id="ocgl-bench-th" onclick="sortLimits('bench')">TB4</th>
+          </tr>
+        </thead>
+        <tbody id="ocgl-tbody">
+          <tr><td colspan="4" class="empty">loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="ocg-stale" id="ocgl-attrib" style="display:none">tb4 scores ·
+      <a href="https://artificialanalysis.ai/leaderboards/models" target="_blank" rel="noopener">artificial analysis</a></div>
+    <div class="stor-error" id="ocgl-error" style="display:none"></div>
+
+  </div><!-- /#tab-opencode -->
 
   <!-- ═══════════ CONTAINERS TAB ═══════════ -->
   <div id="tab-containers" class="tab-pane" style="display:none">
@@ -696,14 +770,27 @@ async function fetchFeatures() {
   }
   // Feature-gated polls
   if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
-  // OpenCode Go usage — poll only while the page is really visible; the server
-  // additionally caches upstream for 60 s, so nothing runs in the background.
+  // OpenCode tab — usage card polls only while the page is really visible
+  // (server caches upstream for 60 s); the limits table is docs data (1 h cache).
   if (_features.opencode_go) {
+    document.querySelector('.tab-btn[data-tab="opencode"]').style.display = 'inline-block';
     document.getElementById('ocg-label').style.display = 'flex';
     document.getElementById('ocg-list').style.display  = 'flex';
+    document.getElementById('ocgl-label').style.display = 'flex';
+    document.getElementById('ocgl-wrap').style.display  = 'block';
+    document.getElementById('ocgl-controls').style.display = 'flex';
+    document.getElementById('ocgl-attrib').style.display = 'block';
     fetchOpenCodeGo();
     setInterval(fetchOpenCodeGo, 60000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) fetchOpenCodeGo(); });
+    fetchOpenCodeGoLimits();
+    setInterval(fetchOpenCodeGoLimits, 3600000);
+  } else {
+    // don't let a saved OPENCODE tab stick when the feature is off
+    const active = document.querySelector('.tab-btn.active');
+    if (active && active.dataset.tab === 'opencode') {
+      switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'));
+    }
   }
   if (_features.shelly)  {
     fetchShelly();        setInterval(fetchShelly,        5000);
@@ -976,10 +1063,11 @@ async function wakeDesktop() {
 }
 
 // POWER OFF: two-press arm pattern (single button, like the router cycle)
-let _desktopArmed = false, _desktopArmTimer = null;
+let _desktopArmed = false, _desktopArmTimer = null, _desktopArmInterval = null;
 function disarmDesktopPower() {
   _desktopArmed = false;
-  if (_desktopArmTimer) { clearTimeout(_desktopArmTimer); _desktopArmTimer = null; }
+  if (_desktopArmTimer)    { clearTimeout(_desktopArmTimer); _desktopArmTimer = null; }
+  if (_desktopArmInterval) { clearInterval(_desktopArmInterval); _desktopArmInterval = null; }
   const btn = document.getElementById('btn-desktop-off');
   btn.textContent = '⏻ POWER OFF';
   btn.classList.remove('armed');
@@ -988,9 +1076,17 @@ function desktopPowerToggle() {
   if (_desktopBusy || _wakeBusy) return;
   const btn = document.getElementById('btn-desktop-off');
   if (!_desktopArmed) {
+    // First press – arm with the same short countdown label as the cycle
+    // buttons (the button has a fixed min-width, so nothing moves/resizes).
     _desktopArmed = true;
-    btn.textContent = '⚠ CONFIRM POWER OFF?';
+    let remaining = 8;
+    btn.textContent = `⚠ CONFIRM? (${remaining}s)`;
     btn.classList.add('armed');
+    _desktopArmInterval = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) { disarmDesktopPower(); return; }
+      btn.textContent = `⚠ CONFIRM? (${remaining}s)`;
+    }, 1000);
     _desktopArmTimer = setTimeout(disarmDesktopPower, 8000);
     return;
   }
@@ -1373,6 +1469,162 @@ function renderOpenCodeGo(d, stale) {
   }).join('');
 }
 
+// ── fetch opencode go limits (docs table, Go plan, sortable) ─────────────────
+let _ocglData = null, _ocglSort = { key: 'monthly', dir: 1 }; // default: cheap → expensive
+let _ocglMetric = 'tb4';       // which benchmark column is shown
+let _ocglMetrics = [];         // [{key,label,name,unit}] from the backend
+try { _ocglMetric = localStorage.getItem('ocglMetric') || 'tb4'; } catch(e) {}
+
+function metricDef(key) {
+  return _ocglMetrics.find(m => m.key === key)
+      || { label: 'TB4', name: 'Terminal-Bench 4.0', unit: 'pct' };
+}
+
+function updateMetricButton() {
+  document.getElementById('ocgl-metric-btn').innerHTML =
+    `${metricDef(_ocglMetric).label} <span class="ocgl-caret">▾</span>`;
+}
+
+function buildMetricMenu() {
+  document.getElementById('ocgl-metric-menu').innerHTML = _ocglMetrics.map(m =>
+    `<div class="ocgl-dd-item${m.key === _ocglMetric ? ' sel' : ''}" data-key="${m.key}" onclick="setMetric('${m.key}')">
+       <span class="ocgl-dd-abbr">${m.label}</span><span class="ocgl-dd-name">${escHtml(m.name)}</span>
+     </div>`).join('');
+}
+
+function toggleMetricMenu(e) {
+  e.stopPropagation();   // keep the document-level close handler from firing immediately
+  const menu = document.getElementById('ocgl-metric-menu');
+  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+}
+
+function closeMetricMenu() {
+  document.getElementById('ocgl-metric-menu').style.display = 'none';
+}
+document.addEventListener('click', closeMetricMenu);
+
+function setMetric(key) {
+  _ocglMetric = key;
+  try { localStorage.setItem('ocglMetric', key); } catch(e) {}
+  updateMetricButton();
+  document.querySelectorAll('#ocgl-metric-menu .ocgl-dd-item').forEach(el =>
+    el.classList.toggle('sel', el.dataset.key === key));
+  renderLimits();
+}
+
+function relTime(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+async function fetchBenchmarks() {
+  if (!_features.opencode_go) return;
+  const btn = document.getElementById('btn-ocgl-fetch');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = '… FETCHING';
+  try {
+    const r = await fetch('/api/opencode-go-benchmarks/fetch', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      toast(`scores updated · ${d.models} models`);
+      await fetchOpenCodeGoLimits();
+    } else {
+      toast('fetch failed: ' + (d.detail || d.error || r.status), true);
+    }
+  } catch(e) {
+    toast('network error', true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⟳ FETCH SCORES';
+  }
+}
+
+function sortLimits(key) {
+  if (_ocglSort.key === key) _ocglSort.dir *= -1;
+  else _ocglSort = { key, dir: 1 };
+  renderLimits();
+}
+
+function renderLimits() {
+  if (!_ocglData) return;
+  const { key, dir } = _ocglSort;
+  const metric = metricDef(_ocglMetric);
+  const benchVal = m => (m.bench && typeof m.bench[_ocglMetric] === 'number') ? m.bench[_ocglMetric] : null;
+  // Numbers sort naturally; "unlimited" is a real ∞ (first when descending);
+  // missing values (—) always sort last, in both directions.
+  const val = m => {
+    if (key === 'name') return m.name.toLowerCase();
+    if (key === 'bench') {
+      const v = benchVal(m);
+      return v !== null ? v : (dir === 1 ? Infinity : -Infinity);
+    }
+    const v = m[key];
+    if (typeof v === 'number') return v;
+    if (v === 'unlimited') return Infinity;
+    return dir === 1 ? Infinity : -Infinity;
+  };
+  const models = [..._ocglData.models].sort((a, b) => {
+    const va = val(a), vb = val(b);
+    return (typeof va === 'string' ? va.localeCompare(vb) : va - vb) * dir;
+  });
+  const num = v => typeof v === 'number' ? v.toLocaleString()
+                 : v === 'unlimited' ? 'unlimited' : '—';
+  const money = v => typeof v === 'number' ? '$' + v
+                   : v === 'unlimited' ? 'unlimited' : '—';
+  const bench = m => {
+    const v = benchVal(m);
+    if (v === null) return '—';
+    return metric.unit === 'index' ? v.toFixed(1) : (v * 100).toFixed(1) + '%';
+  };
+  document.getElementById('ocgl-bench-th').textContent = metric.label;
+  const rows = models.map(m => `<tr>
+      <td>${escHtml(m.name)}</td>
+      <td class="ocg-num">${num(m.req_5h)}</td>
+      <td class="ocg-num">${money(m.monthly)}</td>
+      <td class="ocg-num">${bench(m)}</td>
+    </tr>`);
+  if (_ocglData.stale) rows.push('<tr><td colspan="4" class="ocg-stale">stale — docs source unreachable</td></tr>');
+  document.getElementById('ocgl-tbody').innerHTML = rows.join('');
+  document.querySelectorAll('#ocgl-table th').forEach(th => {
+    th.classList.toggle('sorted-asc',  th.dataset.key === key && dir === 1);
+    th.classList.toggle('sorted-desc', th.dataset.key === key && dir === -1);
+  });
+}
+
+async function fetchOpenCodeGoLimits() {
+  if (!_features.opencode_go) return;
+  if (document.hidden) return; // don't poll while the dashboard is in the background
+  try {
+    const d = await fetch('/api/opencode-go-limits').then(r => r.json());
+    const err = document.getElementById('ocgl-error');
+    if (d.error) {
+      err.textContent = 'limits unavailable';
+      err.style.display = 'block';
+      if (!_ocglData) {
+        document.getElementById('ocgl-tbody').innerHTML =
+          '<tr><td colspan="4" class="empty">unavailable</td></tr>';
+      }
+      return;
+    }
+    err.style.display = 'none';
+    _ocglData = d;
+    // metric dropdown + "scores fetched …" line
+    _ocglMetrics = d.bench_metrics || [];
+    if (_ocglMetrics.length) {
+      if (!_ocglMetrics.some(m => m.key === _ocglMetric)) _ocglMetric = _ocglMetrics[0].key;
+      buildMetricMenu();
+      updateMetricButton();
+    }
+    document.getElementById('ocgl-updated').textContent =
+      d.bench_fetched_at ? `scores ${relTime(d.bench_fetched_at)}` : 'no scores yet — press fetch';
+    renderLimits();
+  } catch(e) { /* ignore */ }
+}
+
 // ── fetch shelly plug ─────────────────────────────────────────────────────────
 async function fetchShelly() {
   if (!_features.shelly) return;
@@ -1625,7 +1877,7 @@ function procValue(p, key) {
 function renderProcesses() {
   const tbody = document.getElementById('proc-tbody');
   // header indicators
-  document.querySelectorAll('.proc-sortable').forEach(th => {
+  document.querySelectorAll('#proc-table .proc-sortable').forEach(th => {
     th.classList.toggle('sorted-asc',  th.dataset.key === procSortKey && !procSortDesc);
     th.classList.toggle('sorted-desc', th.dataset.key === procSortKey &&  procSortDesc);
   });
