@@ -1578,6 +1578,7 @@ function renderLimits() {
   const bench = m => {
     const v = benchVal(m);
     if (v === null) return '—';
+    if (metric.unit === 'elo') return String(Math.round(v));
     return metric.unit === 'index' ? v.toFixed(1) : (v * 100).toFixed(1) + '%';
   };
   document.getElementById('ocgl-bench-th').textContent = metric.label;

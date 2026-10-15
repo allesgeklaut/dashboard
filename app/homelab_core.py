@@ -46,10 +46,14 @@ OPENCODE_LIMITS_URLS = (
 OPENCODE_LIMITS_TTL  = 3600  # seconds between docs refetches
 OPENCODE_LIMITS_RETRY = 300  # seconds to back off after a failed refetch
 # Model benchmark scores for the limits table (Artificial Analysis' public
-# leaderboard page — the official API's per-benchmark scores are Pro-only).
-# Nothing is fetched automatically: the dashboard's "fetch scores" button
-# pulls + parses the page and stores the result in HOMELAB_BENCH_FILE.
-OPENCODE_BENCH_URL = "https://artificialanalysis.ai/leaderboards/models"
+# pages — the official API's per-benchmark scores are Pro-only).  The
+# leaderboard page holds the shared metrics for all ~700 models; the
+# Briefcase evaluation page additionally carries the benchmark-specific
+# scores (AA-Briefcase / AutomationBench-AA / GDP.pdf / raw GDPval Elo) for
+# its model set.  Nothing is fetched automatically: the dashboard's "fetch
+# scores" button pulls + parses both pages into HOMELAB_BENCH_FILE.
+OPENCODE_BENCH_URL       = "https://artificialanalysis.ai/leaderboards/models"
+OPENCODE_BENCH_EXTRA_URL = "https://artificialanalysis.ai/evaluations/aa-briefcase"
 HOMELAB_BENCH_FILE = os.getenv(
     "HOMELAB_BENCH_FILE", os.path.expanduser("~/.homelab-ctrl/benchmarks.json")
 )
@@ -698,15 +702,18 @@ def get_opencode_go_limits() -> dict:
 # HOMELAB_BENCH_FILE.  Reads never touch the network.
 
 _BENCH_METRICS = (
-    # payload key,        our key,       label,     friendly name,           unit
-    ("intelligenceIndex", "intelligence", "INTEL",   "Intelligence Index",    "index"),
-    ("terminalBench40",   "tb4",          "TB4",     "Terminal-Bench 4.0",    "pct"),
-    ("terminalBench21",   "tb21",         "TB2.1",   "Terminal-Bench 2.1",    "pct"),
-    ("terminalbenchHard", "tbh",          "TB-HARD", "Terminal-Bench Hard",   "pct"),
-    ("hle",               "hle",          "HLE",     "Humanity's Last Exam",  "pct"),
-    ("gpqa",              "gpqa",         "GPQA",    "GPQA Diamond",          "pct"),
-    ("tauBanking",        "taub",         "τ-BANK",  "τ²-Banking",            "pct"),
-    ("critpt",            "critpt",       "CRITPT",  "CritPt",                "pct"),
+    # payload key,                  our key,       label,     friendly name,           unit
+    ("intelligenceIndex",          "intelligence", "INTEL",   "Intelligence Index",    "index"),
+    ("briefcaseElo",               "briefcase",    "BRIEF",   "AA-Briefcase v1.1",     "elo"),
+    ("gdpval",                     "gdpval",       "GDPVAL",  "GDPval-AA v2.1",        "elo"),
+    ("automationBenchPartialScore", "automation",  "AUTOM",   "AutomationBench-AA",    "pct"),
+    ("terminalBench40",            "tb4",          "TB4",     "Terminal-Bench 4.0",    "pct"),
+    ("scicode",                    "scicode",      "SCICODE", "SciCode",               "pct"),
+    ("hle",                        "hle",          "HLE",     "Humanity's Last Exam",  "pct"),
+    ("gdpPdfAllPass",              "gdppdf",       "GDP.PDF", "GDP.pdf",               "pct"),
+    ("critpt",                     "critpt",       "CRITPT",  "CritPt",                "pct"),
+    ("omniscience",                "omniscience",  "OMNI",    "AA-Omniscience",        "index"),
+    ("lcr",                        "lcr",          "LCR",     "AA-LCR v1.1",           "pct"),
 )
 _BENCH_ALIASES = {                      # opencode name → AA name (both normalized)
     "gemini4argoncontributor": "gemini4argon",
@@ -740,11 +747,64 @@ def _parse_bench_page(text: str) -> dict[str, dict[str, float]]:
     return {k: v for k, v in out.items() if v}
 
 
+# Benchmark-specific score keys that exist only on the AA *evaluation* pages
+# (the leaderboard page covers the shared metrics for the full model set).
+_BENCH_EXTRA_KEYS = (
+    # payload key,                  our key
+    ("briefcaseElo",                "briefcase"),
+    ("gdpval",                      "gdpval"),
+    ("automationBenchPartialScore", "automation"),
+    ("gdpPdfAllPass",               "gdppdf"),
+)
+
+
+def _parse_bench_extra_page(text: str) -> dict[str, dict[str, float]]:
+    """{norm name: {our key: raw value}} from an AA evaluation page.
+
+    Those pages embed the same model objects as the leaderboard, but the
+    benchmark keys sit anywhere within a (sometimes >7k char) object, so slice
+    per model: from each shortName up to the next one, then take the first
+    numeric hit per key there."""
+    marks = [(m.start(), m.group(1))
+             for m in re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text)]
+    out: dict[str, dict[str, float]] = {}
+    for i, (pos, name) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else pos + 20000
+        seg = text[pos:end]
+        base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", name))
+        slot = out.setdefault(base, {})
+        for payload_key, key in _BENCH_EXTRA_KEYS:
+            pat = re.escape('\\"' + payload_key + '\\":')
+            for vm in re.finditer(pat + r'(null|-?[0-9.]+)', seg):
+                if vm.group(1) == "null":
+                    continue
+                val = float(vm.group(1))
+                if val > slot.get(key, -1e9):
+                    slot[key] = val
+                break
+    return out
+
+
+def _attach_gdpval_elo(scores: dict, text: str) -> None:
+    """GDPval: the leaderboard page carries only the normalized score for its
+    full model set — convert it to the raw Elo AA displays (norm * 2000 + 500,
+    per the published sublabel) for models the evaluation page doesn't cover.
+    Never overwrites a real raw value."""
+    for m in re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text):
+        nxt = text.find('\\"gdpvalNormalized\\":', m.end(), m.end() + 3000)
+        if nxt < 0:
+            continue
+        vm = re.match(re.escape('\\"gdpvalNormalized\\":') + r'(null|-?[0-9.]+)', text[nxt:])
+        if vm and vm.group(1) != "null":
+            base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", m.group(1)))
+            scores.setdefault(base, {}).setdefault("gdpval", float(vm.group(1)) * 2000 + 500)
+
+
 _bench_fetch_lock = threading.Lock()   # one fetch at a time (button spam / two clients)
 
 
 def fetch_opencode_go_benchmarks() -> dict:
-    """Fetch + parse the AA leaderboard page and store it to HOMELAB_BENCH_FILE.
+    """Fetch + parse the AA leaderboard + evaluation pages, store HOMELAB_BENCH_FILE.
 
     Only called from the dashboard's explicit "fetch scores" button — nothing
     here runs on a schedule.  A non-blocking lock keeps concurrent clicks from
@@ -760,8 +820,17 @@ def fetch_opencode_go_benchmarks() -> dict:
             if r.status_code != 200:
                 return {"ok": False, "error": f"upstream HTTP {r.status_code}"}
             models = _parse_bench_page(r.text)
+            _attach_gdpval_elo(models, r.text)
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}
+        try:
+            r2 = requests.get(OPENCODE_BENCH_EXTRA_URL, timeout=25)
+            if r2.status_code == 200:
+                # benchmark-specific extras for the evaluation-page model set
+                for nm, kv in _parse_bench_extra_page(r2.text).items():
+                    models.setdefault(nm, {}).update(kv)
+        except Exception:
+            pass                                     # base metrics still refresh
         if not models:
             return {"ok": False, "error": "no scores found (page layout changed?)"}
         data = {"fetched_at": time.time(), "source": OPENCODE_BENCH_URL, "models": models}
