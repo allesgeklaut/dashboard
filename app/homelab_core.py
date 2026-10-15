@@ -714,6 +714,8 @@ _BENCH_METRICS = (
     ("critpt",                     "critpt",       "CRITPT",  "CritPt",                "pct"),
     ("omniscience",                "omniscience",  "OMNI",    "AA-Omniscience",        "index"),
     ("lcr",                        "lcr",          "LCR",     "AA-LCR v1.1",           "pct"),
+    # not part of Intelligence Index v4.3.2, but AA still maintains it (τ³)
+    ("tauBanking",                 "taub",         "τ-BANK",  "τ³-Banking",            "pct"),
 )
 _BENCH_ALIASES = {                      # opencode name → AA name (both normalized)
     "gemini4argoncontributor": "gemini4argon",
