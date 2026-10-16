@@ -24,6 +24,7 @@ SHELLY_PLUG_URL   = os.getenv("SHELLY_PLUG_URL")    # None if not set → featur
 SHELLY_PLUG_2_URL = os.getenv("SHELLY_PLUG_2_URL")  # None if not set → feature disabled
 OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature disabled
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
+LLAMA_BOLT_URL = os.getenv("LLAMA_BOLT_URL")              # None if not set → feature disabled
 LLAMA_COMPANION_URL = os.getenv("LLAMA_COMPANION_URL")    # None if not set → feature disabled
 STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
 # ── OpenCode Go usage (opencode go card) ─────────────────────────────────────
@@ -1496,12 +1497,14 @@ def _slot_rates(slots: list, now: float) -> tuple[float | None, float | None, st
 def get_llama() -> dict:
     """Scrape /metrics + /slots from whichever llama instance is up.
 
-    llama-server and llama-companion expose the same stacks but normally only
-    one runs at a time, so probe them in order and use the first that
-    responds.  Returns ``{"server", "url", "running", ...}`` or ``{"error": ...}``.
+    llama-server, llama-bolt and llama-companion expose the same stacks but
+    normally only one runs at a time (they share the GPU), so probe them in
+    order and use the first that responds.  Returns
+    ``{"server", "url", "running", ...}`` or ``{"error": ...}``.
     """
     candidates = [(name, url.rstrip("/")) for name, url in (
         ("llama-server",    LLAMA_SERVER_URL),
+        ("llama-bolt",      LLAMA_BOLT_URL),
         ("llama-companion", LLAMA_COMPANION_URL),
     ) if url]
     if not candidates:
@@ -1788,7 +1791,7 @@ def get_features() -> dict:
         "shelly2": bool(SHELLY_PLUG_2_URL),
         "adguard": bool(ADGUARD_URL),
         "ollama":  bool(OLLAMA_URL),
-        "llama":   bool(LLAMA_SERVER_URL or LLAMA_COMPANION_URL),
+        "llama":   bool(LLAMA_SERVER_URL or LLAMA_BOLT_URL or LLAMA_COMPANION_URL),
         "stream":  bool(STREAM_SPOOL_DIR),
         "wake":           bool(WOL_DESKTOP_MAC) and bool(DESKTOP_SPOOL_DIR),
         "desktop_power":  bool(DESKTOP_SPOOL_DIR),

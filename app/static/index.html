@@ -1355,7 +1355,7 @@ async function fetchLlama() {
         .forEach(id => document.getElementById(id).textContent = '—');
       return;
     }
-    // label the active instance — llama-server vs llama-companion
+    // label the active instance — llama-server / llama-bolt / llama-companion
     document.getElementById('llama-label').textContent = `llm · ${d.server}`;
     const stateEl = document.getElementById('llama-state');
     if (d.phase === 'generation') stateEl.textContent = 'GENERATING';
