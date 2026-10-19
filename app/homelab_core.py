@@ -721,8 +721,18 @@ _BENCH_METRICS = (
 _BENCH_ALIASES = {                      # opencode name → AA name (both normalized)
     "gemini4argoncontributor": "gemini4argon",
     "musespark13contributor": "musespark13",
+    # AA deprecated Muse Spark 1.2, so this is a no-op until it is re-listed.
     "musespark12contributor": "musespark12",
     "step5previewfree":       "step5preview",
+    # AA renamed these after release but still ranks them — identity confirmed by
+    # matching AA's price + release date against opencode-go's catalogue.
+    "beamfree":               "beam10",           # Beam Free → Beam 1.0
+    "minimaxm31flashfree":    "minimaxm31flash",  # MiniMax M3.1 Flash Free → MiniMax-M3.1-Flash
+    "qwen38flash":            "qwen38flashnext",  # Qwen3.8 Flash → Qwen3.8-Flash-Next
+    # Deliberately absent:
+    #   gpt56luna     — AA deprecated it; "GPT-5.6 Terra" is a different model (10× price).
+    #   deepseekv4pro — AA's active entry is "V4 Pro 0813", but opencode-go's registry
+    #                   date (2026-04-24) matches AA's deprecated "V4 Pro 0424" instead.
 }
 
 
