@@ -34,6 +34,16 @@ uv pip install -r requirements.txt
 uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
 ```
 
+After installing requirements, run the Mistral unit tests with test-only `httpx`
+for this invocation (it is not a production dependency):
+
+```bash
+PYTHON_DOTENV_DISABLED=1 uv run --with httpx python -m unittest discover -s tests -v
+```
+
+This skips local `.env` loading; the tests mock device polling and upstream
+interactions, so they make no paid upstream calls.
+
 Then open **http://127.0.0.1:7681**. (`--app-dir app` mirrors the container,
 which copies `app/` to `/app` and imports `main`.)
 
@@ -58,6 +68,43 @@ open (nothing runs in the background). Enable it by setting
 server from `~/.local/share/opencode/auth.json`, see `.env.example`). Locally
 it works with no configuration: it falls back to the auth store on the dev
 machine (`OPENCODE_AUTH_FILE` overrides the path).
+
+The optional **MISTRAL** tab lists configured LiteLLM `mistral/` routes and
+shows their Artificial Analysis benchmark table. It includes all matching
+routes (including GLM, audio, and embedding models); non-chat or unranked
+models show a dash for scores. It offers the same benchmark metric choices as
+OPENCODE, but each tab stores its metric and sort selections independently;
+the on-demand **FETCH SCORES** action and cache are shared. It works without
+OpenCode being configured. The **OPEN MISTRAL** link opens Mistral's
+subscription page in your browser (on iOS, you may need to sign in there).
+This is not a Mistral usage integration: it does not scrape Mistral, use
+cookies or a billing API, or require a Mistral or LiteLLM admin key. The
+dashboard labels rows with LiteLLM model names (not provider names) and
+exposes upstream model IDs, never the configured credentials.
+
+For local development, set `LITELLM_CONFIG_FILE` to the existing LiteLLM YAML,
+for example `../litellm/config.yaml` (relative to the server process working
+directory) or an absolute path. Leave it unset to disable the tab. To enable it
+in Docker, use the optional override, which mounts only the existing config
+file read-only at `/run/litellm/config.yaml`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mistral.yml up -d --build
+```
+
+The override defaults to the host file `../litellm/config.yaml`, relative to
+the Compose project directory. If needed, set `LITELLM_CONFIG_HOST_PATH` in
+the repo's gitignored `.env` (or in the shell running Compose) to the path of
+the existing YAML file. The source file must already exist; the override does
+not create a missing file or directory and does not mount the surrounding
+secrets directory. The local-development `LITELLM_CONFIG_FILE` setting is
+replaced by the override's container path. No new `/opt/secrets` environment
+fields are needed. To disable the Docker tab and remove its mount, recreate
+the service with the base compose file only:
+
+```bash
+docker compose -f docker-compose.yml up -d --build
+```
 
 > `dashboard.py` (the Textual terminal TUI) is **deprecated** — the web
 > dashboard is the product.

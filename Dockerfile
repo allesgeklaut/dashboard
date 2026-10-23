@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir \
     fastapi \
     "uvicorn[standard]" \
     psutil \
+    PyYAML \
     requests \
     urllib3 \
     python-dotenv

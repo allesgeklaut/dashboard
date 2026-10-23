@@ -57,6 +57,17 @@ def api_opencode_go_benchmarks_fetch():
         raise HTTPException(500, res.get("error", "fetch failed"))
     return res
 
+@app.get("/api/mistral-models")
+def api_mistral_models():
+    return core.get_mistral_models()
+
+@app.post("/api/benchmarks/fetch")
+def api_benchmarks_fetch():
+    res = core.fetch_benchmarks()
+    if not res.get("ok"):
+        raise HTTPException(500, res.get("error", "fetch failed"))
+    return res
+
 @app.get("/api/containers")
 def api_containers():
     containers, _ = core.get_containers()

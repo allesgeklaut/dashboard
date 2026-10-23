@@ -4,10 +4,12 @@ Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
 """
 from __future__ import annotations
 import os, re, socket, threading, time, json
+import math
 from datetime import datetime, timedelta
 
 import psutil, requests, urllib3
 from dotenv import load_dotenv
+import yaml
 
 load_dotenv()
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -46,6 +48,7 @@ OPENCODE_LIMITS_URLS = (
 )
 OPENCODE_LIMITS_TTL  = 3600  # seconds between docs refetches
 OPENCODE_LIMITS_RETRY = 300  # seconds to back off after a failed refetch
+LITELLM_CONFIG_FILE = os.getenv("LITELLM_CONFIG_FILE", "")
 # Model benchmark scores for the limits table (Artificial Analysis' public
 # pages — the official API's per-benchmark scores are Pro-only).  The
 # leaderboard page holds the shared metrics for all ~700 models; the
@@ -698,8 +701,8 @@ def get_opencode_go_limits() -> dict:
 # The public leaderboard page embeds per-model scores in its payload as
 #  \"shortName\":\"...\" ... \"intelligenceIndex\":56.0 ... pairs.  Parsing is
 # deliberately *not* automated on a schedule (AA's terms prohibit automated
-# scraping): the dashboard's "fetch scores" button calls
-# fetch_opencode_go_benchmarks(), which parses and stores the scores to
+# scraping): the dashboard's explicit "fetch scores" action calls
+# fetch_benchmarks(), which parses and stores the scores to
 # HOMELAB_BENCH_FILE.  Reads never touch the network.
 
 _BENCH_METRICS = (
@@ -733,6 +736,29 @@ _BENCH_ALIASES = {                      # opencode name → AA name (both normal
     #   gpt56luna     — AA deprecated it; "GPT-5.6 Terra" is a different model (10× price).
     #   deepseekv4pro — AA's active entry is "V4 Pro 0813", but opencode-go's registry
     #                   date (2026-04-24) matches AA's deprecated "V4 Pro 0424" instead.
+}
+
+# Exact Mistral API IDs whose AA leaderboard names are confirmed in the shared
+# cache. These are Mistral-only aliases; do not apply them to OpenCode rows or
+# infer aliases for other Mistral IDs.
+# Z.ai's GLM models are served without Mistral modifications:
+# https://docs.mistral.ai/models/zai-glm-5-3
+# https://docs.mistral.ai/models/zai-glm-5-3-flash
+# Large 4 is a public preview (v26.10); this mapping is preview-specific and
+# should be revalidated if/when Mistral publishes a replacement model ID:
+# https://docs.mistral.ai/models/mistral-large-4-0
+# https://mistral.ai/news/mistral-large-4/
+# Small 4's pinned API ID is mistral-small-2603; Mistral's docs also list
+# mistral-small-latest as an alias for Small 4 (verified 2026-10-23). Recheck
+# this mapping if the upstream rolling alias changes:
+# https://docs.mistral.ai/models/mistral-small-4-0-26-03.md
+_MISTRAL_BENCH_ALIASES = {
+    "zaiglm53":          "glm53",
+    "zaiglm53flash":     "glm53flash",
+    "mistrallarge4":     "mistrallarge4preview",
+    "mistrallarge40":    "mistrallarge4preview",
+    "mistralsmall2603":  "mistralsmall4",
+    "mistralsmalllatest": "mistralsmall4",
 }
 
 
@@ -816,15 +842,8 @@ def _attach_gdpval_elo(scores: dict, text: str) -> None:
 _bench_fetch_lock = threading.Lock()   # one fetch at a time (button spam / two clients)
 
 
-def fetch_opencode_go_benchmarks() -> dict:
-    """Fetch + parse the AA leaderboard + evaluation pages, store HOMELAB_BENCH_FILE.
-
-    Only called from the dashboard's explicit "fetch scores" button — nothing
-    here runs on a schedule.  A non-blocking lock keeps concurrent clicks from
-    duplicating the upstream request or racing on the temp file.
-    """
-    if not _read_opencode_go_key():
-        return {"ok": False, "error": "not configured"}
+def _fetch_aa_benchmarks() -> dict:
+    """Fetch and cache AA scores after an explicitly requested UI action."""
     if not _bench_fetch_lock.acquire(blocking=False):
         return {"ok": False, "error": "fetch already running"}
     try:
@@ -860,6 +879,20 @@ def fetch_opencode_go_benchmarks() -> dict:
         _bench_fetch_lock.release()
 
 
+def fetch_opencode_go_benchmarks() -> dict:
+    """Compatibility wrapper for the legacy OpenCode-only fetch action."""
+    if not _read_opencode_go_key():
+        return {"ok": False, "error": "not configured"}
+    return _fetch_aa_benchmarks()
+
+
+def fetch_benchmarks() -> dict:
+    """Shared explicit AA fetch for OpenCode Go or configured LiteLLM models."""
+    if not _read_opencode_go_key() and not _litellm_config_path():
+        return {"ok": False, "error": "not configured"}
+    return _fetch_aa_benchmarks()
+
+
 def get_opencode_go_benchmarks() -> dict | None:
     """Read the stored benchmark scores; None when never fetched."""
     try:
@@ -872,6 +905,30 @@ def get_opencode_go_benchmarks() -> dict | None:
     return None
 
 
+def _benchmark_for_model(name: str, scores: dict, *, aliases: bool = True) -> dict:
+    """Match an exact normalized model identity, with optional legacy aliases."""
+    key = _norm_model_name(name)
+    if aliases:
+        key = _BENCH_ALIASES.get(key, key)
+    return scores.get(key) or {}
+
+
+def _mistral_benchmark_for_model(name: str, scores: dict) -> dict:
+    """Match a provider-stripped Mistral ID, using only verified exact aliases."""
+    key = _norm_model_name(name)
+    key = _MISTRAL_BENCH_ALIASES.get(key, key)
+    record = scores.get(key)
+    return record if isinstance(record, dict) else {}
+
+
+def _bench_metadata(data: dict | None) -> dict:
+    return {
+        "bench_metrics": [{"key": k, "label": lbl, "name": nm, "unit": u}
+                          for _pk, k, lbl, nm, u in _BENCH_METRICS],
+        "bench_fetched_at": (data or {}).get("fetched_at"),
+    }
+
+
 def _attach_benchmarks(payload: dict) -> dict:
     """Copy the limits rows, adding {"bench": {metric: raw value}} + metadata."""
     data = get_opencode_go_benchmarks()
@@ -879,17 +936,90 @@ def _attach_benchmarks(payload: dict) -> dict:
     models = []
     for m in payload.get("models", []):
         mm = dict(m)
-        key = _norm_model_name(mm["name"])
-        key = _BENCH_ALIASES.get(key, key)
-        mm["bench"] = scores.get(key) or {}
+        mm["bench"] = _benchmark_for_model(mm["name"], scores)
         models.append(mm)
     return {
         **payload,
         "models": models,
-        "bench_metrics": [{"key": k, "label": lbl, "name": nm, "unit": u}
-                          for _pk, k, lbl, nm, u in _BENCH_METRICS],
-        "bench_fetched_at": (data or {}).get("fetched_at"),
+        **_bench_metadata(data),
     }
+
+
+def _litellm_config_path() -> str | None:
+    """Return a configured nonblank LiteLLM path without checking readability."""
+    path = (LITELLM_CONFIG_FILE or "").strip()
+    return path or None
+
+
+def get_mistral_models() -> dict:
+    """Return LiteLLM routes backed by mistral/ and exact AA benchmark matches.
+
+    Configuration reads and benchmark cache reads are local-only. Route
+    parameters are never included in the public response.
+    """
+    config_path = _litellm_config_path()
+    if not config_path:
+        return {"error": "not configured"}
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            config_text = config_file.read()
+    except OSError:
+        return {"error": "configuration unavailable"}
+    except UnicodeError:
+        return {"error": "invalid configuration"}
+
+    try:
+        config = yaml.safe_load(config_text)
+    except yaml.YAMLError:
+        return {"error": "invalid configuration"}
+
+    if not isinstance(config, dict) or not isinstance(config.get("model_list"), list):
+        return {"error": "invalid configuration"}
+
+    routes = []
+    seen_aliases: set[str] = set()
+    for row in config["model_list"]:
+        if not isinstance(row, dict):
+            return {"error": "invalid configuration"}
+        alias = row.get("model_name")
+        params = row.get("litellm_params")
+        if (not isinstance(alias, str) or not alias.strip()
+                or not isinstance(params, dict)
+                or not isinstance(params.get("model"), str)
+                or not params["model"].strip()):
+            return {"error": "invalid configuration"}
+        alias = alias.strip()
+        upstream_model = params["model"].strip()
+        if not upstream_model.startswith("mistral/") or alias in seen_aliases:
+            continue
+        seen_aliases.add(alias)
+        routes.append({"name": alias, "upstream_model": upstream_model})
+
+    data = get_opencode_go_benchmarks()
+    scores = (data or {}).get("models") or {}
+    models = []
+    for route in routes:
+        # Remove only the provider prefix. Do not substitute the public alias,
+        # infer a model family, or map a rolling alias to a dated AA entry.
+        identity = route["upstream_model"][len("mistral/"):]
+        normalized_identity = _norm_model_name(identity)
+        non_chat = any(token in normalized_identity for token in (
+            "audio", "embed", "voxtral", "transcribe", "speech",
+        ))
+        matched = {} if non_chat else _mistral_benchmark_for_model(identity, scores)
+        bench = {}
+        for _payload_key, key, _label, _name, _unit in _BENCH_METRICS:
+            value = matched.get(key)
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and (not isinstance(value, float) or math.isfinite(value))):
+                bench[key] = value
+        models.append({**route, "bench": bench})
+
+    metadata = _bench_metadata(data)
+    fetched_at = metadata["bench_fetched_at"]
+    if isinstance(fetched_at, float) and not math.isfinite(fetched_at):
+        metadata["bench_fetched_at"] = None
+    return {"models": models, **metadata}
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────
@@ -1807,4 +1937,5 @@ def get_features() -> dict:
         "desktop_power":  bool(DESKTOP_SPOOL_DIR),
         "desktop_status": bool(WOL_DESKTOP_IP),
         "opencode_go":    _read_opencode_go_key() is not None,
+        "mistral":        bool(_litellm_config_path()),
     }
