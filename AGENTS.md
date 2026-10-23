@@ -29,12 +29,12 @@ uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
 
 ## Deploy
 
-`git push` → the user manually runs on the server:
+Deploy on the server after the user's explicit approval:
 
 ```bash
-cd /opt/stacks/dashboard && git pull && docker compose up -d --build
+cd /opt/stacks/dashboard && docker compose up -d --build
 ```
 
 **Never** merge branches, push to master, or attempt a server deploy without
-the user's explicit approval. The manual `compose up` is always the user's
-step.
+the user's explicit approval. Agents may run `compose up` when explicitly
+requested. Deploying local changes does not require a commit, push, or pull.

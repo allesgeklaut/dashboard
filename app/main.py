@@ -3,11 +3,14 @@ from pathlib import Path
 
 import psutil
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 import homelab_core as core
 
 app = FastAPI(title="HOMELAB//CTRL")
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ── API ───────────────────────────────────────────────────────────────────────
 
@@ -160,9 +163,14 @@ def api_processes():
         return []
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse(STATIC_DIR / "icons" / "favicon.ico", media_type="image/vnd.microsoft.icon")
+
+
 @app.get("/", response_class=HTMLResponse)
 def root():
-    return (Path(__file__).parent / "static" / "index.html").read_text()
+    return (STATIC_DIR / "index.html").read_text()
 
 # prime rolling counters and start background Shelly energy tracking
 core.prime_counters()
