@@ -372,10 +372,16 @@ def _parse_container(c: dict, host: str, eid: int) -> dict:
         "ports":  ports,
     }
 
-def portainer_containers() -> list[dict]:
-    """Fetch all containers from all discovered Portainer endpoints."""
+def portainer_containers() -> tuple[list[dict], bool]:
+    """Fetch all containers from all discovered Portainer endpoints.
+
+    Returns (containers, ok); ok is False when no endpoint answered — an
+    unreachable integration, not an empty host.
+    """
+    eids = get_eids()
     out: list[dict] = []
-    for eid in get_eids():
+    failures = 0
+    for eid in eids:
         try:
             r = _portainer_request(
                 "GET", f"/api/endpoints/{eid}/docker/containers/json?all=true", timeout=4,
@@ -383,13 +389,18 @@ def portainer_containers() -> list[dict]:
             if r.ok:
                 host = _env_names.get(eid, str(eid))
                 out.extend(_parse_container(c, host, eid) for c in r.json())
+            else:
+                failures += 1
         except Exception:
-            pass
-    return out
+            failures += 1
+    return out, failures < len(eids)
 
 def get_containers() -> tuple[list[dict], str]:
-    """Return (containers, source) where source is 'portainer' or 'none'."""
-    containers = portainer_containers()
+    """Return (containers, source): 'portainer' (data), 'none' (not
+    configured / empty), or 'error' (configured but unreachable)."""
+    containers, ok = portainer_containers()
+    if PORTAINER_API_KEY and not ok:
+        return containers, "error"
     if containers:
         return containers, "portainer"
     return [], "none"
@@ -1573,8 +1584,8 @@ def get_gpu_stats() -> dict | None:
 
 # ── Ollama ─────────────────────────────────────────────────────────────────────
 
-def get_ollama_model() -> list[dict]:
-    """Return currently-loaded Ollama models, or [] if unavailable/unconfigured."""
+def get_ollama_model() -> list[dict] | dict:
+    """Loaded Ollama models; [] when unconfigured, {'error': ...} when down."""
     if not OLLAMA_URL:
         return []
     try:
@@ -1589,7 +1600,7 @@ def get_ollama_model() -> list[dict]:
             ]
     except Exception:
         pass
-    return []
+    return {"error": "unavailable"}
 
 
 # ── llama.cpp server (llama-server) ─────────────────────────────────────────────

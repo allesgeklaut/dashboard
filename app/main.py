@@ -93,7 +93,9 @@ def api_benchmarks_fetch():
 
 @app.get("/api/containers")
 def api_containers():
-    containers, _ = core.get_containers()
+    containers, source = core.get_containers()
+    if source == "error":
+        return {"error": "portainer unavailable"}
     return containers
 
 @app.post("/api/containers/{eid}/{cid}/{action}")

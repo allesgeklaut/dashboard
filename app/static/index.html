@@ -813,6 +813,20 @@ function apiFetch(path, options={}) {
   return fetch(path, { ...options, headers });
 }
 
+// Mutations use the same guard header plus a timeout: a hung request must
+// never leave a control stuck in its busy state (each caller's catch path
+// does the resetting).
+async function apiPost(path, timeoutMs=25000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await apiFetch(path, { method: 'POST', signal: controller.signal });
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const POLL_TARGETS = {
   '/api/features': ['tab-server'],
   '/api/stats': ['stat-grid', 'gpu-section'],
@@ -1020,8 +1034,7 @@ async function shellyCycle2() {
     _cycleBusy2 = true;
     btn.disabled = true;
     btn.textContent = 'Cycling…';
-    apiFetch('/api/shelly2/powercycle', { method: 'POST' })
-      .then(r => r.json())
+    apiPost('/api/shelly2/powercycle')
       .then(d => {
         btn.textContent = d.ok ? '✓ on in 10 s' : ('✗ ' + (d.detail || 'failed'));
         setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; _cycleBusy2 = false; }, 15000);
@@ -1042,7 +1055,8 @@ let _containersFresh = false;
 let _streamArmed = null,          // key of the armed button | null
     _streamTimer = null,
     _streamBusy  = false,
-    _streamTarget = null;         // pending key until status confirms it
+    _streamTarget = null,          // pending key until status confirms it
+    _streamSafetyTimer = null;    // 180 s net for a status that never confirms
 
 const STREAM_ACTIONS = {
   deck:    { id: 'btn-stream-up-deck',  api: '/api/stream/up',       side: 'up',
@@ -1092,11 +1106,17 @@ async function fetchStream() {
                                        : d.state === 'headless';
       });
     } else if ((_streamTarget === 'deck' || _streamTarget === '1440p') && d.state === 'streaming') {
+      clearStreamSafetyTimer();
       _streamBusy = false; _streamTarget = null;
     } else if (_streamTarget === 'down' && d.state === 'headless') {
+      clearStreamSafetyTimer();
       _streamBusy = false; _streamTarget = null;
     }
   } catch(e) { /* ignore */ }
+}
+
+function clearStreamSafetyTimer() {
+  if (_streamSafetyTimer) { clearTimeout(_streamSafetyTimer); _streamSafetyTimer = null; }
 }
 
 function disarmStream(key) {
@@ -1123,22 +1143,25 @@ function streamToggle(key) {
   }
   // Second press — fire
   disarmStream(key);
+  clearStreamSafetyTimer();   // a finished action's net must never fire during this one
   _streamBusy = true;
   _streamTarget = key;
   eachStreamButton(k => { streamBtn(k).disabled = true; });
   btn.textContent = a.busy;
-  apiFetch(a.api, { method: 'POST' })
-    .then(r => r.json())
+  apiPost(a.api)
     .then(d => {
       toast(d.ok ? STREAM_TOAST[key] : ('error: ' + (d.detail || 'failed')), !d.ok);
       if (!d.ok) { _streamBusy = false; _streamTarget = null; return; }
       // safety net: if status never confirms the target, unstick after 180 s
       // (stream-up can legitimately take up to ~2 min: target switch + session wait)
-      setTimeout(() => { _streamBusy = false; _streamTarget = null; }, 180000);
+      _streamSafetyTimer = setTimeout(() => {
+        _streamBusy = false; _streamTarget = null; _streamSafetyTimer = null;
+      }, 180000);
     })
     .catch(() => {
       toast('network error', true);
       _streamBusy = false;
+      _streamTarget = null;
     });
 }
 
@@ -1178,7 +1201,7 @@ async function wakeDesktop() {
   btn.disabled = true;
   btn.textContent = 'Waking…';
   try {
-    const d = await apiFetch('/api/wake', { method: 'POST' }).then(r => r.json());
+    const d = await apiPost('/api/wake');
     toast(d.ok ? ('wake request queued — magic packet follows') : ('error: ' + (d.detail || 'failed')), !d.ok);
     btn.textContent = d.ok ? '✓ QUEUED' : '✗ failed';
   } catch(e) {
@@ -1220,8 +1243,7 @@ function desktopPowerToggle() {
   _desktopBusy = true;
   btn.disabled = true;
   btn.textContent = 'Requesting…';
-  apiFetch('/api/desktop/power', { method: 'POST' })
-    .then(r => r.json())
+  apiPost('/api/desktop/power')
     .then(d => {
       toast(d.ok ? 'power off requested — desktop shuts down in a few seconds'
                  : ('error: ' + (d.detail || 'failed')), !d.ok);
@@ -1280,8 +1302,7 @@ function shellyCycle() {
     btn.classList.remove('armed');
     btn.disabled = true;
     btn.textContent = 'Cycling…';
-    apiFetch('/api/shelly/powercycle', { method: 'POST' })
-      .then(r => r.json())
+    apiPost('/api/shelly/powercycle')
       .then(d => {
         btn.textContent = d.ok ? '✓ on in 10 s' : ('✗ ' + (d.detail || 'failed'));
         setTimeout(() => { btn.textContent = '⟳ POWER CYCLE'; btn.disabled = false; }, 15000);
@@ -1463,6 +1484,10 @@ async function fetchOllama() {
   try {
     const models = await fetchJSON('/api/ollama');
     const list = document.getElementById('ollama-list');
+    if (models.error) {
+      list.innerHTML = '<div class="ollama-empty">unavailable</div>';
+      return;
+    }
     list.innerHTML = models.length
       ? models.map(m => `<div class="ollama-card"><span class="ollama-dot"></span><span class="ollama-name">${escHtml(m.name)}</span><span class="ollama-size">${m.size_gb} GB</span></div>`).join('')
       : '<div class="ollama-empty">no model loaded</div>';
@@ -1735,16 +1760,15 @@ function fetchBenchmarks() {
 
   const request = (async () => {
     try {
-      const r = await apiFetch('/api/benchmarks/fetch', { method: 'POST' });
-      const d = await r.json().catch(() => ({}));
-      if (r.ok && d.ok) {
+      const d = await apiPost('/api/benchmarks/fetch', 65000).catch(() => ({}));
+      if (d.ok) {
         toast(`scores updated · ${d.models} models`);
         const refreshes = [];
         if (_features.opencode_go) refreshes.push(fetchOpenCodeGoLimits(true));
         if (_features.mistral) refreshes.push(fetchMistralModels(true));
         await Promise.all(refreshes);
       } else {
-        toast('fetch failed: ' + (d.detail || d.error || r.status), true);
+        toast('fetch failed: ' + (d.detail || d.error || 'request timed out'), true);
       }
     } catch(e) {
       toast('network error', true);
@@ -2135,12 +2159,11 @@ async function doAction(action) {
   updateActionBar();
   const eid = target.eid ?? 'null';
   try {
-    const r = await apiFetch(`/api/containers/${eid}/${target.id}/${action}`, { method:'POST' });
-    if (r.ok) {
+    const d = await apiPost(`/api/containers/${eid}/${target.id}/${action}`);
+    if (d.ok) {
       toast(`${action} → ${target.name}`);
     } else {
-      const err = await r.json().catch(()=>({}));
-      toast(`error: ${err.detail || r.status}`, true);
+      toast(`error: ${d.detail || 'failed'}`, true);
     }
   } catch(e) {
     toast(`network error`, true);

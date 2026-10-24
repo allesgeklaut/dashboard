@@ -30,9 +30,11 @@ WOL_BROADCAST="${WOL_BROADCAST:-255.255.255.255}"
 WOL_PORT="${WOL_PORT:-$(env_val WOL_PORT)}"
 WOL_PORT="${WOL_PORT:-9}"
 
-# Execute every queued request, oldest first. Note: the while loop below runs
-# in a pipeline subshell, so failures do not affect this script's exit status.
-printf '%s\n' "${requests[@]}" | sort | while read -r req; do
+# Execute every queued request, oldest first — by modification time, not by
+# filename (the action prefix would sort "poweroff" before "wake"). Note: the
+# while loop below runs in a pipeline subshell, so failures do not affect this
+# script's exit status.
+stat --printf '%.9Y %n\n' -- "${requests[@]}" | sort -n | while read -r _ts req; do
     if ! action=$(python3 "$SCRIPT_DIR/read-spool-action.py" "$req" wake poweroff); then
         rm -f -- "$req"
         log "WARN: invalid request discarded"

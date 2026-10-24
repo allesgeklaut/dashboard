@@ -447,6 +447,6 @@ docker compose up -d --build
 |---------|-----|
 | CPU/RAM show wrong values | Ensure `pid: host` is set |
 | Network stats are 0 | Check visible interfaces; do not switch to host networking as a workaround |
-| Containers list empty | Check Portainer availability, token and pinned certificate; there is no CLI fallback |
+| Containers marked stale/unavailable | Check Portainer availability, token and pinned certificate; there is no CLI fallback |
 | NFS mount shows "not mounted" | Check the read-only bind and `NFS_MOUNTS` in the Docker application env file |
 | AdGuard section missing | Section auto-hides on error — check `ADGUARD_URL` / credentials |

@@ -7,6 +7,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock, patch
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 import homelab_core as core
@@ -133,3 +134,56 @@ class CacheConcurrencyTests(unittest.TestCase):
                 results = list(pool.map(lambda _: caller(), range(2)))
         self.assertEqual(get.call_count, 1)
         self.assertEqual(results[0], results[1])
+
+
+class IntegrationOutageTests(unittest.TestCase):
+    """Configured-but-unreachable integrations must not look like empty data."""
+
+    def test_portainer_outage_is_an_error_not_an_empty_host(self):
+        ok_response = Mock(ok=True, json=lambda: [{"Id": "fixture" * 10, "Names": ["/fixture"],
+                                                   "State": "running", "Status": "Up",
+                                                   "Image": "fixture/img:1", "Ports": []}])
+        with patch.object(core, "PORTAINER_API_KEY", "fixture-key"):
+            with patch.object(core, "_eids", [1]), \
+                    patch.object(core, "_portainer_request", side_effect=OSError("mock outage")):
+                self.assertEqual(core.get_containers(), ([], "error"))
+            with patch.object(core, "get_eids", return_value=[]):
+                self.assertEqual(core.get_containers(), ([], "error"))
+            with patch.object(core, "_eids", [1]), \
+                    patch.object(core, "_portainer_request", return_value=ok_response):
+                containers, source = core.get_containers()
+                self.assertEqual((len(containers), source), (1, "portainer"))
+            with patch.object(core, "_eids", [1, 2]), \
+                    patch.object(core, "_portainer_request",
+                                 side_effect=[ok_response, OSError("mock outage")]):
+                containers, source = core.get_containers()
+                self.assertEqual((len(containers), source), (1, "portainer"))
+        with patch.object(core, "PORTAINER_API_KEY", ""), \
+                patch.object(core, "get_eids", return_value=[]):
+            self.assertEqual(core.get_containers(), ([], "none"))
+
+    def test_ollama_outage_is_an_error_but_unconfigured_stays_empty(self):
+        with patch.object(core, "OLLAMA_URL", "http://fixture.invalid"), \
+                patch.object(core.requests, "get", side_effect=OSError("mock outage")):
+            self.assertEqual(core.get_ollama_model(), {"error": "unavailable"})
+        with patch.object(core, "OLLAMA_URL", "http://fixture.invalid"), \
+                patch.object(core.requests, "get", return_value=Mock(ok=False)):
+            self.assertEqual(core.get_ollama_model(), {"error": "unavailable"})
+        with patch.object(core, "OLLAMA_URL", ""):
+            self.assertEqual(core.get_ollama_model(), [])
+
+
+class ContainerOutageRouteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with patch.object(core, "prime_counters"), patch.object(core, "start_energy_tracker"), \
+                patch.object(core, "start_desktop_monitor"):
+            import main
+        cls.client = TestClient(main.app)
+
+    def test_api_reports_unreachable_portainer_instead_of_an_empty_list(self):
+        with patch.object(core, "get_containers", return_value=([], "error")):
+            self.assertEqual(self.client.get("/api/containers").json(),
+                             {"error": "portainer unavailable"})
+        with patch.object(core, "get_containers", return_value=(["fixture"], "portainer")):
+            self.assertEqual(self.client.get("/api/containers").json(), ["fixture"])

@@ -57,7 +57,7 @@ class PortainerRequestTests(unittest.TestCase):
                 patch.object(core, "PORTAINER_ENVS", None), \
                 patch.object(core, "_portainer_request", side_effect=[endpoints, containers, action]) as send:
             self.assertEqual(core.get_eids(), [1])
-            self.assertEqual(core.portainer_containers(), [])
+            self.assertEqual(core.portainer_containers(), ([], True))
             self.assertEqual(core.container_action("fixture", "stop", 1), (True, "stop OK"))
         self.assertEqual(
             [(call.args, call.kwargs) for call in send.call_args_list],

@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -150,6 +151,40 @@ class HostBoundaryTests(unittest.TestCase):
         commands = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
         self.assertNotRegex(commands, r"\bsudo\s+[^\n]*\breboot\b")
         self.assertNotRegex(commands, r"\bsudo\s+[^\n]*\bisolate\b")
+
+    def test_queued_actions_execute_in_submission_order(self):
+        cases = (
+            ("stream-handler.sh", (("up", 100), ("down", 200)),
+             "STUB stream-up.sh", "STUB stream-down.sh"),
+            ("desktop-power-handler.sh", (("wake", 100), ("poweroff", 200)),
+             "magic packet", "DESKTOP_SSH not set"),
+        )
+        for handler, queued, older_marker, newer_marker in cases:
+            with self.subTest(handler=handler), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                spool = root / "spool"
+                spool.mkdir()
+                script_dir = root / "host"
+                script_dir.mkdir()
+                for name in ("read-spool-action.py", handler):
+                    shutil.copyfile(ROOT / "host" / name, script_dir / name)
+                for stub in ("stream-up.sh", "stream-down.sh"):
+                    stub_path = script_dir / stub
+                    stub_path.write_text("#!/bin/sh\necho STUB " + stub + "\n")
+                    stub_path.chmod(0o755)
+                for index, (action, mtime) in enumerate(queued):
+                    request = spool / f"{action}.111.{index}.request"
+                    request.write_text(action)
+                    os.utime(request, (mtime, mtime))
+                env = dict(os.environ, HOME=tmp,
+                           DESKTOP_ENV_FILE=str(root / "absent.env"),
+                           DESKTOP_SPOOL_DIR=str(spool), STREAM_SPOOL_DIR=str(spool),
+                           WOL_DESKTOP_MAC="02:00:00:00:00:00",
+                           WOL_BROADCAST="127.0.0.1", WOL_PORT="9")
+                result = subprocess.run(["bash", str(script_dir / handler)], env=env,
+                                        capture_output=True, text=True, timeout=5, check=True)
+                self.assertLess(result.stdout.index(older_marker),
+                                result.stdout.index(newer_marker))
 
     def test_empty_spool_flags_disable_features_but_unset_values_keep_defaults(self):
         compose = (ROOT / "docker-compose.yml").read_text()
