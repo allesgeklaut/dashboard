@@ -31,7 +31,8 @@ uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
 Deploy on the server after the user's explicit approval:
 
 ```bash
-cd /opt/stacks/dashboard && docker compose up -d --build
+cd /opt/stacks/dashboard
+docker compose up -d --build
 ```
 
 **Never** merge branches, push to master, or attempt a server deploy without

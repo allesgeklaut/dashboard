@@ -29,7 +29,8 @@ Shelly configuration starts background energy polling.
 This is a **single-user administrative dashboard**, not a public unauthenticated
 service. Keep the origin bound to loopback and require a Cloudflare Access
 policy for the entire hostname before publishing a tunnel route. The app does
-not provide its own login or CSRF protection.
+not provide its own login. API mutations require a same-host browser Origin
+and the UI's custom request header; this is CSRF protection, not authentication.
 
 Docker loads credentials from `/opt/secrets/dashboard.env` and
 `/opt/secrets/portainer.env`, not the repository's local-development `.env`.
@@ -37,10 +38,11 @@ It mounts the trusted Portainer server certificate read-only from
 `/opt/secrets/portainer-ca.pem`. Portainer HTTPS verifies that exact certificate
 and refuses redirects; see [SETUP.md](SETUP.md#portainer-https-verification).
 
-The deployed Mistral integration requires both Compose files:
+The main Compose file includes the Mistral integration and its read-only
+LiteLLM configuration mount:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.mistral.yml up -d --build
+docker compose up -d --build
 ```
 
 See [SETUP.md](SETUP.md) for integration details and host-side controls.
@@ -52,6 +54,7 @@ Git history; revoke exposed credentials before publishing source.
 
 ```bash
 PYTHON_DOTENV_DISABLED=1 uv run --with httpx python -m unittest discover -s tests -v
+node --test tests/frontend.test.js
 ```
 
 The tests mock integration calls or use temporary loopback TLS servers, with

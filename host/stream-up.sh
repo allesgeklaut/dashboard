@@ -2,7 +2,6 @@
 # stream-up.sh — prepare headless host for Steam (Remote Play or local session).
 # isolate graphical.target → wait for autologin session → set target resolution → launch Steam.
 # Resolution comes from STREAM_WIDTH/STREAM_HEIGHT (stream-handler.sh sets it per mode).
-LOG_FILE="${STREAM_LOG_FILE:-$HOME/.homelab-ctrl/stream.log}"
 STEAM_BIN="${STEAM_BIN:-/usr/games/steam}"
 STEAM_ARGS="${STEAM_ARGS:--bigpicture}"
 RES_WIDTH="${STREAM_WIDTH:-1680}"
@@ -10,7 +9,7 @@ RES_HEIGHT="${STREAM_HEIGHT:-1050}"
 SESSION_WAIT="${SESSION_WAIT:-120}"
 STEAM_WAIT="${STEAM_WAIT:-60}"
 
-log() { printf '%s [stream-up] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_FILE"; }
+log() { printf '%s [stream-up] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
 
 log "requested"
 
@@ -54,7 +53,7 @@ while :; do
     sleep 2
 done
 if [ -n "$OUTPUT" ]; then
-    if cosmic-randr mode "$OUTPUT" "$RES_WIDTH" "$RES_HEIGHT" 2>>"$LOG_FILE"; then
+    if cosmic-randr mode "$OUTPUT" "$RES_WIDTH" "$RES_HEIGHT"; then
         log "mode ${RES_WIDTH}x${RES_HEIGHT} set on ${OUTPUT}"
     else
         log "WARN: cosmic-randr mode failed on ${OUTPUT} (continuing)"
@@ -70,7 +69,7 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 if pgrep -x steam > /dev/null; then
     log "steam already running — skipping launch"
 else
-    setsid "$STEAM_BIN" $STEAM_ARGS </dev/null >>"$LOG_FILE" 2>&1 &
+    setsid "$STEAM_BIN" $STEAM_ARGS </dev/null &
     deadline=$(( $(date +%s) + STEAM_WAIT ))
     while ! pgrep -x steam > /dev/null; do
         if [ "$(date +%s)" -ge "$deadline" ]; then

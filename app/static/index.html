@@ -540,6 +540,14 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 .llama-big small { font-size:12px; color:var(--g-dim); font-weight:400; margin-left:3px; }
 .llama-state { display:flex; gap:16px; flex-wrap:wrap; flex:1; }
 
+.poll-stale::before {
+  content: 'STALE · connection or source unavailable';
+  display: block;
+  grid-column: 1 / -1;
+  color: var(--red);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
 </style>
 </head>
 <body>
@@ -797,12 +805,63 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 // ── helpers ───────────────────────────────────────────────────────────────────
 const round = (n, d=1) => Number(n.toFixed(d));
 
+function apiFetch(path, options={}) {
+  const headers = new Headers(options.headers);
+  if (!['GET', 'HEAD', 'OPTIONS'].includes((options.method || 'GET').toUpperCase())) {
+    headers.set('X-Homelab-Request', '1');
+  }
+  return fetch(path, { ...options, headers });
+}
+
+const POLL_TARGETS = {
+  '/api/features': ['tab-server'],
+  '/api/stats': ['stat-grid', 'gpu-section'],
+  '/api/storage': ['stor-list'],
+  '/api/processes': ['tab-processes'],
+  '/api/containers': ['ctr-list'],
+  '/api/adguard': ['ag-row'],
+  '/api/ollama': ['ollama-section'],
+  '/api/llama': ['llama-section'],
+  '/api/opencode-go': ['ocg-list'],
+  '/api/opencode-go-limits': ['ocgl-wrap'],
+  '/api/shelly': ['shelly-row'],
+  '/api/shelly/history': ['shelly-chart-card'],
+  '/api/shelly2': ['shelly2-row'],
+  '/api/stream': ['stream-section'],
+  '/api/desktop': ['desktop-section'],
+};
+function setPollFresh(path, fresh) {
+  for (const id of POLL_TARGETS[path] || []) {
+    document.getElementById(id)?.classList.toggle('poll-stale', !fresh);
+  }
+  if (path === '/api/containers') {
+    _containersFresh = fresh;
+    updateActionBar();
+  }
+}
+async function fetchJSON(path) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await apiFetch(path, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    setPollFresh(path, !data.error);
+    return data;
+  } catch (error) {
+    setPollFresh(path, false);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ── feature flags ─────────────────────────────────────────────────────────────
 let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false,
                   wake:false, desktop_power:false, desktop_status:false, opencode_go:false, mistral:false };
 
 async function fetchFeatures() {
-  try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
+  try { _features = await fetchJSON('/api/features'); } catch(e) {}
   // Ollama
   if (_features.ollama) {
     document.getElementById('ollama-label').style.display   = 'flex';
@@ -893,7 +952,7 @@ function switchTab(name, btn) {
 async function fetchShelly2() {
   if (!_features.shelly2) return;
   try {
-    const d = await fetch('/api/shelly2').then(r => r.json());
+    const d = await fetchJSON('/api/shelly2');
     const row = document.getElementById('shelly2-row');
     const lbl = document.getElementById('shelly2-label');
     const btn = document.getElementById('btn-cycle-2');
@@ -902,7 +961,7 @@ async function fetchShelly2() {
       return;
     }
     row.style.display = 'flex'; lbl.style.display = 'flex'; btn.style.display = 'inline-block';
-    btn.disabled = false;
+    btn.disabled = _cycleBusy2;
     row.innerHTML = `
       <div class="ag-item">
         <span class="ag-label">STATE</span>
@@ -914,12 +973,13 @@ async function fetchShelly2() {
 }
 
 // ── power cycle (router) ─────────────────────────────────────────────────────
-let _cycleArmed2 = false,
+let _cycleBusy2 = false, _cycleArmed2 = false,
     _cycleTimeout2 = null,
     _cycleRemaining2 = 8,
     _cycleTimerInterval2 = null;
 
 async function shellyCycle2() {
+  if (_cycleBusy2) return;
   const btn = document.getElementById('btn-cycle-2');
   if (!_cycleArmed2) {
     // First press – arm and start countdown
@@ -957,17 +1017,18 @@ async function shellyCycle2() {
     }
     _cycleArmed2 = false;
     btn.classList.remove('armed');
+    _cycleBusy2 = true;
     btn.disabled = true;
     btn.textContent = 'Cycling…';
-    fetch('/api/shelly2/powercycle', { method: 'POST' })
+    apiFetch('/api/shelly2/powercycle', { method: 'POST' })
       .then(r => r.json())
       .then(d => {
         btn.textContent = d.ok ? '✓ on in 10 s' : ('✗ ' + (d.detail || 'failed'));
-        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; }, 15000);
+        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; _cycleBusy2 = false; }, 15000);
       })
       .catch(() => {
         btn.textContent = '✗ error';
-        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; }, 3000);
+        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; _cycleBusy2 = false; }, 3000);
       });
   }
 }
@@ -975,6 +1036,7 @@ async function shellyCycle2() {
 
 // ── state ────────────────────────────────────────────────────────────────────
 let selected = null, containers = [], ctrFilter = 'all', busy = false;
+let _containersFresh = false;
 
 // ── steam stream (target control) ────────────────────────────────────────────
 let _streamArmed = null,          // key of the armed button | null
@@ -1006,7 +1068,7 @@ function eachStreamButton(fn) { Object.keys(STREAM_ACTIONS).forEach(k => fn(k));
 async function fetchStream() {
   if (!_features.stream) return;
   try {
-    const d = await fetch('/api/stream').then(r => r.json());
+    const d = await fetchJSON('/api/stream');
     const sec   = document.getElementById('stream-section');
     const lbl   = document.getElementById('stream-label');
     const dot   = document.getElementById('stream-dot');
@@ -1024,7 +1086,7 @@ async function fetchStream() {
       else disarmStream('down');
       eachStreamButton(k => {
         const a = STREAM_ACTIONS[k], btn = streamBtn(k);
-        btn.textContent = a.label;
+        btn.textContent = _streamArmed === k ? '⚠ CONFIRM?' : a.label;
         btn.style.display = 'inline-block';
         btn.disabled = a.side === 'up' ? d.state === 'streaming'
                                        : d.state === 'headless';
@@ -1065,7 +1127,7 @@ function streamToggle(key) {
   _streamTarget = key;
   eachStreamButton(k => { streamBtn(k).disabled = true; });
   btn.textContent = a.busy;
-  fetch(a.api, { method: 'POST' })
+  apiFetch(a.api, { method: 'POST' })
     .then(r => r.json())
     .then(d => {
       toast(d.ok ? STREAM_TOAST[key] : ('error: ' + (d.detail || 'failed')), !d.ok);
@@ -1089,7 +1151,7 @@ async function fetchDesktop() {
   document.getElementById('btn-desktop-off').style.display = _features.desktop_power ? 'inline-block' : 'none';
   if (!_features.desktop_status) return;
   try {
-    const d = await fetch('/api/desktop').then(r => r.json());
+    const d = await fetchJSON('/api/desktop');
     const dot = document.getElementById('desktop-dot');
     const st  = document.getElementById('desktop-state');
     const sub = document.getElementById('desktop-sub');
@@ -1116,7 +1178,7 @@ async function wakeDesktop() {
   btn.disabled = true;
   btn.textContent = 'Waking…';
   try {
-    const d = await fetch('/api/wake', { method: 'POST' }).then(r => r.json());
+    const d = await apiFetch('/api/wake', { method: 'POST' }).then(r => r.json());
     toast(d.ok ? ('wake request queued — magic packet follows') : ('error: ' + (d.detail || 'failed')), !d.ok);
     btn.textContent = d.ok ? '✓ QUEUED' : '✗ failed';
   } catch(e) {
@@ -1158,7 +1220,7 @@ function desktopPowerToggle() {
   _desktopBusy = true;
   btn.disabled = true;
   btn.textContent = 'Requesting…';
-  fetch('/api/desktop/power', { method: 'POST' })
+  apiFetch('/api/desktop/power', { method: 'POST' })
     .then(r => r.json())
     .then(d => {
       toast(d.ok ? 'power off requested — desktop shuts down in a few seconds'
@@ -1218,7 +1280,7 @@ function shellyCycle() {
     btn.classList.remove('armed');
     btn.disabled = true;
     btn.textContent = 'Cycling…';
-    fetch('/api/shelly/powercycle', { method: 'POST' })
+    apiFetch('/api/shelly/powercycle', { method: 'POST' })
       .then(r => r.json())
       .then(d => {
         btn.textContent = d.ok ? '✓ on in 10 s' : ('✗ ' + (d.detail || 'failed'));
@@ -1261,7 +1323,7 @@ setInterval(tick, 1000); tick();
 // ── fetch stats ───────────────────────────────────────────────────────────────
 async function fetchStats() {
   try {
-    const d = await fetch('/api/stats').then(r => r.json());
+    const d = await fetchJSON('/api/stats');
     document.getElementById('hdr-host').textContent = d.hostname;
     window.currentHost = d.hostname;
     document.getElementById('hdr-ip').textContent = d.ip;
@@ -1399,7 +1461,7 @@ function renderGpu(gpu) {
 async function fetchOllama() {
   if (!_features.ollama) return;
   try {
-    const models = await fetch('/api/ollama').then(r => r.json());
+    const models = await fetchJSON('/api/ollama');
     const list = document.getElementById('ollama-list');
     list.innerHTML = models.length
       ? models.map(m => `<div class="ollama-card"><span class="ollama-dot"></span><span class="ollama-name">${escHtml(m.name)}</span><span class="ollama-size">${m.size_gb} GB</span></div>`).join('')
@@ -1411,7 +1473,7 @@ async function fetchOllama() {
 async function fetchLlama() {
   if (!_features.llama) return;
   try {
-    const d = await fetch('/api/llama').then(r => r.json());
+    const d = await fetchJSON('/api/llama');
     if (d.error) {
       document.getElementById('llama-state').textContent = 'UNREACHABLE';
       ['llama-gen', 'llama-gen-sub', 'llama-prefill', 'llama-tokens', 'llama-draft']
@@ -1443,7 +1505,7 @@ async function fetchLlama() {
 // ── fetch storage ─────────────────────────────────────────────────────────────
 async function fetchStorage() {
   try {
-    const data = await fetch('/api/storage').then(r => r.json());
+    const data = await fetchJSON('/api/storage');
     const list = document.getElementById('stor-list');
     const nfsOnly = data.filter(s => s.type === 'NFS');
     list.innerHTML = nfsOnly.map(s => {
@@ -1468,7 +1530,7 @@ async function fetchStorage() {
 async function fetchAdGuard() {
   if (!_features.adguard) return;
   try {
-    const d = await fetch('/api/adguard').then(r => r.json());
+    const d = await fetchJSON('/api/adguard');
     const row = document.getElementById('ag-row');
     const lbl = document.getElementById('ag-label');
     if (d.error) { row.style.display='none'; lbl.style.display='none'; return; }
@@ -1501,7 +1563,7 @@ async function fetchOpenCodeGo() {
   if (!_features.opencode_go) return;
   if (document.hidden) return; // don't poll while the dashboard is in the background
   try {
-    const d = await fetch('/api/opencode-go').then(r => r.json());
+    const d = await fetchJSON('/api/opencode-go');
     if (d.error) {
       // Last good numbers stay visible for transient failures only — an auth
       // error is actionable, so surface it even when stale data exists.
@@ -1673,7 +1735,7 @@ function fetchBenchmarks() {
 
   const request = (async () => {
     try {
-      const r = await fetch('/api/benchmarks/fetch', { method: 'POST' });
+      const r = await apiFetch('/api/benchmarks/fetch', { method: 'POST' });
       const d = await r.json().catch(() => ({}));
       if (r.ok && d.ok) {
         toast(`scores updated · ${d.models} models`);
@@ -1739,7 +1801,7 @@ async function fetchOpenCodeGoLimits(force=false) {
   if (!_features.opencode_go) return;
   if (document.hidden && !force) return; // don't poll while the dashboard is in the background
   try {
-    const d = await fetch('/api/opencode-go-limits').then(r => r.json());
+    const d = await fetchJSON('/api/opencode-go-limits');
     const err = document.getElementById('ocgl-error');
     if (d.error) {
       err.textContent = 'limits unavailable';
@@ -1786,7 +1848,7 @@ async function fetchMistralModels(force=false) {
   const requestId = ++_mistralRequestId;
   const request = (async () => {
     try {
-      const r = await fetch('/api/mistral-models');
+      const r = await apiFetch('/api/mistral-models');
       const d = await r.json().catch(() => ({}));
       if (requestId !== _mistralRequestId) return;
       if (d.error || !r.ok) {
@@ -1870,7 +1932,7 @@ function renderMistralModels(stale=false) {
 async function fetchShelly() {
   if (!_features.shelly) return;
   try {
-    const d = await fetch('/api/shelly').then(r => r.json());
+    const d = await fetchJSON('/api/shelly');
     const row = document.getElementById('shelly-row');
     const lbl = document.getElementById('shelly-label');
     const btn = document.getElementById('btn-cycle');
@@ -1912,7 +1974,7 @@ async function fetchShelly() {
 async function fetchShellyHistory() {
   if (!_features.shelly) return;
   try {
-    const d = await fetch('/api/shelly/history').then(r => r.json());
+    const d = await fetchJSON('/api/shelly/history');
     renderShellyChart(d.samples || [], d.day_start_ts || 0);
   } catch(e) { /* ignore */ }
 }
@@ -1972,7 +2034,8 @@ function renderShellyChart(samples, dayStartTs) {
 // ── fetch containers ──────────────────────────────────────────────────────────
 async function fetchContainers() {
   try {
-    const data = await fetch('/api/containers').then(r=>r.json());
+    const data = await fetchJSON('/api/containers');
+    if (!Array.isArray(data)) throw new Error('invalid container list');
     containers = data;
 
     // keep selected valid
@@ -1987,7 +2050,7 @@ async function fetchContainers() {
     const cnt = containers.filter(c=>c.state==='running').length;
     document.getElementById('ctr-count').textContent =
       `— ${containers.length} total · ${cnt} running`;
-  } catch(e) { /* ignore */ }
+  } catch(e) { setPollFresh('/api/containers', false); }
 }
 
 function renderContainers() {
@@ -2059,21 +2122,22 @@ function updateActionBar() {
     return;
   }
   const running = selected.state === 'running';
-  lbl.innerHTML = `<b>${escHtml(selected.name)}</b> · ${selected.host}`;
-  btnStart.disabled   = running   || busy;
-  btnStop.disabled    = !running  || busy;
-  btnRestart.disabled = !running  || busy;
+  lbl.innerHTML = `<b>${escHtml(selected.name)}</b> · ${escHtml(selected.host)}`;
+  btnStart.disabled   = running   || busy || !_containersFresh;
+  btnStop.disabled    = !running  || busy || !_containersFresh;
+  btnRestart.disabled = !running  || busy || !_containersFresh;
 }
 
 async function doAction(action) {
-  if (!selected || busy) return;
+  if (!selected || busy || !_containersFresh) return;
+  const target = selected;
   busy = true;
   updateActionBar();
-  const eid = selected.eid ?? 'null';
+  const eid = target.eid ?? 'null';
   try {
-    const r = await fetch(`/api/containers/${eid}/${selected.id}/${action}`, { method:'POST' });
+    const r = await apiFetch(`/api/containers/${eid}/${target.id}/${action}`, { method:'POST' });
     if (r.ok) {
-      toast(`${action} → ${selected.name}`);
+      toast(`${action} → ${target.name}`);
     } else {
       const err = await r.json().catch(()=>({}));
       toast(`error: ${err.detail || r.status}`, true);
@@ -2082,6 +2146,7 @@ async function doAction(action) {
     toast(`network error`, true);
   }
   busy = false;
+  updateActionBar();
   // refresh containers quickly
   setTimeout(fetchContainers, 600);
   setTimeout(fetchContainers, 2000);
@@ -2152,7 +2217,7 @@ function renderProcesses() {
 
 async function fetchProcesses() {
   try {
-    const data = await fetch('/api/processes').then(r=>r.json());
+    const data = await fetchJSON('/api/processes');
     processes = data;
     renderProcesses();
   } catch(e) { /* ignore */ }

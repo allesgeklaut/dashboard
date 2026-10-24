@@ -5,6 +5,8 @@ After=multi-user.target
 [Service]
 Type=oneshot
 User=johannes
+StandardOutput=journal
+StandardError=journal
 # stream-up.sh launches Steam detached (setsid) and exits; with the default
 # KillMode=control-group systemd would sweep the cgroup and kill Steam.
 KillMode=process
