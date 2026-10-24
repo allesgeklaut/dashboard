@@ -1,22 +1,22 @@
-"""
-homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
-Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
-"""
+"""Data-fetching and control helpers for the HOMELAB//CTRL web dashboard."""
 from __future__ import annotations
 import os, re, socket, threading, time, json
 import math
+import hashlib
+import ssl
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
-import psutil, requests, urllib3
+import psutil, requests
 from dotenv import load_dotenv
 import yaml
 
 load_dotenv()
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORTAINER_URL     = os.getenv("PORTAINER_URL", "https://192.168.0.46:9443")
 PORTAINER_API_KEY = os.getenv("PORTAINER_API_KEY", "")
+PORTAINER_CA_FILE = os.getenv("PORTAINER_CA_FILE", "").strip()
 PORTAINER_ENVS: list[int] | None = None  # None = auto-discover; or e.g. [1, 2]
 ADGUARD_URL  = os.getenv("ADGUARD_URL")          # None if not set → feature disabled
 ADGUARD_USER = os.getenv("ADGUARD_USER", "")
@@ -76,6 +76,43 @@ WOL_DESKTOP_IP    = os.getenv("WOL_DESKTOP_IP")           # None → status prob
 DESKTOP_SPOOL_DIR = os.getenv("DESKTOP_SPOOL_DIR")        # None → wake/poweroff disabled
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
+
+
+class _PortainerPinnedAdapter(requests.adapters.HTTPAdapter):
+    """Match the exact server certificate instead of its localhost-only SAN."""
+
+    def __init__(self, fingerprint: str):
+        self._fingerprint = fingerprint
+        super().__init__()
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        # urllib3 checks this fingerprint instead of the hostname, while
+        # requests still requires certificate verification against our PEM.
+        pool_kwargs["assert_fingerprint"] = self._fingerprint
+        return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+
+def _portainer_request(method: str, path: str, timeout: float):
+    if urlsplit(PORTAINER_URL).scheme != "https":
+        raise ValueError("Portainer requires an HTTPS URL")
+    # Sessions are request-local: FastAPI handlers run in multiple threads.
+    with requests.Session() as session:
+        session.trust_env = False  # no proxy, netrc, or environment CA overrides
+        if PORTAINER_CA_FILE:
+            with open(PORTAINER_CA_FILE, encoding="ascii") as fh:
+                certificate = fh.read()
+            if (certificate.count("-----BEGIN CERTIFICATE-----") != 1
+                    or certificate.count("-----END CERTIFICATE-----") != 1):
+                raise ValueError("Portainer pin must contain exactly one server certificate")
+            fingerprint = hashlib.sha256(
+                ssl.PEM_cert_to_DER_cert(certificate)
+            ).hexdigest()
+            session.mount("https://", _PortainerPinnedAdapter(fingerprint))
+        return session.request(
+            method, f"{PORTAINER_URL.rstrip('/')}{path}", headers=_HDR,
+            timeout=timeout, verify=PORTAINER_CA_FILE or True,
+            allow_redirects=False,
+        )
 
 
 # ── Static system info (probed once at startup) ──────────────────────────────
@@ -297,10 +334,7 @@ def get_eids() -> list[int]:
             _eids = list(PORTAINER_ENVS)
         return _eids
     try:
-        r = requests.get(
-            f"{PORTAINER_URL}/api/endpoints",
-            headers=_HDR, timeout=3, verify=False,
-        )
+        r = _portainer_request("GET", "/api/endpoints", timeout=3)
         if r.ok and r.json():
             with _eid_lock:
                 _eids      = [e["Id"]   for e in r.json()]
@@ -309,11 +343,6 @@ def get_eids() -> list[int]:
     except Exception:
         pass
     return []
-
-def get_env_names() -> dict[int, str]:
-    """Return {endpoint_id: endpoint_name} mapping (populated after get_eids())."""
-    get_eids()
-    return _env_names
 
 # ── Container listing ─────────────────────────────────────────────────────────
 
@@ -345,9 +374,8 @@ def portainer_containers() -> list[dict]:
     out: list[dict] = []
     for eid in get_eids():
         try:
-            r = requests.get(
-                f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/json?all=true",
-                headers=_HDR, timeout=4, verify=False,
+            r = _portainer_request(
+                "GET", f"/api/endpoints/{eid}/docker/containers/json?all=true", timeout=4,
             )
             if r.ok:
                 host = _env_names.get(eid, str(eid))
@@ -373,9 +401,8 @@ def container_action(cid: str, action: str, eid: int | None = None) -> tuple[boo
     if eid is None:
         return False, "no portainer endpoint"
     try:
-        r = requests.post(
-            f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/{cid}/{action}",
-            headers=_HDR, timeout=15, verify=False,
+        r = _portainer_request(
+            "POST", f"/api/endpoints/{eid}/docker/containers/{cid}/{action}", timeout=15,
         )
         if r.status_code in (200, 204, 304):
             return True, f"{action} OK"
@@ -395,10 +422,6 @@ def get_temp() -> float | None:
         return psutil.sensors_temperatures()[key][idx].current
     except Exception:
         return None
-
-def get_ip() -> str:
-    """Return the first non-loopback IPv4 address, or 'n/a'."""
-    return get_system_info().host_ipv4
 
 def get_system_stats() -> dict:
     """Return a dict of current CPU, RAM, swap, load, net, temp, uptime, and IP."""
@@ -1264,7 +1287,7 @@ def _energy_tracker_loop() -> None:
 
 def start_energy_tracker() -> None:
     """Start the background energy accumulation thread.
-    Call once at startup in main.py and/or dashboard.py.
+    Call once at startup in main.py.
     """
     threading.Thread(target=_energy_tracker_loop, daemon=True).start()
 

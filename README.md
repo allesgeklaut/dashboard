@@ -1,185 +1,58 @@
-# HOMELAB//CTRL — Terminal Dashboard
+# HOMELAB//CTRL
 
-> **DEPRECATED (2026-10)** — this document and the Textual TUI it describes
-> (`dashboard.py`) are deprecated. The product is the **web dashboard**
-> (FastAPI, `app/main.py` + `app/static/`, container `homelab-ctrl`) — see
-> **SETUP.md** for setup and deployment. Everything below is kept only as
-> historical reference for the old TUI.
+A green-on-black web dashboard for a personal homelab: FastAPI backend,
+responsive browser UI, and optional integrations controlled by environment settings.
 
-A hacker-style interactive terminal dashboard for Ubuntu Server. Shows live system stats, Docker containers (via Portainer or CLI), NFS storage, and network info. Supports touch input on the ThinkPad Yoga's screen.
+## Features
 
-***
+- Host CPU, RAM, GPU, network, storage, and process monitoring.
+- Portainer container status and start/stop/restart controls.
+- Optional AdGuard, Shelly energy/power, llama.cpp, and Ollama monitoring.
+- Optional host-side streaming and desktop wake/power controls.
+- OpenCode Go usage and model limits; Mistral model table from LiteLLM config.
+- Shared, explicitly fetched Artificial Analysis benchmark scores.
 
-## Requirements
-
-- Ubuntu 22.04 / 24.04 (Server or Desktop)
-- Python 3.10+
-- Docker + Portainer (optional but recommended)
-- GCC (for touch support)
-
-***
-
-## Installation
-
-### 1. Install system dependencies
+## Run locally
 
 ```bash
-sudo apt update
-sudo apt install gcc python3-dev python3-venv -y
+uv venv
+uv pip install -r requirements.txt
+uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
 ```
 
-### 2. Set up the project
+Open <http://127.0.0.1:7681>. Configure integrations through a gitignored `.env`
+using `.env.example`. Leave device URLs unset unless deliberately testing them;
+Shelly configuration starts background energy polling.
+
+## Deployment and security
+
+This is a **single-user administrative dashboard**, not a public unauthenticated
+service. Keep the origin bound to loopback and require a Cloudflare Access
+policy for the entire hostname before publishing a tunnel route. The app does
+not provide its own login or CSRF protection.
+
+Docker loads credentials from `/opt/secrets/dashboard.env` and
+`/opt/secrets/portainer.env`, not the repository's local-development `.env`.
+It mounts the trusted Portainer server certificate read-only from
+`/opt/secrets/portainer-ca.pem`. Portainer HTTPS verifies that exact certificate
+and refuses redirects; see [SETUP.md](SETUP.md#portainer-https-verification).
+
+The deployed Mistral integration requires both Compose files:
 
 ```bash
-mkdir ~/dashboard && cd ~/dashboard
-python3 -m venv venv
-source venv/bin/activate
-pip install textual psutil requests evdev
+docker compose -f docker-compose.yml -f docker-compose.mistral.yml up -d --build
 ```
 
-### 3. Copy the script
+See [SETUP.md](SETUP.md) for integration details and host-side controls.
+Review host scripts before running them: they can change system targets or
+power state. Removing a credential from current files does not remove it from
+Git history; revoke exposed credentials before publishing source.
 
-Place `homelab-term.py` into `~/dashboard/`.
-
-### 4. Configure
-
-Edit the top of `homelab-term.py`:
-
-```python
-PORTAINER_URL     = "https://192.168.0.43:9443"   # your Portainer address
-PORTAINER_API_KEY = "ptr_xxxxxxxxxxxxxxxxxxxx"     # see below
-NFS_MOUNTS        = ["/mnt/nas"]                   # your NFS mount point(s)
-SCREEN_TIMEOUT    = 60                             # seconds, 0 = disabled
-BACKLIGHT_PATH    = "/sys/class/backlight/intel_backlight"  # check: ls /sys/class/backlight/
-```
-
-#### Getting the Portainer API key
-
-1. Open Portainer → click your username (top right) → **Account**
-2. Scroll to **Access tokens** → **Add access token**
-3. Name it (e.g. `homelab-term`), re-enter your password, click **Add**
-4. Copy the `ptr_...` token — it is only shown once
-
-***
-
-## Permissions
-
-### Touch input
+## Tests
 
 ```bash
-sudo usermod -a -G input $USER
+PYTHON_DOTENV_DISABLED=1 uv run --with httpx python -m unittest discover -s tests -v
 ```
 
-### Backlight control (screen timeout)
-
-```bash
-sudo usermod -a -G video $USER
-```
-
-Log out and back in (or reboot) after adding groups.
-
-### Add udev rule:
-
-```bash
-echo 'SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/chmod a+w /sys/class/backlight/%k/brightness"' | sudo tee /etc/udev/rules.d/99-backlight.rules
-sudo udevadm trigger --action=add --subsystem-match=backlight
-```
-
-***
-
-## Running
-
-```bash
-cd ~/dashboard
-source venv/bin/activate
-python3 homelab-term.py
-```
-
-### Touch calibration (first run, recommended)
-
-```bash
-python3 homelab-term.py --calibrate
-```
-
-Touch each corner when prompted. Calibration is saved to `~/.homelab_cal.json` and loaded automatically on every subsequent run.
-
-***
-
-## Controls
-
-| Input | Action |
-|-------|--------|
-| `↑` / `↓` | Select container |
-| `s` | Start selected container |
-| `x` | Stop selected container |
-| `t` | Restart selected container |
-| `r` | Refresh |
-| `q` | Quit |
-| Touch row | Select container |
-| Touch button | Trigger action |
-| Touch (screen off) | Wake screen |
-
-***
-
-## Auto-start on boot
-
-```bash
-sudo systemctl edit getty@tty1
-```
-
-```ini
-[Service]
-ExecStart=
-ExecStart=-/home/johannes/dashboard/venv/bin/python3 /home/johannes/dashboard/dashboard.py
-WorkingDirectory=/home/johannes/dashboard
-User=johannes
-Environment=TERM=linux
-EnvironmentFile=/home/johannes/dashboard/.env
-```
-
-and `chmod 600 /home/johannes/dashboard/.env` so only I have access to the env file.
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart getty@tty1
-```
-Instead of login that starts the dashboard, if login is required do over ssh:
-```bash
-# Switch to another virtual terminal
-sudo chvt 2
-```
-
-Control over ssh:
-```bash
-sudo systemctl stop getty@tty1      # stop dashboard
-sudo systemctl start getty@tty1     # start dashboard (appears on screen immediately)
-sudo systemctl restart getty@tty1   # restart after code change
-```
-
-Start the dockerfile with:
-```bash
-docker compose up -d --build
-```
---build if changes to the app where made.
-***
-
-## Font size (TTY)
-
-```bash
-sudo dpkg-reconfigure console-setup
-```
-
-Choose **Terminus**, size **14×28** or **16×32** for a wall-mounted screen.
-
-***
-
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| `No module named psutil` | `pip install psutil` inside venv |
-| `evdev` build fails | `sudo apt install gcc python3-dev` |
-| Touch not reacting | `sudo usermod -a -G input $USER` then re-login |
-| Backlight not changing | `sudo usermod -a -G video $USER` then re-login; verify `BACKLIGHT_PATH` |
-| Portainer shows "FALLBACK → CLI" | Check API key and URL; falls back to `docker` CLI automatically |
-| Wrong touch alignment | Run `python3 homelab-term.py --calibrate` |
+The tests mock integration calls or use temporary loopback TLS servers, with
+no real device controls or paid inference. TLS tests also require `openssl`.
