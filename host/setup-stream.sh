@@ -15,7 +15,7 @@ echo
 
 # ── preflight ─────────────────────────────────────────────────────────────────
 for f in "99-homelab-stream-sudoers" "homelab-stream.path" "homelab-stream.service" \
-         "stream-up.sh" "stream-down.sh" "stream-handler.sh"; do
+          "stream-up.sh" "stream-down.sh" "stream-handler.sh" "read-spool-action.py"; do
     [ -f "$REPO_DIR/host/$f" ] || { echo "✗ missing host/$f — run from the repo checkout"; exit 1; }
 done
 
@@ -64,14 +64,9 @@ else
     echo "✓ STREAM_SPOOL_DIR added to .env"
 fi
 
-# ── negative test: anything outside the scope must fail ──────────────────────
-echo "— negative test (sudo -n systemctl reboot must fail) —"
-if sudo -n systemctl reboot 2>/dev/null; then
-    echo "✗ SECURITY PROBLEM: reboot succeeded — sudoers too broad!"
-    exit 1
-else
-    echo "✓ scope confirmed: reboot denied"
-fi
+# Never test permissions by executing a destructive command. sudo -n can use
+# the administrator credential cached by sudo -v above; visudo already checked
+# syntax. Inspect effective authorization separately with sudo -l.
 
 # ── rebuild container ─────────────────────────────────────────────────────────
 echo "— rebuilding dashboard container —"
@@ -79,4 +74,4 @@ echo "— rebuilding dashboard container —"
 
 echo
 echo "── done. open the dashboard → SERVER tab → 'steam stream' ──"
-echo "   watch progress:  tail -f $HOME/.homelab-ctrl/stream.log"
+echo "   watch progress:  journalctl -fu homelab-stream.service"

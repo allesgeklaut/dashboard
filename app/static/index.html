@@ -261,6 +261,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .btn-stream:disabled { opacity:0.5; cursor:not-allowed; }
 .btn-stream.down { border-color:#330a0a; color:var(--red-dim); }
 .btn-stream.down:hover { border-color:var(--red-dim); background:#1a0505; color:var(--red); }
+a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 #btn-desktop-off { min-width:146px; } /* keep width stable while armed (countdown label) */
 .stream-dot {
   width:8px; height:8px; border-radius:50%; flex-shrink:0;
@@ -490,7 +491,10 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   .tab-btn { padding:8px 11px; letter-spacing:0.07em; font-size:10.5px; }
   /* compact limits table so all four columns fit without sideways scrolling */
   #ocgl-table th, #ocgl-table td { padding:5px 6px; font-size:10px; }
+  #mistral-table th, #mistral-table td { padding:5px 6px; font-size:10px; }
 }
+
+.mistral-upstream { display:block; color:var(--g-dim); font-size:9px; }
 
 /* ── FAN ANIMATION ── */
 @keyframes fan-spin { to { transform:rotate(360deg); } }
@@ -536,6 +540,14 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .llama-big small { font-size:12px; color:var(--g-dim); font-weight:400; margin-left:3px; }
 .llama-state { display:flex; gap:16px; flex-wrap:wrap; flex:1; }
 
+.poll-stale::before {
+  content: 'STALE · connection or source unavailable';
+  display: block;
+  grid-column: 1 / -1;
+  color: var(--red);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
 </style>
 </head>
 <body>
@@ -555,6 +567,7 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="server"     onclick="switchTab('server',this)">SERVER</button>
     <button class="tab-btn"        data-tab="opencode"   onclick="switchTab('opencode',this)" style="display:none">OPENCODE</button>
+    <button class="tab-btn"        data-tab="mistral"    onclick="switchTab('mistral',this)" style="display:none">MISTRAL</button>
     <button class="tab-btn"        data-tab="containers" onclick="switchTab('containers',this)">CONTAINERS</button>
     <button class="tab-btn"        data-tab="processes"  onclick="switchTab('processes',this)">PROCESSES</button>
   </div>
@@ -702,6 +715,43 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 
   </div><!-- /#tab-opencode -->
 
+  <!-- ═══════════ MISTRAL TAB ═══════════ -->
+  <div id="tab-mistral" class="tab-pane" style="display:none">
+    <div class="sec-label">mistral</div>
+    <div class="stream-row" style="margin-bottom:10px">
+      <div class="stream-btns">
+        <a class="btn-stream" href="https://admin.mistral.ai/subscription" target="_blank" rel="noopener noreferrer">OPEN MISTRAL ↗</a>
+      </div>
+    </div>
+
+    <div class="sec-label">model benchmarks</div>
+    <div class="ocgl-controls" id="mistral-controls" style="display:none">
+      <div class="ocgl-dd">
+        <button class="ocgl-dd-btn" id="mistral-metric-btn" onclick="toggleMistralMetricMenu(event)" title="score column">AA <span class="ocgl-caret">▾</span></button>
+        <div class="ocgl-dd-menu" id="mistral-metric-menu" style="display:none"></div>
+      </div>
+      <button class="btn-stream" id="btn-mistral-fetch" onclick="fetchBenchmarks()">⟳ FETCH SCORES</button>
+      <span class="ocg-stale" id="mistral-updated"></span>
+    </div>
+    <div class="proc-table-wrap" id="mistral-wrap" style="display:none">
+      <table class="proc-table" id="mistral-table">
+        <thead>
+          <tr>
+            <th class="proc-sortable" data-key="name" onclick="sortMistralModels('name')">MODEL</th>
+            <th class="ocg-num proc-sortable" data-key="bench" id="mistral-bench-th" onclick="sortMistralModels('bench')">AA</th>
+          </tr>
+        </thead>
+        <tbody id="mistral-tbody">
+          <tr><td colspan="2" class="empty">loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="ocg-stale" id="mistral-attrib" style="display:none">benchmark scores ·
+      <a href="https://artificialanalysis.ai/leaderboards/models" target="_blank" rel="noopener noreferrer">artificial analysis</a> ·
+      <a href="https://artificialanalysis.ai/evaluations" target="_blank" rel="noopener noreferrer">evaluations</a></div>
+    <div class="stor-error" id="mistral-error" style="display:none"></div>
+  </div><!-- /#tab-mistral -->
+
   <!-- ═══════════ CONTAINERS TAB ═══════════ -->
   <div id="tab-containers" class="tab-pane" style="display:none">
     <div class="sec-label">
@@ -755,12 +805,77 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 // ── helpers ───────────────────────────────────────────────────────────────────
 const round = (n, d=1) => Number(n.toFixed(d));
 
+function apiFetch(path, options={}) {
+  const headers = new Headers(options.headers);
+  if (!['GET', 'HEAD', 'OPTIONS'].includes((options.method || 'GET').toUpperCase())) {
+    headers.set('X-Homelab-Request', '1');
+  }
+  return fetch(path, { ...options, headers });
+}
+
+// Mutations use the same guard header plus a timeout: a hung request must
+// never leave a control stuck in its busy state (each caller's catch path
+// does the resetting).
+async function apiPost(path, timeoutMs=25000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await apiFetch(path, { method: 'POST', signal: controller.signal });
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const POLL_TARGETS = {
+  '/api/features': ['tab-server'],
+  '/api/stats': ['stat-grid', 'gpu-section'],
+  '/api/storage': ['stor-list'],
+  '/api/processes': ['tab-processes'],
+  '/api/containers': ['ctr-list'],
+  '/api/adguard': ['ag-row'],
+  '/api/ollama': ['ollama-section'],
+  '/api/llama': ['llama-section'],
+  '/api/opencode-go': ['ocg-list'],
+  '/api/opencode-go-limits': ['ocgl-wrap'],
+  '/api/shelly': ['shelly-row'],
+  '/api/shelly/history': ['shelly-chart-card'],
+  '/api/shelly2': ['shelly2-row'],
+  '/api/stream': ['stream-section'],
+  '/api/desktop': ['desktop-section'],
+};
+function setPollFresh(path, fresh) {
+  for (const id of POLL_TARGETS[path] || []) {
+    document.getElementById(id)?.classList.toggle('poll-stale', !fresh);
+  }
+  if (path === '/api/containers') {
+    _containersFresh = fresh;
+    updateActionBar();
+  }
+}
+async function fetchJSON(path) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await apiFetch(path, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    setPollFresh(path, !data.error);
+    return data;
+  } catch (error) {
+    setPollFresh(path, false);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ── feature flags ─────────────────────────────────────────────────────────────
 let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false,
-                  wake:false, desktop_power:false, desktop_status:false, opencode_go:false };
+                  wake:false, desktop_power:false, desktop_status:false, opencode_go:false, mistral:false };
 
 async function fetchFeatures() {
-  try { _features = await fetch('/api/features').then(r => r.json()); } catch(e) {}
+  try { _features = await fetchJSON('/api/features'); } catch(e) {}
   // Ollama
   if (_features.ollama) {
     document.getElementById('ollama-label').style.display   = 'flex';
@@ -799,6 +914,20 @@ async function fetchFeatures() {
       switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'));
     }
   }
+  // Mistral models are served locally; never query the configured path unless enabled.
+  if (_features.mistral) {
+    document.querySelector('.tab-btn[data-tab="mistral"]').style.display = 'inline-block';
+    document.getElementById('mistral-controls').style.display = 'flex';
+    document.getElementById('mistral-wrap').style.display = 'block';
+    document.getElementById('mistral-attrib').style.display = 'block';
+    fetchMistralModels();
+  } else {
+    // A saved tab may name a feature that is currently disabled.
+    const active = document.querySelector('.tab-btn.active');
+    if (active && active.dataset.tab === 'mistral') {
+      switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'));
+    }
+  }
   if (_features.shelly)  {
     fetchShelly();        setInterval(fetchShelly,        5000);
     fetchShellyHistory(); setInterval(fetchShellyHistory, 60000);
@@ -820,6 +949,7 @@ function switchTab(name, btn) {
   document.body.style.paddingBottom = onContainers
     ? 'calc(var(--bar-h) + env(safe-area-inset-bottom))' : '12px';
   try { localStorage.setItem('activeTab', name); } catch(e) {}
+  if (name === 'mistral' && _features.mistral) fetchMistralModels();
 }
 
 // Restore saved tab on load
@@ -836,7 +966,7 @@ function switchTab(name, btn) {
 async function fetchShelly2() {
   if (!_features.shelly2) return;
   try {
-    const d = await fetch('/api/shelly2').then(r => r.json());
+    const d = await fetchJSON('/api/shelly2');
     const row = document.getElementById('shelly2-row');
     const lbl = document.getElementById('shelly2-label');
     const btn = document.getElementById('btn-cycle-2');
@@ -845,7 +975,7 @@ async function fetchShelly2() {
       return;
     }
     row.style.display = 'flex'; lbl.style.display = 'flex'; btn.style.display = 'inline-block';
-    btn.disabled = false;
+    btn.disabled = _cycleBusy2;
     row.innerHTML = `
       <div class="ag-item">
         <span class="ag-label">STATE</span>
@@ -857,12 +987,13 @@ async function fetchShelly2() {
 }
 
 // ── power cycle (router) ─────────────────────────────────────────────────────
-let _cycleArmed2 = false,
+let _cycleBusy2 = false, _cycleArmed2 = false,
     _cycleTimeout2 = null,
     _cycleRemaining2 = 8,
     _cycleTimerInterval2 = null;
 
 async function shellyCycle2() {
+  if (_cycleBusy2) return;
   const btn = document.getElementById('btn-cycle-2');
   if (!_cycleArmed2) {
     // First press – arm and start countdown
@@ -900,17 +1031,17 @@ async function shellyCycle2() {
     }
     _cycleArmed2 = false;
     btn.classList.remove('armed');
+    _cycleBusy2 = true;
     btn.disabled = true;
     btn.textContent = 'Cycling…';
-    fetch('/api/shelly2/powercycle', { method: 'POST' })
-      .then(r => r.json())
+    apiPost('/api/shelly2/powercycle')
       .then(d => {
         btn.textContent = d.ok ? '✓ on in 10 s' : ('✗ ' + (d.detail || 'failed'));
-        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; }, 15000);
+        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; _cycleBusy2 = false; }, 15000);
       })
       .catch(() => {
         btn.textContent = '✗ error';
-        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; }, 3000);
+        setTimeout(() => { btn.textContent = '⏻ ROUTER CYCLE'; btn.disabled = false; _cycleBusy2 = false; }, 3000);
       });
   }
 }
@@ -918,12 +1049,14 @@ async function shellyCycle2() {
 
 // ── state ────────────────────────────────────────────────────────────────────
 let selected = null, containers = [], ctrFilter = 'all', busy = false;
+let _containersFresh = false;
 
 // ── steam stream (target control) ────────────────────────────────────────────
 let _streamArmed = null,          // key of the armed button | null
     _streamTimer = null,
     _streamBusy  = false,
-    _streamTarget = null;         // pending key until status confirms it
+    _streamTarget = null,          // pending key until status confirms it
+    _streamSafetyTimer = null;    // 180 s net for a status that never confirms
 
 const STREAM_ACTIONS = {
   deck:    { id: 'btn-stream-up-deck',  api: '/api/stream/up',       side: 'up',
@@ -949,7 +1082,7 @@ function eachStreamButton(fn) { Object.keys(STREAM_ACTIONS).forEach(k => fn(k));
 async function fetchStream() {
   if (!_features.stream) return;
   try {
-    const d = await fetch('/api/stream').then(r => r.json());
+    const d = await fetchJSON('/api/stream');
     const sec   = document.getElementById('stream-section');
     const lbl   = document.getElementById('stream-label');
     const dot   = document.getElementById('stream-dot');
@@ -967,17 +1100,23 @@ async function fetchStream() {
       else disarmStream('down');
       eachStreamButton(k => {
         const a = STREAM_ACTIONS[k], btn = streamBtn(k);
-        btn.textContent = a.label;
+        btn.textContent = _streamArmed === k ? '⚠ CONFIRM?' : a.label;
         btn.style.display = 'inline-block';
         btn.disabled = a.side === 'up' ? d.state === 'streaming'
                                        : d.state === 'headless';
       });
     } else if ((_streamTarget === 'deck' || _streamTarget === '1440p') && d.state === 'streaming') {
+      clearStreamSafetyTimer();
       _streamBusy = false; _streamTarget = null;
     } else if (_streamTarget === 'down' && d.state === 'headless') {
+      clearStreamSafetyTimer();
       _streamBusy = false; _streamTarget = null;
     }
   } catch(e) { /* ignore */ }
+}
+
+function clearStreamSafetyTimer() {
+  if (_streamSafetyTimer) { clearTimeout(_streamSafetyTimer); _streamSafetyTimer = null; }
 }
 
 function disarmStream(key) {
@@ -1004,22 +1143,25 @@ function streamToggle(key) {
   }
   // Second press — fire
   disarmStream(key);
+  clearStreamSafetyTimer();   // a finished action's net must never fire during this one
   _streamBusy = true;
   _streamTarget = key;
   eachStreamButton(k => { streamBtn(k).disabled = true; });
   btn.textContent = a.busy;
-  fetch(a.api, { method: 'POST' })
-    .then(r => r.json())
+  apiPost(a.api)
     .then(d => {
       toast(d.ok ? STREAM_TOAST[key] : ('error: ' + (d.detail || 'failed')), !d.ok);
       if (!d.ok) { _streamBusy = false; _streamTarget = null; return; }
       // safety net: if status never confirms the target, unstick after 180 s
       // (stream-up can legitimately take up to ~2 min: target switch + session wait)
-      setTimeout(() => { _streamBusy = false; _streamTarget = null; }, 180000);
+      _streamSafetyTimer = setTimeout(() => {
+        _streamBusy = false; _streamTarget = null; _streamSafetyTimer = null;
+      }, 180000);
     })
     .catch(() => {
       toast('network error', true);
       _streamBusy = false;
+      _streamTarget = null;
     });
 }
 
@@ -1032,7 +1174,7 @@ async function fetchDesktop() {
   document.getElementById('btn-desktop-off').style.display = _features.desktop_power ? 'inline-block' : 'none';
   if (!_features.desktop_status) return;
   try {
-    const d = await fetch('/api/desktop').then(r => r.json());
+    const d = await fetchJSON('/api/desktop');
     const dot = document.getElementById('desktop-dot');
     const st  = document.getElementById('desktop-state');
     const sub = document.getElementById('desktop-sub');
@@ -1059,7 +1201,7 @@ async function wakeDesktop() {
   btn.disabled = true;
   btn.textContent = 'Waking…';
   try {
-    const d = await fetch('/api/wake', { method: 'POST' }).then(r => r.json());
+    const d = await apiPost('/api/wake');
     toast(d.ok ? ('wake request queued — magic packet follows') : ('error: ' + (d.detail || 'failed')), !d.ok);
     btn.textContent = d.ok ? '✓ QUEUED' : '✗ failed';
   } catch(e) {
@@ -1101,8 +1243,7 @@ function desktopPowerToggle() {
   _desktopBusy = true;
   btn.disabled = true;
   btn.textContent = 'Requesting…';
-  fetch('/api/desktop/power', { method: 'POST' })
-    .then(r => r.json())
+  apiPost('/api/desktop/power')
     .then(d => {
       toast(d.ok ? 'power off requested — desktop shuts down in a few seconds'
                  : ('error: ' + (d.detail || 'failed')), !d.ok);
@@ -1161,8 +1302,7 @@ function shellyCycle() {
     btn.classList.remove('armed');
     btn.disabled = true;
     btn.textContent = 'Cycling…';
-    fetch('/api/shelly/powercycle', { method: 'POST' })
-      .then(r => r.json())
+    apiPost('/api/shelly/powercycle')
       .then(d => {
         btn.textContent = d.ok ? '✓ on in 10 s' : ('✗ ' + (d.detail || 'failed'));
         setTimeout(() => { btn.textContent = '⟳ POWER CYCLE'; btn.disabled = false; }, 15000);
@@ -1204,7 +1344,7 @@ setInterval(tick, 1000); tick();
 // ── fetch stats ───────────────────────────────────────────────────────────────
 async function fetchStats() {
   try {
-    const d = await fetch('/api/stats').then(r => r.json());
+    const d = await fetchJSON('/api/stats');
     document.getElementById('hdr-host').textContent = d.hostname;
     window.currentHost = d.hostname;
     document.getElementById('hdr-ip').textContent = d.ip;
@@ -1342,8 +1482,12 @@ function renderGpu(gpu) {
 async function fetchOllama() {
   if (!_features.ollama) return;
   try {
-    const models = await fetch('/api/ollama').then(r => r.json());
+    const models = await fetchJSON('/api/ollama');
     const list = document.getElementById('ollama-list');
+    if (models.error) {
+      list.innerHTML = '<div class="ollama-empty">unavailable</div>';
+      return;
+    }
     list.innerHTML = models.length
       ? models.map(m => `<div class="ollama-card"><span class="ollama-dot"></span><span class="ollama-name">${escHtml(m.name)}</span><span class="ollama-size">${m.size_gb} GB</span></div>`).join('')
       : '<div class="ollama-empty">no model loaded</div>';
@@ -1354,7 +1498,7 @@ async function fetchOllama() {
 async function fetchLlama() {
   if (!_features.llama) return;
   try {
-    const d = await fetch('/api/llama').then(r => r.json());
+    const d = await fetchJSON('/api/llama');
     if (d.error) {
       document.getElementById('llama-state').textContent = 'UNREACHABLE';
       ['llama-gen', 'llama-gen-sub', 'llama-prefill', 'llama-tokens', 'llama-draft']
@@ -1386,7 +1530,7 @@ async function fetchLlama() {
 // ── fetch storage ─────────────────────────────────────────────────────────────
 async function fetchStorage() {
   try {
-    const data = await fetch('/api/storage').then(r => r.json());
+    const data = await fetchJSON('/api/storage');
     const list = document.getElementById('stor-list');
     const nfsOnly = data.filter(s => s.type === 'NFS');
     list.innerHTML = nfsOnly.map(s => {
@@ -1411,7 +1555,7 @@ async function fetchStorage() {
 async function fetchAdGuard() {
   if (!_features.adguard) return;
   try {
-    const d = await fetch('/api/adguard').then(r => r.json());
+    const d = await fetchJSON('/api/adguard');
     const row = document.getElementById('ag-row');
     const lbl = document.getElementById('ag-label');
     if (d.error) { row.style.display='none'; lbl.style.display='none'; return; }
@@ -1444,7 +1588,7 @@ async function fetchOpenCodeGo() {
   if (!_features.opencode_go) return;
   if (document.hidden) return; // don't poll while the dashboard is in the background
   try {
-    const d = await fetch('/api/opencode-go').then(r => r.json());
+    const d = await fetchJSON('/api/opencode-go');
     if (d.error) {
       // Last good numbers stay visible for transient failures only — an auth
       // error is actionable, so surface it even when stale data exists.
@@ -1482,31 +1626,85 @@ let _ocglMetric = 'tb4';       // which benchmark column is shown
 let _ocglMetrics = [];         // [{key,label,name,unit}] from the backend
 try { _ocglMetric = localStorage.getItem('ocglMetric') || 'tb4'; } catch(e) {}
 
-function metricDef(key) {
-  return _ocglMetrics.find(m => m.key === key)
-      || { label: 'TB4', name: 'Terminal-Bench 4.0', unit: 'pct' };
+let _mistralData = null, _mistralMetrics = [], _mistralMetric = 'aa';
+let _mistralSort = { key: 'name', dir: 1 }, _mistralRequestId = 0, _mistralInFlight = null;
+try {
+  _mistralMetric = localStorage.getItem('mistralMetric') || 'aa';
+  const saved = JSON.parse(localStorage.getItem('mistralSort') || 'null');
+  if (saved && ['name', 'bench'].includes(saved.key)) {
+    _mistralSort = { key: saved.key, dir: saved.dir === -1 ? -1 : 1 };
+  }
+} catch(e) {}
+
+function findMetric(metrics, key, fallback) {
+  return metrics.find(m => m.key === key) || fallback;
 }
 
-function updateMetricButton() {
-  document.getElementById('ocgl-metric-btn').innerHTML =
-    `${metricDef(_ocglMetric).label} <span class="ocgl-caret">▾</span>`;
+function metricDef(key) {
+  return findMetric(_ocglMetrics, key, { label: 'TB4', name: 'Terminal-Bench 4.0', unit: 'pct' });
+}
+
+function mistralMetricDef(key=_mistralMetric) {
+  return findMetric(_mistralMetrics, key, { key: 'aa', label: 'AA', name: 'Artificial Analysis', unit: 'index' });
+}
+
+function formatBenchScore(value, metric) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  if (metric.unit === 'elo') return String(Math.round(value));
+  if (metric.unit === 'index') return value.toFixed(1);
+  return (value * 100).toFixed(1) + '%';
+}
+
+function updateScoreMetricButton(buttonId, metric) {
+  const button = document.getElementById(buttonId);
+  button.textContent = String(metric.label || 'AA') + ' ';
+  const caret = document.createElement('span');
+  caret.className = 'ocgl-caret';
+  caret.textContent = '▾';
+  button.appendChild(caret);
+}
+
+function renderMetricMenu(menuId, metrics, selectedKey, onSelect) {
+  const menu = document.getElementById(menuId);
+  menu.replaceChildren();
+  metrics.forEach(metric => {
+    if (!metric || typeof metric.key !== 'string') return;
+    const item = document.createElement('div');
+    item.className = 'ocgl-dd-item' + (metric.key === selectedKey ? ' sel' : '');
+    item.dataset.key = metric.key;
+    item.setAttribute('role', 'menuitem');
+    const abbr = document.createElement('span');
+    abbr.className = 'ocgl-dd-abbr';
+    abbr.textContent = String(metric.label || metric.key);
+    const name = document.createElement('span');
+    name.className = 'ocgl-dd-name';
+    name.textContent = String(metric.name || '');
+    item.append(abbr, name);
+    item.addEventListener('click', () => onSelect(metric.key));
+    menu.appendChild(item);
+  });
 }
 
 function buildMetricMenu() {
-  document.getElementById('ocgl-metric-menu').innerHTML = _ocglMetrics.map(m =>
-    `<div class="ocgl-dd-item${m.key === _ocglMetric ? ' sel' : ''}" data-key="${m.key}" onclick="setMetric('${m.key}')">
-       <span class="ocgl-dd-abbr">${m.label}</span><span class="ocgl-dd-name">${escHtml(m.name)}</span>
-     </div>`).join('');
+  renderMetricMenu('ocgl-metric-menu', _ocglMetrics, _ocglMetric, setMetric);
 }
 
-function toggleMetricMenu(e) {
-  e.stopPropagation();   // keep the document-level close handler from firing immediately
-  const menu = document.getElementById('ocgl-metric-menu');
+function updateMetricButton() {
+  updateScoreMetricButton('ocgl-metric-btn', metricDef(_ocglMetric));
+}
+
+function toggleScoreMenu(e, menuId) {
+  e.stopPropagation();
+  const menu = document.getElementById(menuId);
   menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
 }
 
+function toggleMetricMenu(e) { toggleScoreMenu(e, 'ocgl-metric-menu'); }
+function toggleMistralMetricMenu(e) { toggleScoreMenu(e, 'mistral-metric-menu'); }
+
 function closeMetricMenu() {
   document.getElementById('ocgl-metric-menu').style.display = 'none';
+  document.getElementById('mistral-metric-menu').style.display = 'none';
 }
 document.addEventListener('click', closeMetricMenu);
 
@@ -1514,9 +1712,33 @@ function setMetric(key) {
   _ocglMetric = key;
   try { localStorage.setItem('ocglMetric', key); } catch(e) {}
   updateMetricButton();
-  document.querySelectorAll('#ocgl-metric-menu .ocgl-dd-item').forEach(el =>
-    el.classList.toggle('sel', el.dataset.key === key));
+  buildMetricMenu();
   renderLimits();
+}
+
+function setMistralMetric(key) {
+  _mistralMetric = key;
+  try { localStorage.setItem('mistralMetric', key); } catch(e) {}
+  updateScoreMetricButton('mistral-metric-btn', mistralMetricDef());
+  renderMetricMenu('mistral-metric-menu', _mistralMetrics, _mistralMetric, setMistralMetric);
+  renderMistralModels();
+}
+
+function toggleSortState(state, key, firstDirection=1) {
+  if (state.key === key) state.dir *= -1;
+  else { state.key = key; state.dir = firstDirection; }
+}
+
+function sortByValue(rows, direction, valueFor) {
+  return [...rows].sort((a, b) => {
+    const va = valueFor(a), vb = valueFor(b);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (va === vb) return 0;
+    const cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
+    return cmp * direction;
+  });
 }
 
 function relTime(ts) {
@@ -1527,32 +1749,40 @@ function relTime(ts) {
   return Math.floor(s / 86400) + 'd ago';
 }
 
-async function fetchBenchmarks() {
-  if (!_features.opencode_go) return;
-  const btn = document.getElementById('btn-ocgl-fetch');
-  if (btn.disabled) return;
-  btn.disabled = true;
-  btn.textContent = '… FETCHING';
-  try {
-    const r = await fetch('/api/opencode-go-benchmarks/fetch', { method: 'POST' });
-    const d = await r.json().catch(() => ({}));
-    if (r.ok && d.ok) {
-      toast(`scores updated · ${d.models} models`);
-      await fetchOpenCodeGoLimits();
-    } else {
-      toast('fetch failed: ' + (d.detail || d.error || r.status), true);
+let _benchFetchPromise = null;
+
+function fetchBenchmarks() {
+  if (!_features.opencode_go && !_features.mistral) return Promise.resolve();
+  if (_benchFetchPromise) return _benchFetchPromise;
+  const buttons = ['btn-ocgl-fetch', 'btn-mistral-fetch']
+    .map(id => document.getElementById(id)).filter(Boolean);
+  buttons.forEach(btn => { btn.disabled = true; btn.textContent = '… FETCHING'; });
+
+  const request = (async () => {
+    try {
+      const d = await apiPost('/api/benchmarks/fetch', 65000).catch(() => ({}));
+      if (d.ok) {
+        toast(`scores updated · ${d.models} models`);
+        const refreshes = [];
+        if (_features.opencode_go) refreshes.push(fetchOpenCodeGoLimits(true));
+        if (_features.mistral) refreshes.push(fetchMistralModels(true));
+        await Promise.all(refreshes);
+      } else {
+        toast('fetch failed: ' + (d.detail || d.error || 'request timed out'), true);
+      }
+    } catch(e) {
+      toast('network error', true);
+    } finally {
+      buttons.forEach(btn => { btn.disabled = false; btn.textContent = '⟳ FETCH SCORES'; });
+      _benchFetchPromise = null;
     }
-  } catch(e) {
-    toast('network error', true);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '⟳ FETCH SCORES';
-  }
+  })();
+  _benchFetchPromise = request;
+  return request;
 }
 
 function sortLimits(key) {
-  if (_ocglSort.key === key) _ocglSort.dir *= -1;
-  else _ocglSort = { key, dir: 1 };
+  toggleSortState(_ocglSort, key);
   renderLimits();
 }
 
@@ -1560,35 +1790,23 @@ function renderLimits() {
   if (!_ocglData) return;
   const { key, dir } = _ocglSort;
   const metric = metricDef(_ocglMetric);
-  const benchVal = m => (m.bench && typeof m.bench[_ocglMetric] === 'number') ? m.bench[_ocglMetric] : null;
-  // Numbers sort naturally; "unlimited" is a real ∞ (first when descending);
-  // missing values (—) always sort last, in both directions.
-  const val = m => {
-    if (key === 'name') return m.name.toLowerCase();
-    if (key === 'bench') {
-      const v = benchVal(m);
-      return v !== null ? v : (dir === 1 ? Infinity : -Infinity);
-    }
+  const benchVal = m => (m.bench && Number.isFinite(m.bench[_ocglMetric])) ? m.bench[_ocglMetric] : null;
+  const value = m => {
+    if (key === 'name') return String(m.name || '').toLowerCase();
+    if (key === 'bench') return benchVal(m);
     const v = m[key];
     if (typeof v === 'number') return v;
     if (v === 'unlimited') return Infinity;
-    return dir === 1 ? Infinity : -Infinity;
+    return null;
   };
-  const models = [..._ocglData.models].sort((a, b) => {
-    const va = val(a), vb = val(b);
-    return (typeof va === 'string' ? va.localeCompare(vb) : va - vb) * dir;
-  });
+  // Missing limits/scores stay last in both directions; unlimited sorts as ∞.
+  const models = sortByValue(_ocglData.models, dir, value);
   const num = v => typeof v === 'number' ? v.toLocaleString()
                  : v === 'unlimited' ? 'unlimited' : '—';
   const money = v => typeof v === 'number' ? '$' + v
-                   : v === 'unlimited' ? 'unlimited' : '—';
-  const bench = m => {
-    const v = benchVal(m);
-    if (v === null) return '—';
-    if (metric.unit === 'elo') return String(Math.round(v));
-    return metric.unit === 'index' ? v.toFixed(1) : (v * 100).toFixed(1) + '%';
-  };
-  document.getElementById('ocgl-bench-th').textContent = metric.label;
+                    : v === 'unlimited' ? 'unlimited' : '—';
+  const bench = m => formatBenchScore(benchVal(m), metric);
+  document.getElementById('ocgl-bench-th').textContent = String(metric.label || 'TB4');
   const rows = models.map(m => `<tr>
       <td>${escHtml(m.name)}</td>
       <td class="ocg-num">${num(m.req_5h)}</td>
@@ -1603,11 +1821,11 @@ function renderLimits() {
   });
 }
 
-async function fetchOpenCodeGoLimits() {
+async function fetchOpenCodeGoLimits(force=false) {
   if (!_features.opencode_go) return;
-  if (document.hidden) return; // don't poll while the dashboard is in the background
+  if (document.hidden && !force) return; // don't poll while the dashboard is in the background
   try {
-    const d = await fetch('/api/opencode-go-limits').then(r => r.json());
+    const d = await fetchJSON('/api/opencode-go-limits');
     const err = document.getElementById('ocgl-error');
     if (d.error) {
       err.textContent = 'limits unavailable';
@@ -1633,11 +1851,112 @@ async function fetchOpenCodeGoLimits() {
   } catch(e) { /* ignore */ }
 }
 
+// ── Mistral model list and selected Artificial Analysis score ─────────────────
+function showMistralError(message, configError=false) {
+  const error = document.getElementById('mistral-error');
+  const hasRows = !!(_mistralData && Array.isArray(_mistralData.models) && _mistralData.models.length);
+  error.textContent = (configError ? 'configuration unavailable: ' : 'unable to load models: ') + message +
+    (hasRows ? ' · showing stale data' : '');
+  error.style.display = 'block';
+  if (hasRows) {
+    renderMistralModels(true);
+  } else {
+    document.getElementById('mistral-tbody').innerHTML =
+      '<tr><td colspan="2" class="empty">unavailable</td></tr>';
+  }
+}
+
+async function fetchMistralModels(force=false) {
+  if (!_features.mistral) return;
+  if (_mistralInFlight && !force) return _mistralInFlight;
+  const requestId = ++_mistralRequestId;
+  const request = (async () => {
+    try {
+      const r = await apiFetch('/api/mistral-models');
+      const d = await r.json().catch(() => ({}));
+      if (requestId !== _mistralRequestId) return;
+      if (d.error || !r.ok) {
+        showMistralError(d.error || `HTTP ${r.status}`, true);
+        return;
+      }
+      if (!Array.isArray(d.models)) {
+        showMistralError('invalid model list response', true);
+        return;
+      }
+
+      _mistralData = d;
+      _mistralMetrics = Array.isArray(d.bench_metrics)
+        ? d.bench_metrics.filter(m => m && typeof m.key === 'string') : [];
+      if (_mistralMetrics.length) {
+        if (!_mistralMetrics.some(m => m.key === _mistralMetric)) _mistralMetric = _mistralMetrics[0].key;
+      } else {
+        _mistralMetric = 'aa';
+      }
+      try { localStorage.setItem('mistralMetric', _mistralMetric); } catch(e) {}
+      updateScoreMetricButton('mistral-metric-btn', mistralMetricDef());
+      renderMetricMenu('mistral-metric-menu', _mistralMetrics, _mistralMetric, setMistralMetric);
+      document.getElementById('mistral-error').style.display = 'none';
+      renderMistralModels();
+    } catch(e) {
+      if (requestId === _mistralRequestId) showMistralError('network error');
+    }
+  })();
+  _mistralInFlight = request;
+  await request;
+  if (_mistralInFlight === request) _mistralInFlight = null;
+}
+
+function sortMistralModels(key) {
+  toggleSortState(_mistralSort, key);
+  try { localStorage.setItem('mistralSort', JSON.stringify(_mistralSort)); } catch(e) {}
+  renderMistralModels();
+}
+
+function renderMistralModels(stale=false) {
+  if (!_mistralData) return;
+  const models = Array.isArray(_mistralData.models) ? _mistralData.models : [];
+  const tbody = document.getElementById('mistral-tbody');
+  const metric = mistralMetricDef();
+  const score = model => model.bench && Number.isFinite(model.bench[_mistralMetric])
+    ? model.bench[_mistralMetric] : null;
+  document.getElementById('mistral-bench-th').textContent = String(metric.label || 'AA');
+
+  if (!models.length) {
+    tbody.innerHTML = '<tr><td colspan="2" class="empty">no Mistral models configured</td></tr>';
+  } else {
+    const value = model => _mistralSort.key === 'name'
+      ? String(model.name || '').toLowerCase() : score(model);
+    const sorted = sortByValue(models, _mistralSort.dir, value);
+    tbody.innerHTML = sorted.map(model => {
+      const alias = escHtml(model.name == null ? '' : model.name);
+      const upstream = model.upstream_model
+        ? `<small class="mistral-upstream">${escHtml(model.upstream_model)}</small>` : '';
+      return `<tr><td>${alias}${upstream}</td><td class="ocg-num">${formatBenchScore(score(model), metric)}</td></tr>`;
+    }).join('');
+  }
+
+  const hasScores = models.some(model => score(model) !== null);
+  const updated = document.getElementById('mistral-updated');
+  if (!_mistralData.bench_fetched_at) {
+    updated.textContent = 'no scores yet — press fetch';
+  } else if (!hasScores) {
+    updated.textContent = `no AA scores for ${metric.label || 'selected metric'} · scores ${relTime(_mistralData.bench_fetched_at)}`;
+  } else {
+    updated.textContent = `scores ${relTime(_mistralData.bench_fetched_at)}`;
+  }
+  if (stale) updated.textContent += ' · stale';
+
+  document.querySelectorAll('#mistral-table th').forEach(th => {
+    th.classList.toggle('sorted-asc', th.dataset.key === _mistralSort.key && _mistralSort.dir === 1);
+    th.classList.toggle('sorted-desc', th.dataset.key === _mistralSort.key && _mistralSort.dir === -1);
+  });
+}
+
 // ── fetch shelly plug ─────────────────────────────────────────────────────────
 async function fetchShelly() {
   if (!_features.shelly) return;
   try {
-    const d = await fetch('/api/shelly').then(r => r.json());
+    const d = await fetchJSON('/api/shelly');
     const row = document.getElementById('shelly-row');
     const lbl = document.getElementById('shelly-label');
     const btn = document.getElementById('btn-cycle');
@@ -1679,7 +1998,7 @@ async function fetchShelly() {
 async function fetchShellyHistory() {
   if (!_features.shelly) return;
   try {
-    const d = await fetch('/api/shelly/history').then(r => r.json());
+    const d = await fetchJSON('/api/shelly/history');
     renderShellyChart(d.samples || [], d.day_start_ts || 0);
   } catch(e) { /* ignore */ }
 }
@@ -1739,7 +2058,8 @@ function renderShellyChart(samples, dayStartTs) {
 // ── fetch containers ──────────────────────────────────────────────────────────
 async function fetchContainers() {
   try {
-    const data = await fetch('/api/containers').then(r=>r.json());
+    const data = await fetchJSON('/api/containers');
+    if (!Array.isArray(data)) throw new Error('invalid container list');
     containers = data;
 
     // keep selected valid
@@ -1754,7 +2074,7 @@ async function fetchContainers() {
     const cnt = containers.filter(c=>c.state==='running').length;
     document.getElementById('ctr-count').textContent =
       `— ${containers.length} total · ${cnt} running`;
-  } catch(e) { /* ignore */ }
+  } catch(e) { setPollFresh('/api/containers', false); }
 }
 
 function renderContainers() {
@@ -1826,29 +2146,30 @@ function updateActionBar() {
     return;
   }
   const running = selected.state === 'running';
-  lbl.innerHTML = `<b>${escHtml(selected.name)}</b> · ${selected.host}`;
-  btnStart.disabled   = running   || busy;
-  btnStop.disabled    = !running  || busy;
-  btnRestart.disabled = !running  || busy;
+  lbl.innerHTML = `<b>${escHtml(selected.name)}</b> · ${escHtml(selected.host)}`;
+  btnStart.disabled   = running   || busy || !_containersFresh;
+  btnStop.disabled    = !running  || busy || !_containersFresh;
+  btnRestart.disabled = !running  || busy || !_containersFresh;
 }
 
 async function doAction(action) {
-  if (!selected || busy) return;
+  if (!selected || busy || !_containersFresh) return;
+  const target = selected;
   busy = true;
   updateActionBar();
-  const eid = selected.eid ?? 'null';
+  const eid = target.eid ?? 'null';
   try {
-    const r = await fetch(`/api/containers/${eid}/${selected.id}/${action}`, { method:'POST' });
-    if (r.ok) {
-      toast(`${action} → ${selected.name}`);
+    const d = await apiPost(`/api/containers/${eid}/${target.id}/${action}`);
+    if (d.ok) {
+      toast(`${action} → ${target.name}`);
     } else {
-      const err = await r.json().catch(()=>({}));
-      toast(`error: ${err.detail || r.status}`, true);
+      toast(`error: ${d.detail || 'failed'}`, true);
     }
   } catch(e) {
     toast(`network error`, true);
   }
   busy = false;
+  updateActionBar();
   // refresh containers quickly
   setTimeout(fetchContainers, 600);
   setTimeout(fetchContainers, 2000);
@@ -1919,7 +2240,7 @@ function renderProcesses() {
 
 async function fetchProcesses() {
   try {
-    const data = await fetch('/api/processes').then(r=>r.json());
+    const data = await fetchJSON('/api/processes');
     processes = data;
     renderProcesses();
   } catch(e) { /* ignore */ }

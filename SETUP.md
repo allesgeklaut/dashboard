@@ -17,7 +17,7 @@ cloudflared (existing container or tunnel)
     │  → http://localhost:7681
     │
 homelab-ctrl container
-    ├── FastAPI backend  (psutil, Portainer API, Docker CLI fallback)
+    ├── FastAPI backend  (psutil, Portainer API)
     └── index.html       (green-on-black web UI, auto-refreshes every 2s)
 ```
 
@@ -33,6 +33,18 @@ uv venv                           # creates .venv/
 uv pip install -r requirements.txt
 uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
 ```
+
+After installing requirements, run the regression tests with test-only `httpx`
+for this invocation (it is not a production dependency):
+
+```bash
+PYTHON_DOTENV_DISABLED=1 uv run --with httpx python -m unittest discover -s tests -v
+```
+
+This skips local `.env` loading; the tests mock device polling and upstream
+interactions or use temporary loopback servers. No real controls or paid
+upstream calls are made. TLS fixtures require `openssl`; frontend regressions
+also run with `node --test tests/frontend.test.js`.
 
 Then open **http://127.0.0.1:7681**. (`--app-dir app` mirrors the container,
 which copies `app/` to `/app` and imports `main`.)
@@ -59,24 +71,89 @@ server from `~/.local/share/opencode/auth.json`, see `.env.example`). Locally
 it works with no configuration: it falls back to the auth store on the dev
 machine (`OPENCODE_AUTH_FILE` overrides the path).
 
-> `dashboard.py` (the Textual terminal TUI) is **deprecated** — the web
-> dashboard is the product.
+The optional **MISTRAL** tab lists configured LiteLLM `mistral/` routes and
+shows their Artificial Analysis benchmark table. It includes all matching
+routes (including GLM, audio, and embedding models); non-chat or unranked
+models show a dash for scores. It offers the same benchmark metric choices as
+OPENCODE, but each tab stores its metric and sort selections independently;
+the on-demand **FETCH SCORES** action and cache are shared. It works without
+OpenCode being configured. The **OPEN MISTRAL** link opens Mistral's
+subscription page in your browser (on iOS, you may need to sign in there).
+This is not a Mistral usage integration: it does not scrape Mistral, use
+cookies or a billing API, or require a Mistral or LiteLLM admin key. The
+dashboard labels rows with LiteLLM model names (not provider names) and
+exposes upstream model IDs, never the configured credentials.
+
+For local development, set `LITELLM_CONFIG_FILE` to the existing LiteLLM YAML,
+for example `../litellm/config.yaml` (relative to the server process working
+directory) or an absolute path. Leave it unset to disable the tab locally.
+The main Docker Compose file enables the tab and mounts the existing config
+file read-only at `/run/litellm/config.yaml`:
+
+```bash
+docker compose up -d --build
+```
+
+The mount defaults to the host file `../litellm/config.yaml`, relative to
+the Compose project directory. If needed, set `LITELLM_CONFIG_HOST_PATH` in
+the repo's gitignored `.env` (or in the shell running Compose) to the path of
+the existing YAML file. The source file must already exist; Compose does
+not create a missing file or directory and does not mount the surrounding
+secrets directory. The local-development `LITELLM_CONFIG_FILE` setting is
+replaced by the Compose container path. No new `/opt/secrets` environment
+fields or extra Compose file are needed. This deployment requires the config
+file even if you do not open the MISTRAL tab. To remove the integration from a
+different Docker deployment, remove both `LITELLM_CONFIG_FILE` and its bind
+mount from the main Compose file before recreating the service.
 
 ---
 
 ## 1 — Configure
 
-```bash
-cp .env.example .env
-nano .env          # fill in Portainer URL, API key, AdGuard creds
-```
+For local development, copy `.env.example` to `.env` and configure only the
+integrations you intend to test. For Docker, that file supplies Compose
+interpolation (host identity, optional spool flags and desktop identifiers),
+not application credentials.
 
-The only required field is `PORTAINER_API_KEY` if you use Portainer.
-If Portainer is unavailable, container control falls back to local Docker CLI.
+Docker loads `/opt/secrets/dashboard.env` (integration URLs, AdGuard credentials,
+optional OpenCode key, etc.) and `/opt/secrets/portainer.env` (Portainer token
+and, if needed, `PORTAINER_URL`). Provision both files outside the repository,
+restrict access to the deploying administrator, and never commit them. The
+Portainer file is also shared with LiteLLM. Container control uses Portainer
+only; there is no Docker CLI or socket fallback.
 
 ### Get a Portainer API key
 
-Portainer → Account settings → Access tokens → Add access token
+Portainer → username (top right) → My account → Access tokens → Add access token
+
+### Portainer HTTPS verification
+
+In Docker, replace `PORTAINER_API_KEY` in `/opt/secrets/portainer.env`. The
+repository `.env` is for Compose interpolation and local development; it is
+not the container's credential file. Recreate consumers after token changes;
+a restart does not reload `env_file` values. LiteLLM and its ComfyUI proxy also
+consume this shared file and must be recreated separately if the old token is
+revoked.
+
+Place **one trusted Portainer server certificate**, never a private key or a
+general CA bundle, at `/opt/secrets/portainer-ca.pem`. Obtain it through a
+trusted channel, not from an unverified network connection. Compose mounts
+only this file read-only at `/run/secrets/portainer-ca.pem` and refuses to
+create a missing source. It must be readable by the container's uid 1000.
+
+The dashboard requires HTTPS and pins the certificate's SHA256 fingerprint
+while also requiring certificate verification against that PEM. Exact
+certificate identity replaces hostname matching for Portainer's existing
+localhost-only self-signed certificate. The configured URL must still reach
+Portainer (a container's `localhost` is not the host's loopback). Missing,
+unreadable, invalid, expired, or changed certificates fail closed; redirects
+are not followed and no integration falls back to `verify=False`.
+
+For local development, `PORTAINER_CA_FILE` can point at the same trusted
+server certificate. When unset, Portainer uses ordinary Requests CA and
+hostname verification instead. This trust setting applies only to Portainer;
+other integrations keep their existing TLS behavior. When rotating the
+server certificate, update the trusted PEM too.
 
 ---
 
@@ -87,11 +164,31 @@ cd homelab-ctrl
 docker compose up -d --build
 ```
 
-Visit **http://\<your-host-ip\>:7681** to confirm it's working locally.
+Visit **http://127.0.0.1:7681** on the server. From another machine, use an SSH
+forward (`ssh -N -L 7681:127.0.0.1:7681 your-server`) and open the same URL.
+Do not broaden the loopback binding to work around remote access.
 
 ---
 
-## 3 — Cloudflare Tunnel
+## 3 — Require Cloudflare Access before publishing
+
+The app is an administrative control panel with no application login. Create
+the Access application **before adding its public tunnel hostname**:
+
+1. **Zero Trust → Access → Applications** → Add application → Self-hosted.
+2. Cover the entire `ctrl.yourdomain.com` hostname, including `/api/*`.
+3. Add a narrowly scoped **Allow → Emails → your@email.com** policy; no bypass.
+4. Verify unauthenticated access is denied after adding the tunnel route.
+
+API mutations additionally require an `Origin` whose host/port matches the
+browser-facing `Host`, plus `X-Homelab-Request: 1`. Cross-site Fetch Metadata
+is rejected. The UI supplies the header, and no CORS permission is granted to
+other origins. Both HTTP and HTTPS Origin schemes are accepted for the same
+host because Cloudflare terminates TLS ahead of the loopback HTTP origin.
+This protects against browser CSRF, not direct access by someone who can
+bypass the perimeter. Keep the origin loopback-only.
+
+## 4 — Cloudflare Tunnel
 
 ### Option A — existing tunnel (recommended)
 
@@ -115,18 +212,9 @@ ingress:
    - Service: `http://localhost:7681`
 3. Save
 
-**Done.** Visit `https://ctrl.yourdomain.com`.
-
----
-
-## 4 — Secure with Cloudflare Access (strongly recommended)
-
-1. **Zero Trust → Access → Applications** → Add application → Self-hosted
-2. Application domain: `ctrl.yourdomain.com`
-3. Add a policy: **Allow → Emails → your@email.com**
-4. Save
-
-Anyone reaching your URL now has to authenticate first.
+Visit `https://ctrl.yourdomain.com` and confirm Access authentication is
+required. A containerized tunnel must use an explicitly reachable origin;
+its own `localhost` is not automatically the dashboard host's loopback.
 
 ---
 
@@ -197,9 +285,8 @@ All steps are bundled in one script — review it, then run it:
 It does, in order: installs the scoped sudoers file (single sudo prompt,
 `visudo -c` validated, auto-removes itself on syntax error), installs +
 enables the systemd path unit, creates the spool dir, appends
-`STREAM_SPOOL_DIR` to `.env` (idempotent), runs a **negative test** (sudo
-`reboot` must be denied — aborts if the scope is somehow too broad), and
-finally rebuilds the container. Re-running it is safe.
+`STREAM_SPOOL_DIR` to `.env` (idempotent), then rebuilds the container.
+It never tests authorization by executing a reboot or target switch.
 
 <details>
 <summary>Manual equivalent (what the script does)</summary>
@@ -229,17 +316,18 @@ cd /opt/stacks/dashboard && docker compose up -d --build
 ### Non-root container
 
 The image runs the app as a dedicated `homelab` user (uid 1000), not root.
-`pid: host` still works for psutil (reads /proc, no privileges needed), and all
-other mounts are read-only. On this box uid 1000 = your user, so the spool dir
-and `/data` need no ownership changes.
+`pid: host` still works for psutil. `/data` and request spools are writable;
+certificate, integration config, NAS and sysfs mounts are read-only. On this
+box uid 1000 = your user, so the spool dir and `/data` need no ownership changes.
+Host handlers reject symlinks, special files, oversized input and unknown
+tokens. Their logs go to journald, never to a container-writable path.
 
 ### Sanity checks
 
 ```bash
-# sudoers scope — all three must succeed silently; anything else must fail:
-sudo -n /usr/bin/systemctl isolate multi-user.target && echo ok1
-sudo -n rm -f /run/greetd.run && echo ok2
-sudo -n systemctl reboot   # must FAIL (not in sudoers)
+# Inspect syntax and effective permissions without executing allowed commands:
+sudo visudo -c
+sudo -l
 
 # watcher active?
 systemctl status homelab-stream.path
@@ -250,7 +338,7 @@ The scripts read env overrides — `STEAM_ARGS`, `STREAM_WIDTH/HEIGHT`,
 `DECK_STREAM_WIDTH/HEIGHT` (default 1680×1050) and
 `HIGHP_STREAM_WIDTH/HEIGHT` (default 2560×1440) in `host/stream-handler.sh`.
 Defaults live at the top of each script.
-Log: `~/.homelab-ctrl/stream.log`.
+Logs: `journalctl -fu homelab-stream.service`.
 
 ---
 
@@ -311,8 +399,9 @@ creates the spool dir, appends `DESKTOP_SPOOL_DIR` to `.env`, rebuilds):
 
 1. **⏻ POWER OFF** (two presses — arm, then confirm) → desktop shuts down.
 2. **⚡ WAKE** → desktop boots; the status dot flips to UP once sshd is up.
-3. Logs on the server host: `~/.homelab-ctrl/desktop.log` (same file is
-   visible inside the container at `/data/desktop.log`).
+3. Host logs: `journalctl -fu homelab-desktop.service`; queue-side logs:
+   `docker compose logs -f homelab-ctrl`. SSH exit 255 means shutdown is
+   unconfirmed, not successful; check the desktop status independently.
 
 ---
 
@@ -329,10 +418,17 @@ creates the spool dir, appends `DESKTOP_SPOOL_DIR` to `.env`, rebuilds):
 
 | Volume | Why |
 |--------|-----|
-| `network_mode: host` | psutil sees real host network interfaces & stats |
 | `pid: host` | psutil sees real host CPU % and process list |
-| `/var/run/docker.sock` | Docker CLI fallback when Portainer is unreachable |
-| `/mnt:/mnt:ro` | NFS mounts are visible for disk usage stats |
+| `/mnt/nas:/mnt/nas:ro` | NAS disk usage visibility |
+| `/sys/class/{drm,hwmon}:ro` | GPU and sensor readings |
+| `~/.homelab-ctrl:/data` | Writable energy and benchmark persistence |
+| Request spool directories | Writable fixed-action queues for host handlers |
+| Portainer certificate | Read-only exact server-certificate trust |
+
+The service uses bridge networking, not host networking, and has no Docker
+socket mount. Host handlers read scripts directly from the checkout, so edits
+affect their next invocation even without a dashboard rebuild. Do not run
+setup scripts or install/reload units without reviewing the changes first.
 
 ---
 
@@ -350,7 +446,7 @@ docker compose up -d --build
 | Symptom | Fix |
 |---------|-----|
 | CPU/RAM show wrong values | Ensure `pid: host` is set |
-| Network stats are 0 | Ensure `network_mode: host` |
-| Containers list empty | Check `PORTAINER_API_KEY`; docker.sock fallback requires docker to be installed in container (it is) |
-| NFS mount shows "not mounted" | Add the host path to `NFS_MOUNTS` in `.env` |
+| Network stats are 0 | Check visible interfaces; do not switch to host networking as a workaround |
+| Containers marked stale/unavailable | Check Portainer availability, token and pinned certificate; there is no CLI fallback |
+| NFS mount shows "not mounted" | Check the read-only bind and `NFS_MOUNTS` in the Docker application env file |
 | AdGuard section missing | Section auto-hides on error — check `ADGUARD_URL` / credentials |

@@ -6,9 +6,8 @@ The FastAPI web UI (`app/main.py`, `app/homelab_core.py`, `app/static/`) is
 the product — the green-on-black dashboard served by uvicorn on :7681 behind
 a Cloudflare tunnel.
 
-`dashboard.py` (repo root, Textual TUI) is **DEPRECATED**: do not extend it,
-do not fix its bugs, do not wire new features into it. It stays in the repo
-for reference only and will eventually be removed.
+The old Textual terminal dashboard and evdev helper have been removed.
+Use Git history for historical reference; do not restore terminal-only code.
 
 ## Local development (desktop workhorse)
 
@@ -32,7 +31,8 @@ uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
 Deploy on the server after the user's explicit approval:
 
 ```bash
-cd /opt/stacks/dashboard && docker compose up -d --build
+cd /opt/stacks/dashboard
+docker compose up -d --build
 ```
 
 **Never** merge branches, push to master, or attempt a server deploy without

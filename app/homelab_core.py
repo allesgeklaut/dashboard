@@ -1,20 +1,25 @@
-"""
-homelab_core.py — shared data-fetching helpers for HOMELAB//CTRL
-Used by both main.py (FastAPI backend) and dashboard.py (Textual TUI).
-"""
+"""Data-fetching and control helpers for the HOMELAB//CTRL web dashboard."""
 from __future__ import annotations
 import os, re, socket, threading, time, json
+import math
+import hashlib
+import ssl
+import logging
+import tempfile
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
-import psutil, requests, urllib3
+import psutil, requests
 from dotenv import load_dotenv
+import yaml
 
 load_dotenv()
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+_log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORTAINER_URL     = os.getenv("PORTAINER_URL", "https://192.168.0.46:9443")
 PORTAINER_API_KEY = os.getenv("PORTAINER_API_KEY", "")
+PORTAINER_CA_FILE = os.getenv("PORTAINER_CA_FILE", "").strip()
 PORTAINER_ENVS: list[int] | None = None  # None = auto-discover; or e.g. [1, 2]
 ADGUARD_URL  = os.getenv("ADGUARD_URL")          # None if not set → feature disabled
 ADGUARD_USER = os.getenv("ADGUARD_USER", "")
@@ -46,6 +51,7 @@ OPENCODE_LIMITS_URLS = (
 )
 OPENCODE_LIMITS_TTL  = 3600  # seconds between docs refetches
 OPENCODE_LIMITS_RETRY = 300  # seconds to back off after a failed refetch
+LITELLM_CONFIG_FILE = os.getenv("LITELLM_CONFIG_FILE", "")
 # Model benchmark scores for the limits table (Artificial Analysis' public
 # pages — the official API's per-benchmark scores are Pro-only).  The
 # leaderboard page holds the shared metrics for all ~700 models; the
@@ -73,6 +79,43 @@ WOL_DESKTOP_IP    = os.getenv("WOL_DESKTOP_IP")           # None → status prob
 DESKTOP_SPOOL_DIR = os.getenv("DESKTOP_SPOOL_DIR")        # None → wake/poweroff disabled
 
 _HDR = {"X-API-Key": PORTAINER_API_KEY}
+
+
+class _PortainerPinnedAdapter(requests.adapters.HTTPAdapter):
+    """Match the exact server certificate instead of its localhost-only SAN."""
+
+    def __init__(self, fingerprint: str):
+        self._fingerprint = fingerprint
+        super().__init__()
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        # urllib3 checks this fingerprint instead of the hostname, while
+        # requests still requires certificate verification against our PEM.
+        pool_kwargs["assert_fingerprint"] = self._fingerprint
+        return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+
+def _portainer_request(method: str, path: str, timeout: float):
+    if urlsplit(PORTAINER_URL).scheme != "https":
+        raise ValueError("Portainer requires an HTTPS URL")
+    # Sessions are request-local: FastAPI handlers run in multiple threads.
+    with requests.Session() as session:
+        session.trust_env = False  # no proxy, netrc, or environment CA overrides
+        if PORTAINER_CA_FILE:
+            with open(PORTAINER_CA_FILE, encoding="ascii") as fh:
+                certificate = fh.read()
+            if (certificate.count("-----BEGIN CERTIFICATE-----") != 1
+                    or certificate.count("-----END CERTIFICATE-----") != 1):
+                raise ValueError("Portainer pin must contain exactly one server certificate")
+            fingerprint = hashlib.sha256(
+                ssl.PEM_cert_to_DER_cert(certificate)
+            ).hexdigest()
+            session.mount("https://", _PortainerPinnedAdapter(fingerprint))
+        return session.request(
+            method, f"{PORTAINER_URL.rstrip('/')}{path}", headers=_HDR,
+            timeout=timeout, verify=PORTAINER_CA_FILE or True,
+            allow_redirects=False,
+        )
 
 
 # ── Static system info (probed once at startup) ──────────────────────────────
@@ -294,10 +337,7 @@ def get_eids() -> list[int]:
             _eids = list(PORTAINER_ENVS)
         return _eids
     try:
-        r = requests.get(
-            f"{PORTAINER_URL}/api/endpoints",
-            headers=_HDR, timeout=3, verify=False,
-        )
+        r = _portainer_request("GET", "/api/endpoints", timeout=3)
         if r.ok and r.json():
             with _eid_lock:
                 _eids      = [e["Id"]   for e in r.json()]
@@ -306,11 +346,6 @@ def get_eids() -> list[int]:
     except Exception:
         pass
     return []
-
-def get_env_names() -> dict[int, str]:
-    """Return {endpoint_id: endpoint_name} mapping (populated after get_eids())."""
-    get_eids()
-    return _env_names
 
 # ── Container listing ─────────────────────────────────────────────────────────
 
@@ -337,25 +372,35 @@ def _parse_container(c: dict, host: str, eid: int) -> dict:
         "ports":  ports,
     }
 
-def portainer_containers() -> list[dict]:
-    """Fetch all containers from all discovered Portainer endpoints."""
+def portainer_containers() -> tuple[list[dict], bool]:
+    """Fetch all containers from all discovered Portainer endpoints.
+
+    Returns (containers, ok); ok is False when no endpoint answered — an
+    unreachable integration, not an empty host.
+    """
+    eids = get_eids()
     out: list[dict] = []
-    for eid in get_eids():
+    failures = 0
+    for eid in eids:
         try:
-            r = requests.get(
-                f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/json?all=true",
-                headers=_HDR, timeout=4, verify=False,
+            r = _portainer_request(
+                "GET", f"/api/endpoints/{eid}/docker/containers/json?all=true", timeout=4,
             )
             if r.ok:
                 host = _env_names.get(eid, str(eid))
                 out.extend(_parse_container(c, host, eid) for c in r.json())
+            else:
+                failures += 1
         except Exception:
-            pass
-    return out
+            failures += 1
+    return out, failures < len(eids)
 
 def get_containers() -> tuple[list[dict], str]:
-    """Return (containers, source) where source is 'portainer' or 'none'."""
-    containers = portainer_containers()
+    """Return (containers, source): 'portainer' (data), 'none' (not
+    configured / empty), or 'error' (configured but unreachable)."""
+    containers, ok = portainer_containers()
+    if PORTAINER_API_KEY and not ok:
+        return containers, "error"
     if containers:
         return containers, "portainer"
     return [], "none"
@@ -370,15 +415,15 @@ def container_action(cid: str, action: str, eid: int | None = None) -> tuple[boo
     if eid is None:
         return False, "no portainer endpoint"
     try:
-        r = requests.post(
-            f"{PORTAINER_URL}/api/endpoints/{eid}/docker/containers/{cid}/{action}",
-            headers=_HDR, timeout=15, verify=False,
+        r = _portainer_request(
+            "POST", f"/api/endpoints/{eid}/docker/containers/{cid}/{action}", timeout=15,
         )
         if r.status_code in (200, 204, 304):
             return True, f"{action} OK"
         return False, f"HTTP {r.status_code}"
     except Exception as exc:
-        return False, str(exc)
+        _log.warning("Portainer action failed (%s)", type(exc).__name__)
+        return False, "Portainer request failed"
 
 # ── System stats ──────────────────────────────────────────────────────────────
 
@@ -392,10 +437,6 @@ def get_temp() -> float | None:
         return psutil.sensors_temperatures()[key][idx].current
     except Exception:
         return None
-
-def get_ip() -> str:
-    """Return the first non-loopback IPv4 address, or 'n/a'."""
-    return get_system_info().host_ipv4
 
 def get_system_stats() -> dict:
     """Return a dict of current CPU, RAM, swap, load, net, temp, uptime, and IP."""
@@ -498,6 +539,7 @@ def get_adguard_stats() -> dict:
 # coalesces concurrent callers into at most one upstream call per minute.
 
 _opencode_lock = threading.Lock()
+_opencode_fetch_lock = threading.Lock()
 _opencode_cache: dict = {"ts": 0.0, "data": None}
 
 
@@ -518,6 +560,11 @@ def _read_opencode_go_key() -> str | None:
 
 
 def get_opencode_go_usage() -> dict:
+    with _opencode_fetch_lock:
+        return _get_opencode_go_usage()
+
+
+def _get_opencode_go_usage() -> dict:
     """Return the Go plan usage windows, or {'error': ...} on failure.
 
     Errors are mapped for the UI: 'auth' (bad key / no Go plan — upstream
@@ -574,6 +621,7 @@ def get_opencode_go_usage() -> dict:
 
 
 _opencode_limits_lock = threading.Lock()
+_opencode_limits_fetch_lock = threading.Lock()
 _opencode_limits_cache: dict = {"ts": 0.0, "data": None, "fail_ts": 0.0}
 
 
@@ -654,6 +702,11 @@ def _parse_go_limits_mdx(text: str) -> list[dict]:
 
 
 def get_opencode_go_limits() -> dict:
+    with _opencode_limits_fetch_lock:
+        return _get_opencode_go_limits()
+
+
+def _get_opencode_go_limits() -> dict:
     """Go plan per-model limits (est. requests/5h + monthly $), from the docs
     source.  Cached for OPENCODE_LIMITS_TTL; on failure the last-known-good
     copy is served with "stale": true (cold start with no source → error)."""
@@ -698,8 +751,8 @@ def get_opencode_go_limits() -> dict:
 # The public leaderboard page embeds per-model scores in its payload as
 #  \"shortName\":\"...\" ... \"intelligenceIndex\":56.0 ... pairs.  Parsing is
 # deliberately *not* automated on a schedule (AA's terms prohibit automated
-# scraping): the dashboard's "fetch scores" button calls
-# fetch_opencode_go_benchmarks(), which parses and stores the scores to
+# scraping): the dashboard's explicit "fetch scores" action calls
+# fetch_benchmarks(), which parses and stores the scores to
 # HOMELAB_BENCH_FILE.  Reads never touch the network.
 
 _BENCH_METRICS = (
@@ -735,23 +788,53 @@ _BENCH_ALIASES = {                      # opencode name → AA name (both normal
     #                   date (2026-04-24) matches AA's deprecated "V4 Pro 0424" instead.
 }
 
+# Exact Mistral API IDs whose AA leaderboard names are confirmed in the shared
+# cache. These are Mistral-only aliases; do not apply them to OpenCode rows or
+# infer aliases for other Mistral IDs.
+# Z.ai's GLM models are served without Mistral modifications:
+# https://docs.mistral.ai/models/zai-glm-5-3
+# https://docs.mistral.ai/models/zai-glm-5-3-flash
+# Large 4 is a public preview (v26.10); this mapping is preview-specific and
+# should be revalidated if/when Mistral publishes a replacement model ID:
+# https://docs.mistral.ai/models/mistral-large-4-0
+# https://mistral.ai/news/mistral-large-4/
+# Small 4's pinned API ID is mistral-small-2603; Mistral's docs also list
+# mistral-small-latest as an alias for Small 4 (verified 2026-10-23). Recheck
+# this mapping if the upstream rolling alias changes:
+# https://docs.mistral.ai/models/mistral-small-4-0-26-03.md
+_MISTRAL_BENCH_ALIASES = {
+    "zaiglm53":          "glm53",
+    "zaiglm53flash":     "glm53flash",
+    "mistrallarge4":     "mistrallarge4preview",
+    "mistrallarge40":    "mistrallarge4preview",
+    "mistralsmall2603":  "mistralsmall4",
+    "mistralsmalllatest": "mistralsmall4",
+}
+
 
 def _norm_model_name(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+def _bench_records(text: str):
+    marks = list(re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text))
+    for i, mark in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", mark.group(1)))
+        yield base, text[mark.end():end]
+
+
 def _parse_bench_page(text: str) -> dict[str, dict[str, float]]:
     """{normalized base model name: {our metric key: best raw value}}"""
     out: dict[str, dict[str, float]] = {}
-    for m in re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text):
-        base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", m.group(1)))  # strip "(max …)"
+    for base, segment in _bench_records(text):
         slot = out.setdefault(base, {})
         for payload_key, key, _label, _name, _unit in _BENCH_METRICS:
             pat = '\\"' + payload_key + '\\":'
-            nxt = text.find(pat, m.end())
-            if nxt < 0 or nxt - m.end() > 3000:   # pairing must stay within one model object
+            nxt = segment.find(pat)
+            if nxt < 0:
                 continue
-            vm = re.match(re.escape(pat) + r'(null|-?[0-9.]+)', text[nxt:])
+            vm = re.match(re.escape(pat) + r'(null|-?[0-9.]+)', segment[nxt:])
             if not vm or vm.group(1) == "null":
                 continue
             val = float(vm.group(1))
@@ -778,13 +861,8 @@ def _parse_bench_extra_page(text: str) -> dict[str, dict[str, float]]:
     benchmark keys sit anywhere within a (sometimes >7k char) object, so slice
     per model: from each shortName up to the next one, then take the first
     numeric hit per key there."""
-    marks = [(m.start(), m.group(1))
-             for m in re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text)]
     out: dict[str, dict[str, float]] = {}
-    for i, (pos, name) in enumerate(marks):
-        end = marks[i + 1][0] if i + 1 < len(marks) else pos + 20000
-        seg = text[pos:end]
-        base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", name))
+    for base, seg in _bench_records(text):
         slot = out.setdefault(base, {})
         for payload_key, key in _BENCH_EXTRA_KEYS:
             pat = re.escape('\\"' + payload_key + '\\":')
@@ -803,28 +881,20 @@ def _attach_gdpval_elo(scores: dict, text: str) -> None:
     full model set — convert it to the raw Elo AA displays (norm * 2000 + 500,
     per the published sublabel) for models the evaluation page doesn't cover.
     Never overwrites a real raw value."""
-    for m in re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text):
-        nxt = text.find('\\"gdpvalNormalized\\":', m.end(), m.end() + 3000)
+    for base, segment in _bench_records(text):
+        nxt = segment.find('\\"gdpvalNormalized\\":')
         if nxt < 0:
             continue
-        vm = re.match(re.escape('\\"gdpvalNormalized\\":') + r'(null|-?[0-9.]+)', text[nxt:])
+        vm = re.match(re.escape('\\"gdpvalNormalized\\":') + r'(null|-?[0-9.]+)', segment[nxt:])
         if vm and vm.group(1) != "null":
-            base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", m.group(1)))
             scores.setdefault(base, {}).setdefault("gdpval", float(vm.group(1)) * 2000 + 500)
 
 
 _bench_fetch_lock = threading.Lock()   # one fetch at a time (button spam / two clients)
 
 
-def fetch_opencode_go_benchmarks() -> dict:
-    """Fetch + parse the AA leaderboard + evaluation pages, store HOMELAB_BENCH_FILE.
-
-    Only called from the dashboard's explicit "fetch scores" button — nothing
-    here runs on a schedule.  A non-blocking lock keeps concurrent clicks from
-    duplicating the upstream request or racing on the temp file.
-    """
-    if not _read_opencode_go_key():
-        return {"ok": False, "error": "not configured"}
+def _fetch_aa_benchmarks() -> dict:
+    """Fetch and cache AA scores after an explicitly requested UI action."""
     if not _bench_fetch_lock.acquire(blocking=False):
         return {"ok": False, "error": "fetch already running"}
     try:
@@ -835,7 +905,8 @@ def fetch_opencode_go_benchmarks() -> dict:
             models = _parse_bench_page(r.text)
             _attach_gdpval_elo(models, r.text)
         except Exception as exc:
-            return {"ok": False, "error": str(exc)[:200]}
+            _log.warning("Benchmark fetch failed (%s)", type(exc).__name__)
+            return {"ok": False, "error": "benchmark source unavailable"}
         try:
             r2 = requests.get(OPENCODE_BENCH_EXTRA_URL, timeout=25)
             if r2.status_code == 200:
@@ -854,10 +925,25 @@ def fetch_opencode_go_benchmarks() -> dict:
                 json.dump(data, fh)
             os.replace(tmp, HOMELAB_BENCH_FILE)
         except OSError as exc:
-            return {"ok": False, "error": f"cannot store: {exc}"}
+            _log.warning("Benchmark storage failed (%s)", type(exc).__name__)
+            return {"ok": False, "error": "cannot store benchmarks"}
         return {"ok": True, "fetched_at": data["fetched_at"], "models": len(models)}
     finally:
         _bench_fetch_lock.release()
+
+
+def fetch_opencode_go_benchmarks() -> dict:
+    """Compatibility wrapper for the legacy OpenCode-only fetch action."""
+    if not _read_opencode_go_key():
+        return {"ok": False, "error": "not configured"}
+    return _fetch_aa_benchmarks()
+
+
+def fetch_benchmarks() -> dict:
+    """Shared explicit AA fetch for OpenCode Go or configured LiteLLM models."""
+    if not _read_opencode_go_key() and not _litellm_config_path():
+        return {"ok": False, "error": "not configured"}
+    return _fetch_aa_benchmarks()
 
 
 def get_opencode_go_benchmarks() -> dict | None:
@@ -872,6 +958,30 @@ def get_opencode_go_benchmarks() -> dict | None:
     return None
 
 
+def _benchmark_for_model(name: str, scores: dict, *, aliases: bool = True) -> dict:
+    """Match an exact normalized model identity, with optional legacy aliases."""
+    key = _norm_model_name(name)
+    if aliases:
+        key = _BENCH_ALIASES.get(key, key)
+    return scores.get(key) or {}
+
+
+def _mistral_benchmark_for_model(name: str, scores: dict) -> dict:
+    """Match a provider-stripped Mistral ID, using only verified exact aliases."""
+    key = _norm_model_name(name)
+    key = _MISTRAL_BENCH_ALIASES.get(key, key)
+    record = scores.get(key)
+    return record if isinstance(record, dict) else {}
+
+
+def _bench_metadata(data: dict | None) -> dict:
+    return {
+        "bench_metrics": [{"key": k, "label": lbl, "name": nm, "unit": u}
+                          for _pk, k, lbl, nm, u in _BENCH_METRICS],
+        "bench_fetched_at": (data or {}).get("fetched_at"),
+    }
+
+
 def _attach_benchmarks(payload: dict) -> dict:
     """Copy the limits rows, adding {"bench": {metric: raw value}} + metadata."""
     data = get_opencode_go_benchmarks()
@@ -879,17 +989,90 @@ def _attach_benchmarks(payload: dict) -> dict:
     models = []
     for m in payload.get("models", []):
         mm = dict(m)
-        key = _norm_model_name(mm["name"])
-        key = _BENCH_ALIASES.get(key, key)
-        mm["bench"] = scores.get(key) or {}
+        mm["bench"] = _benchmark_for_model(mm["name"], scores)
         models.append(mm)
     return {
         **payload,
         "models": models,
-        "bench_metrics": [{"key": k, "label": lbl, "name": nm, "unit": u}
-                          for _pk, k, lbl, nm, u in _BENCH_METRICS],
-        "bench_fetched_at": (data or {}).get("fetched_at"),
+        **_bench_metadata(data),
     }
+
+
+def _litellm_config_path() -> str | None:
+    """Return a configured nonblank LiteLLM path without checking readability."""
+    path = (LITELLM_CONFIG_FILE or "").strip()
+    return path or None
+
+
+def get_mistral_models() -> dict:
+    """Return LiteLLM routes backed by mistral/ and exact AA benchmark matches.
+
+    Configuration reads and benchmark cache reads are local-only. Route
+    parameters are never included in the public response.
+    """
+    config_path = _litellm_config_path()
+    if not config_path:
+        return {"error": "not configured"}
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            config_text = config_file.read()
+    except OSError:
+        return {"error": "configuration unavailable"}
+    except UnicodeError:
+        return {"error": "invalid configuration"}
+
+    try:
+        config = yaml.safe_load(config_text)
+    except yaml.YAMLError:
+        return {"error": "invalid configuration"}
+
+    if not isinstance(config, dict) or not isinstance(config.get("model_list"), list):
+        return {"error": "invalid configuration"}
+
+    routes = []
+    seen_aliases: set[str] = set()
+    for row in config["model_list"]:
+        if not isinstance(row, dict):
+            return {"error": "invalid configuration"}
+        alias = row.get("model_name")
+        params = row.get("litellm_params")
+        if (not isinstance(alias, str) or not alias.strip()
+                or not isinstance(params, dict)
+                or not isinstance(params.get("model"), str)
+                or not params["model"].strip()):
+            return {"error": "invalid configuration"}
+        alias = alias.strip()
+        upstream_model = params["model"].strip()
+        if not upstream_model.startswith("mistral/") or alias in seen_aliases:
+            continue
+        seen_aliases.add(alias)
+        routes.append({"name": alias, "upstream_model": upstream_model})
+
+    data = get_opencode_go_benchmarks()
+    scores = (data or {}).get("models") or {}
+    models = []
+    for route in routes:
+        # Remove only the provider prefix. Do not substitute the public alias,
+        # infer a model family, or map a rolling alias to a dated AA entry.
+        identity = route["upstream_model"][len("mistral/"):]
+        normalized_identity = _norm_model_name(identity)
+        non_chat = any(token in normalized_identity for token in (
+            "audio", "embed", "voxtral", "transcribe", "speech",
+        ))
+        matched = {} if non_chat else _mistral_benchmark_for_model(identity, scores)
+        bench = {}
+        for _payload_key, key, _label, _name, _unit in _BENCH_METRICS:
+            value = matched.get(key)
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and (not isinstance(value, float) or math.isfinite(value))):
+                bench[key] = value
+        models.append({**route, "bench": bench})
+
+    metadata = _bench_metadata(data)
+    fetched_at = metadata["bench_fetched_at"]
+    if isinstance(fetched_at, float) and not math.isfinite(fetched_at):
+        metadata["bench_fetched_at"] = None
+    return {"models": models, **metadata}
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────
@@ -998,15 +1181,26 @@ def _load_energy() -> None:
 
 
 def _save_energy() -> None:
+    temporary = None
     try:
-        with open(_ENERGY_FILE, "w") as f:
-            json.dump(_energy_data, f, indent=2)
-    except (IsADirectoryError, PermissionError) as exc:
-        # Common when the volume mount created a directory at this path.
-        # We only log the first time.
-        print(f"[homelab_core] energy file not writable: {exc}", flush=True)
-    except Exception:
-        pass
+        directory = os.path.dirname(_ENERGY_FILE) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".energy-", dir=directory)
+        with os.fdopen(fd, "w") as f:
+            json.dump(_energy_data, f, indent=2, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, _ENERGY_FILE)
+    except Exception as exc:
+        _log.warning("Energy persistence failed (%s); previous history retained", type(exc).__name__)
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                _log.warning("Energy temporary file cleanup failed (%s)", type(exc).__name__)
 
 
 def _prune_days(mapping: dict) -> None:
@@ -1134,7 +1328,7 @@ def _energy_tracker_loop() -> None:
 
 def start_energy_tracker() -> None:
     """Start the background energy accumulation thread.
-    Call once at startup in main.py and/or dashboard.py.
+    Call once at startup in main.py.
     """
     threading.Thread(target=_energy_tracker_loop, daemon=True).start()
 
@@ -1244,7 +1438,8 @@ def shelly_power_cycle(shelly_url: str, delay_s: int = 10) -> tuple[bool, str]:
             return True, f"off → on in {delay_s}s"
         return False, f"HTTP {r.status_code}"
     except Exception as exc:
-        return False, str(exc)
+        _log.warning("Shelly power request failed (%s)", type(exc).__name__)
+        return False, "Shelly request failed"
 
 
 # ── Shelly Plug 2 (simple on/off, no energy tracking) ─────────────────────────
@@ -1278,7 +1473,8 @@ def shelly2_toggle() -> tuple[bool, str]:
             return True, f"plug 2 → {label}"
         return False, f"HTTP {r.status_code}"
     except Exception as exc:
-        return False, str(exc)
+        _log.warning("Shelly toggle failed (%s)", type(exc).__name__)
+        return False, "Shelly request failed"
 
 
 # ── Startup helper ────────────────────────────────────────────────────────────
@@ -1388,8 +1584,8 @@ def get_gpu_stats() -> dict | None:
 
 # ── Ollama ─────────────────────────────────────────────────────────────────────
 
-def get_ollama_model() -> list[dict]:
-    """Return currently-loaded Ollama models, or [] if unavailable/unconfigured."""
+def get_ollama_model() -> list[dict] | dict:
+    """Loaded Ollama models; [] when unconfigured, {'error': ...} when down."""
     if not OLLAMA_URL:
         return []
     try:
@@ -1404,7 +1600,7 @@ def get_ollama_model() -> list[dict]:
             ]
     except Exception:
         pass
-    return []
+    return {"error": "unavailable"}
 
 
 # ── llama.cpp server (llama-server) ─────────────────────────────────────────────
@@ -1424,27 +1620,15 @@ _LLM_TRACKED = (
 _LLM_LAST: dict[str, float] = {}
 _LLM_SLOT = {"id_task": None, "t": 0.0, "n_decoded": 0, "n_prompt": 0}
 _LLM_AVG: dict[str, float] = {}  # *_tokens_seconds gauges read 0 mid-request
-_LLM_MIN: dict[str, float] = {}  # lowest seen *_total counters — restart baseline
+_LLM_COUNTERS: dict[str, float] = {}  # immediately preceding cumulative counters
 _LLM_ACTIVE = {"name": None}     # which instance the cached baselines belong to
 
 def _llm_restarted(m: dict[str, float]) -> bool:
-    """Return True when a cumulative *_total counter dropped below the lowest
-    value we've seen.  The totals only ever increase while llama-server runs, so
-    a drop means the process restarted and reset its counters to 0.  On restart
-    the cached average/slot state from the old process must be discarded."""
-    for k in _LLM_TRACKED:
-        v = m.get(k)
-        if v is None:
-            continue
-        if v < _LLM_MIN.get(k, v):
-            _LLM_MIN.clear()
-            for _k in _LLM_TRACKED:
-                _v = m.get(_k)
-                if _v is not None:
-                    _LLM_MIN[_k] = _v
-            return True
-        _LLM_MIN.setdefault(k, v)
-    return False
+    """Detect a decrease from the previous scrape, even after an initial zero."""
+    current = {k: m[k] for k in _LLM_TRACKED if k in m}
+    restarted = any(v < _LLM_COUNTERS.get(k, v) for k, v in current.items())
+    _LLM_COUNTERS.update(current)
+    return restarted
 
 def _parse_prometheus(text: str) -> dict[str, float]:
     out: dict[str, float] = {}
@@ -1520,7 +1704,6 @@ def get_llama() -> dict:
     if not candidates:
         return {"error": "no llama server configured"}
 
-    last_exc: Exception | None = None
     for name, base in candidates:
         try:
             r = requests.get(f"{base}/metrics", timeout=3)
@@ -1531,16 +1714,16 @@ def get_llama() -> dict:
                 slots = []
             break
         except Exception as exc:
-            last_exc = exc
+            _log.debug("Llama probe failed (%s)", type(exc).__name__)
     else:
         _LLM_LAST.clear()
-        return {"error": f"llama servers unreachable: {last_exc}"}
+        return {"error": "llama servers unreachable"}
 
     if _LLM_ACTIVE["name"] != name:
         # A different instance answered than last time (they alternate) — its
         # counters belong to an independent process, so drop every derived
         # baseline instead of computing deltas across two servers.
-        _LLM_LAST.clear(); _LLM_AVG.clear(); _LLM_MIN.clear()
+        _LLM_LAST.clear(); _LLM_AVG.clear(); _LLM_COUNTERS.clear()
         _LLM_SLOT.update(id_task=None, t=0.0, n_decoded=0, n_prompt=0)
         _LLM_ACTIVE["name"] = name
 
@@ -1550,6 +1733,7 @@ def get_llama() -> dict:
     # If llama-server restarted, its counters reset to 0 — drop the old
     # process's cached averages and slot deltas so we don't surface stale data.
     if _llm_restarted(m):
+        prev = {}  # never compute rates across a process restart
         _LLM_AVG.clear()
         _LLM_SLOT.update(id_task=None, t=0.0, n_decoded=0, n_prompt=0)
 
@@ -1596,7 +1780,6 @@ def get_llama() -> dict:
     accepted = m.get("llamacpp:spec_decode_num_accepted_tokens_total", 0)
     return {
         "server":            name,
-        "url":               base,
         "running":           True,
         "phase":             phase,
         "gen_tps":           gen_tps,
@@ -1648,7 +1831,8 @@ def get_stream_status() -> dict:
         else:
             state = "headless"
     except Exception as exc:
-        return {"error": str(exc)}
+        _log.warning("Stream status failed (%s)", type(exc).__name__)
+        return {"error": "stream status unavailable"}
     return {"state": state}
 
 def request_stream(action: str) -> tuple[bool, str]:
@@ -1666,7 +1850,8 @@ def request_stream(action: str) -> tuple[bool, str]:
         # atomic publish so the .path glob never sees a half-written file
         os.replace(tmp, os.path.join(STREAM_SPOOL_DIR, f"{action}.{uid}.request"))
     except Exception as exc:
-        return False, str(exc)
+        _log.warning("Stream queue failed (%s)", type(exc).__name__)
+        return False, "cannot queue stream request"
     return True, "queued"
 
 
@@ -1692,12 +1877,6 @@ _desktop_state: dict = {"up": None, "since": None, "checked": None}
 def _desktop_log(line: str) -> None:
     msg = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [desktop] {line}"
     print(msg, flush=True)  # shows in docker logs
-    try:
-        # /data == ~/.homelab-ctrl on the host — the power handler logs here too
-        with open(os.path.join(os.path.dirname(_ENERGY_FILE) or ".", "desktop.log"), "a") as f:
-            f.write(msg + "\n")
-    except OSError:
-        pass
 
 
 def wake_desktop() -> tuple[bool, str]:
@@ -1726,8 +1905,8 @@ def wake_desktop() -> tuple[bool, str]:
     except OSError as exc:
         with _desktop_lock:
             _last_wake_ts = 0.0   # write failed → allow an immediate retry
-        _desktop_log(f"wake FAILED: {exc}")
-        return False, str(exc)
+        _desktop_log(f"wake FAILED ({type(exc).__name__})")
+        return False, "cannot queue wake request"
     _desktop_log("wake queued → host handler broadcasts the magic packet")
     return True, "queued — host handler sends the magic packet"
 
@@ -1754,7 +1933,8 @@ def poweroff_desktop() -> tuple[bool, str]:
     except OSError as exc:
         with _desktop_lock:
             _last_power_ts = 0.0   # write failed → allow an immediate retry
-        return False, str(exc)
+        _desktop_log(f"poweroff FAILED ({type(exc).__name__})")
+        return False, "cannot queue poweroff request"
     _desktop_log("poweroff queued")
     return True, "queued"
 
@@ -1807,4 +1987,5 @@ def get_features() -> dict:
         "desktop_power":  bool(DESKTOP_SPOOL_DIR),
         "desktop_status": bool(WOL_DESKTOP_IP),
         "opencode_go":    _read_opencode_go_key() is not None,
+        "mistral":        bool(_litellm_config_path()),
     }

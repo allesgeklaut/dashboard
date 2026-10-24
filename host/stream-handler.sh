@@ -5,8 +5,8 @@
 # nothing is ever passed to a shell from its contents — the case below matches
 # a fixed, closed set, so the file contents can never be interpreted as code.
 SPOOL_DIR="${STREAM_SPOOL_DIR:-$HOME/.homelab-ctrl/stream-spool}"
-LOG_FILE="${STREAM_LOG_FILE:-$HOME/.homelab-ctrl/stream.log}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+log() { printf '%s [stream-handler] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
 
 # Resolution per "up" mode, overridable via env (see SETUP.md).
 DECK_W="${DECK_STREAM_WIDTH:-1680}"
@@ -20,22 +20,26 @@ if [ ${#requests[@]} -eq 0 ]; then
     exit 0
 fi
 
-# Execute every queued request, oldest first. Requests are dispatched
-# sequentially, so the last one wins overall. Note: the while loop below runs
-# in a pipeline subshell, so failures do not affect this script's exit status.
-printf '%s\n' "${requests[@]}" | sort | while read -r req; do
-    action=$(tr -d '[:space:]' < "$req")
-    rm -f "$req"
-    printf '%s [stream-handler] request %s -> %s\n' \
-        "$(date '+%Y-%m-%d %H:%M:%S')" "$(basename "$req")" "$action" >> "$LOG_FILE"
+# Execute every queued request, oldest first — by modification time, not by
+# filename (the action prefix would sort "down" before "up"). Requests are
+# dispatched sequentially, so the last one wins overall. Note: the while loop
+# below runs in a pipeline subshell, so failures do not affect this script's
+# exit status.
+stat --printf '%.9Y %n\n' -- "${requests[@]}" | sort -n | while read -r _ts req; do
+    if ! action=$(python3 "$SCRIPT_DIR/read-spool-action.py" "$req" up up-1440p down); then
+        rm -f -- "$req"
+        log "WARN: invalid request discarded"
+        continue
+    fi
+    rm -f -- "$req"
+    log "request → $action"
     case "$action" in
         up)        STREAM_WIDTH="$DECK_W" STREAM_HEIGHT="$DECK_H" \
                       "$SCRIPT_DIR/stream-up.sh" ;;
         up-1440p)  STREAM_WIDTH="$HIGH_W" STREAM_HEIGHT="$HIGH_H" \
                       "$SCRIPT_DIR/stream-up.sh" ;;
         down)      "$SCRIPT_DIR/stream-down.sh" ;;
-        *)         printf '%s [stream-handler] WARN: unknown action\n' \
-                       "$(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE" ;;
+        *)         log "WARN: unknown action" ;;
     esac
 done
 exit 0

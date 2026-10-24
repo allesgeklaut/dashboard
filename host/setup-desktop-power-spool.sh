@@ -23,7 +23,7 @@ echo "target: $DESKTOP_SSH"
 echo
 
 # ── preflight ─────────────────────────────────────────────────────────────────
-for f in "homelab-desktop.path" "homelab-desktop.service" "desktop-power-handler.sh"; do
+for f in "homelab-desktop.path" "homelab-desktop.service" "desktop-power-handler.sh" "read-spool-action.py"; do
     [ -f "$REPO_DIR/host/$f" ] || { echo "✗ missing host/$f — run from the repo checkout"; exit 1; }
 done
 
@@ -81,4 +81,4 @@ echo "— rebuilding dashboard container —"
 echo
 echo "── done. dashboard → SERVER tab → desktop card ──"
 echo "   remember to set WOL_DESKTOP_MAC / WOL_DESKTOP_IP in $ENV_FILE (see .env.example)"
-echo "   logs:  tail -f $HOME/.homelab-ctrl/desktop.log"
+echo "   logs:  journalctl -fu homelab-desktop.service"

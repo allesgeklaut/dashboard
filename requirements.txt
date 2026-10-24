@@ -4,3 +4,4 @@ psutil
 requests
 urllib3
 python-dotenv
+PyYAML

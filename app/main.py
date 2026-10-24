@@ -1,9 +1,10 @@
 from __future__ import annotations
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import psutil
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import homelab_core as core
@@ -11,6 +12,28 @@ import homelab_core as core
 app = FastAPI(title="HOMELAB//CTRL")
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def protect_mutations(request: Request, call_next):
+    if request.url.path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS"):
+        try:
+            origin = urlsplit(request.headers.get("origin", ""))
+        except ValueError:
+            return JSONResponse({"detail": "invalid request origin"}, status_code=403)
+        # Match the browser-facing Host, not the tunnel's internal HTTP scheme.
+        # The mandatory custom header also forces cross-origin browsers through
+        # a CORS preflight, which this app deliberately does not authorize.
+        same_host = (
+            origin.scheme in ("http", "https")
+            and origin.netloc.lower() == request.headers.get("host", "").lower()
+            and not (origin.path or origin.query or origin.fragment)
+        )
+        if (not same_host
+                or request.headers.get("x-homelab-request") != "1"
+                or request.headers.get("sec-fetch-site") == "cross-site"):
+            return JSONResponse({"detail": "same-origin dashboard request required"}, status_code=403)
+    return await call_next(request)
 
 # ── API ───────────────────────────────────────────────────────────────────────
 
@@ -57,9 +80,22 @@ def api_opencode_go_benchmarks_fetch():
         raise HTTPException(500, res.get("error", "fetch failed"))
     return res
 
+@app.get("/api/mistral-models")
+def api_mistral_models():
+    return core.get_mistral_models()
+
+@app.post("/api/benchmarks/fetch")
+def api_benchmarks_fetch():
+    res = core.fetch_benchmarks()
+    if not res.get("ok"):
+        raise HTTPException(500, res.get("error", "fetch failed"))
+    return res
+
 @app.get("/api/containers")
 def api_containers():
-    containers, _ = core.get_containers()
+    containers, source = core.get_containers()
+    if source == "error":
+        return {"error": "portainer unavailable"}
     return containers
 
 @app.post("/api/containers/{eid}/{cid}/{action}")
