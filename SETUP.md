@@ -44,16 +44,18 @@ PYTHON_DOTENV_DISABLED=1 uv run --with httpx python -m unittest discover -s test
 This skips local `.env` loading; the tests mock device polling and upstream
 interactions or use temporary loopback servers. No real controls or paid
 upstream calls are made. TLS fixtures require `openssl`; frontend regressions
-also run with `node --test tests/frontend.test.js`.
+also run with `node --test tests/*.test.js`. Security tests use the sanitized
+sample `tests/fixtures/security-report.json`, copied to a temporary directory as
+`latest.json`; they never read the host report directory.
 
 Then open **http://127.0.0.1:7681**. (`--app-dir app` mirrors the container,
 which copies `app/` to `/app` and imports `main`.)
 
 All optional features — Portainer, AdGuard, Shelly, Ollama, LLaMA, stream
-spool — are env-gated and stay **off** unless enabled via `.env` in the repo
-root. Keep `SHELLY_PLUG_URL` unset locally unless you deliberately want to
-test the Shelly integration: it makes the energy tracker poll that device,
-and Shelly polling is kept minimal on purpose.
+spool, the security report — are env-gated and stay **off** unless enabled via
+`.env` in the repo root. Keep `SHELLY_PLUG_URL` unset locally unless you
+deliberately want to test the Shelly integration: it makes the energy tracker
+poll that device, and Shelly polling is kept minimal on purpose.
 
 The **OPENCODE** tab (visible when a key is configured) shows the Go plan's
 rolling 5h / weekly / monthly usage plus the per-model limits table (est.
@@ -105,6 +107,52 @@ fields or extra Compose file are needed. This deployment requires the config
 file even if you do not open the MISTRAL tab. To remove the integration from a
 different Docker deployment, remove both `LITELLM_CONFIG_FILE` and its bind
 mount from the main Compose file before recreating the service.
+
+### Security watch report (SECURITY tab)
+
+The optional **SECURITY** tab reads the host watch's fixed `latest.json`
+through `GET /api/security` (`no-store`, 8 MiB cap), never `latest.md`. It is
+read-only: no scans, paid API calls, or package updates. `SECURITY_REPORT_DIR`
+empty keeps the tab off; a configured directory shows it even before a report
+exists, reporting it unavailable until then.
+
+Local development points at a synthetic or copied report outside the repository
+(e.g. `/tmp/opencode/security-report`, never a real report in the checkout):
+
+```bash
+SECURITY_REPORT_DIR=/tmp/opencode/security-report \
+  uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
+```
+
+Docker sets `SECURITY_REPORT_DIR=/run/security-watch` and bind-mounts
+`${HOME}/.local/state/security-watch` there read-only. Override the source with
+`SECURITY_REPORT_HOST_PATH` in the repo's gitignored `.env` or the Compose
+shell — **not** `/opt/secrets/dashboard.env`, which supplies container
+credentials and is not read for Compose interpolation. Use only the dedicated
+report directory, never `$HOME` or a secrets directory.
+
+Mount the whole directory, never `latest.json` alone: the watch replaces the
+report atomically (`os.replace`), so a single-file mount would keep serving the
+old inode. `create_host_path: false` requires the source to already exist and
+fails container start otherwise; let the watch create it.
+
+Reports are `0600` in a `0700` directory, replaced atomically, so the producer's
+numeric UID must be 1000 (the container UID) for ongoing access, not just
+today's file: a one-off `chmod`/ACL does not survive. Do not use recursive
+`chmod` or rerun the watch as another account. Verify:
+
+```bash
+stat -c '%u:%g %a %n' ~/.local/state/security-watch ~/.local/state/security-watch/latest.json
+```
+
+The tab polls every 60 seconds only while active and visible, re-reads on tab
+entry/visibility, and manual refresh re-reads the same report. Age over 36
+hours is report age, not job status; carried-over findings are **NOT RECHECKED**.
+Coverage is limited to inventoried sources, so a clean report is not an all-clear.
+
+Without the host watch (or to disable it), remove both the
+`SECURITY_REPORT_DIR` entry and the security bind mount from the Compose file;
+setting the variable empty alone leaves the required mount in place.
 
 ---
 
@@ -317,8 +365,10 @@ cd /opt/stacks/dashboard && docker compose up -d --build
 
 The image runs the app as a dedicated `homelab` user (uid 1000), not root.
 `pid: host` still works for psutil. `/data` and request spools are writable;
-certificate, integration config, NAS and sysfs mounts are read-only. On this
-box uid 1000 = your user, so the spool dir and `/data` need no ownership changes.
+the certificate, integration config, security report, NAS and sysfs mounts are
+read-only. On this box uid 1000 = your user, so the spool dir and `/data` need
+no ownership changes. The security report directory is `0700`/`0600`, so its
+owner must be uid 1000 as well (see the SECURITY tab section).
 Host handlers reject symlinks, special files, oversized input and unknown
 tokens. Their logs go to journald, never to a container-writable path.
 
@@ -424,6 +474,7 @@ creates the spool dir, appends `DESKTOP_SPOOL_DIR` to `.env`, rebuilds):
 | `~/.homelab-ctrl:/data` | Writable energy and benchmark persistence |
 | Request spool directories | Writable fixed-action queues for host handlers |
 | Portainer certificate | Read-only exact server-certificate trust |
+| `~/.local/state/security-watch:/run/security-watch:ro` | Read-only daily security report (`latest.json`) |
 
 The service uses bridge networking, not host networking, and has no Docker
 socket mount. Host handlers read scripts directly from the checkout, so edits
@@ -450,3 +501,5 @@ docker compose up -d --build
 | Containers marked stale/unavailable | Check Portainer availability, token and pinned certificate; there is no CLI fallback |
 | NFS mount shows "not mounted" | Check the read-only bind and `NFS_MOUNTS` in the Docker application env file |
 | AdGuard section missing | Section auto-hides on error — check `ADGUARD_URL` / credentials |
+| SECURITY tab missing | Locally, `SECURITY_REPORT_DIR` is unset; in Docker, check the report directory, its uid-1000 ownership, and the read-only mount (see the SECURITY tab section) |
+| SECURITY report unavailable | Check `latest.json` exists, is valid JSON, and is under 8 MiB; "stale" reflects report age, not the watch's job status |

@@ -1,0 +1,250 @@
+{
+  "checked_at": "2026-10-28T06:15:00+00:00",
+  "summary": "Synthetic sample report: one current update, one retained earlier finding, one not-affected assessment and one excluded claim. Coverage is partial.",
+  "checked_components": [
+    "sample-api",
+    "sample-gateway",
+    "sample-web",
+    "host:sample-agent",
+    "host:sample-edge"
+  ],
+  "limitations": [
+    "Docker inventory unavailable for sample-db; its advisory applicability is unknown.",
+    "Advisory source checks were incomplete; review the synthetic error in advisory_checks.",
+    "Application package matches are possible issues: vulnerable feature/transport/build use is not verified. Review preconditions in the original advisory before remediation."
+  ],
+  "findings": [
+    {
+      "component": "sample-web",
+      "advisory": "SAMPLE-2026-0142",
+      "title": "Synthetic path traversal in sample-web static handler",
+      "installed_version": "1.4.2",
+      "affected_versions": "< 1.4.5",
+      "fixed_version": "1.4.5",
+      "reason": "Synthetic advisory states crafted encoded paths can escape the static root; the deployed image tag predates the fix.",
+      "action": "Rebuild sample-web from the 1.4.5 image and re-check the exposed route.",
+      "priority": "update_soon",
+      "status": "possible",
+      "exploited": "unknown",
+      "confidence": "medium",
+      "sources": [
+        "https://advisories.sample.example/SAMPLE-2026-0142",
+        "https://osv.sample.example/vulnerability/SAMPLE-2026-0142"
+      ]
+    },
+    {
+      "component": "sample-gateway",
+      "advisory": "SAMPLE-2026-0088",
+      "title": "Synthetic header parsing denial of service",
+      "installed_version": "2.0.1",
+      "affected_versions": ">= 2.0.0, < 2.0.4",
+      "fixed_version": "2.0.4",
+      "reason": "Retained from the previous run: an oversized synthetic header chain can exhaust worker memory. Not rechecked in this run.",
+      "action": "Update sample-gateway to 2.0.4 when the open Dependabot branch is merged.",
+      "priority": "act_now",
+      "status": "possible",
+      "exploited": "no",
+      "confidence": "medium",
+      "sources": [
+        "https://advisories.sample.example/SAMPLE-2026-0088"
+      ],
+      "not_rechecked": true
+    }
+  ],
+  "assessments": [
+    {
+      "component": "sample-web",
+      "advisory": "SAMPLE-2026-0142",
+      "title": "Synthetic path traversal in sample-web static handler",
+      "installed_version": "1.4.2",
+      "affected_versions": "< 1.4.5",
+      "fixed_version": "1.4.5",
+      "reason": "Synthetic advisory states crafted encoded paths can escape the static root; the deployed image tag predates the fix.",
+      "action": "Rebuild sample-web from the 1.4.5 image and re-check the exposed route.",
+      "priority": "update_soon",
+      "status": "possible",
+      "exploited": "unknown",
+      "confidence": "medium",
+      "sources": [
+        "https://advisories.sample.example/SAMPLE-2026-0142",
+        "https://osv.sample.example/vulnerability/SAMPLE-2026-0142"
+      ]
+    },
+    {
+      "component": "sample-api",
+      "advisory": "SAMPLE-2026-0117",
+      "title": "Synthetic template injection in reporting endpoint",
+      "installed_version": "3.2.0",
+      "affected_versions": ">= 3.0.0, < 3.1.0",
+      "fixed_version": "3.1.0",
+      "reason": "The deployed version is outside the affected range; the endpoint also rejects template syntax at the edge.",
+      "action": "No change required; keep the 3.2.0 version pin.",
+      "priority": "monitor",
+      "status": "not_affected",
+      "exploited": "no",
+      "confidence": "high",
+      "sources": [
+        "https://advisories.sample.example/SAMPLE-2026-0117"
+      ]
+    }
+  ],
+  "rejected_assessments": [
+    {
+      "component": "sample-db",
+      "advisory": "SAMPLE-2026-0201",
+      "reason": "Agent finding lacks a source from the actual search/advisory results and used an unobserved installed version."
+    }
+  ],
+  "inventory": {
+    "collected_at": "2026-10-28T06:12:30+00:00",
+    "host": {
+      "alias": "sample-host",
+      "distribution": "sampleos",
+      "release": "42",
+      "base_release": "samplebase",
+      "kernel": "6.0.0-sample",
+      "packages": [
+        {
+          "name": "sample-agent",
+          "version": "5.1.0"
+        }
+      ],
+      "apt_last_successful_refresh": "2026-10-28T06:00:00+00:00",
+      "pending_updates_from_local_cache": [
+        {
+          "name": "sample-agent",
+          "candidate": "5.1.1",
+          "installed": "5.1.0"
+        }
+      ]
+    },
+    "components": [
+      {
+        "id": "sample-api",
+        "image": "registry.sample.example/sample/api:3.2.0",
+        "state": "running",
+        "version": "3.2.0",
+        "version_source": "image tag (may not be application version)",
+        "exposure": "loopback-published; proxy/tunnel access unknown"
+      },
+      {
+        "id": "sample-gateway",
+        "image": "registry.sample.example/sample/gateway:2.0.1",
+        "state": "running",
+        "version": "2.0.1",
+        "version_source": "image tag (may not be application version)",
+        "exposure": "network-published; external reachability unknown",
+        "revision": "0a1b2c3"
+      },
+      {
+        "id": "sample-web",
+        "image": "registry.sample.example/sample/web:1.4.2",
+        "state": "running",
+        "version": "1.4.2",
+        "version_source": "matching image source label (application unverified)",
+        "exposure": "network-published; external reachability unknown"
+      }
+    ],
+    "packages": [
+      {
+        "component": "sample-api",
+        "ecosystem": "PyPI",
+        "name": "sample-lib",
+        "version": "1.0.0",
+        "source": "runtime Python metadata"
+      },
+      {
+        "component": "sample-web",
+        "ecosystem": "npm",
+        "name": "sample-ui",
+        "version": "2.2.0",
+        "source": "running npm process"
+      }
+    ],
+    "coverage_gaps": [
+      "Sample-db container metadata unavailable; advisory applicability for sample-db is unknown.",
+      "Selected host/Python packages and MCP direct dependencies only; no full image/transitive scan."
+    ],
+    "remote_hosts": [
+      {
+        "alias": "sample-edge",
+        "host": {
+          "alias": "sample-edge",
+          "distribution": "sampleos",
+          "release": "42",
+          "kernel": "6.0.0-sample",
+          "packages": [
+            {
+              "name": "sample-ssh-client",
+              "version": "9.0.0"
+            }
+          ]
+        },
+        "collected_at": "2026-10-28T06:12:00+00:00"
+      }
+    ],
+    "collection_errors": []
+  },
+  "advisory_checks": {
+    "checked_at": "2026-10-28T06:13:00+00:00",
+    "osv_matches": [
+      {
+        "component": "sample-web",
+        "ecosystem": "npm",
+        "name": "sample-ui",
+        "version": "2.2.0",
+        "source": "running npm process",
+        "advisory": "SAMPLE-2026-0142",
+        "url": "https://osv.sample.example/vulnerability/SAMPLE-2026-0142"
+      }
+    ],
+    "kev_candidates": [
+      {
+        "cveID": "CVE-0000-0000142",
+        "vendorProject": "Sample Vendor",
+        "product": "Sample Web",
+        "dateAdded": "2026-10-20",
+        "knownRansomwareCampaignUse": "Unknown"
+      }
+    ],
+    "errors": [
+      "Synthetic advisory feed returned one timeout; source checks are incomplete."
+    ],
+    "kev_source": "https://kev.sample.example/known-exploited-vulnerabilities.json",
+    "kev_catalog_version": "2026.10.28"
+  },
+  "source_checks_complete": false,
+  "searches": 4,
+  "search_sources": [
+    "https://advisories.sample.example/SAMPLE-2026-0088",
+    "https://advisories.sample.example/SAMPLE-2026-0117",
+    "https://advisories.sample.example/SAMPLE-2026-0142",
+    "https://osv.sample.example/vulnerability/SAMPLE-2026-0142"
+  ],
+  "usage": {
+    "input_tokens": 18432,
+    "output_tokens": 2211,
+    "total_tokens": 20643
+  },
+  "dependabot": {
+    "open": [
+      {
+        "branch": "dependabot/docker/sample-web-1.4.5",
+        "opened": "2026-10-24",
+        "tip": "1a2b3c4"
+      },
+      {
+        "branch": "dependabot/docker/sample-gateway-2.0.4",
+        "opened": "2026-10-26",
+        "tip": "5d6e7f8"
+      }
+    ],
+    "new": [
+      {
+        "branch": "dependabot/docker/sample-gateway-2.0.4",
+        "opened": "2026-10-26",
+        "tip": "5d6e7f8"
+      }
+    ]
+  }
+}

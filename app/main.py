@@ -49,6 +49,12 @@ def api_features():
     return core.get_features()
 
 
+@app.get("/api/security")
+def api_security():
+    # Read-only; no-store keeps a rotated latest.json from being cached.
+    return JSONResponse(core.get_security_report(), headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/ollama")
 def api_ollama():
     return core.get_ollama_model()

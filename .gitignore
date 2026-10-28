@@ -3,3 +3,14 @@ venv/
 secrets.py
 __pycache__/
 .env
+
+# Playwright browser artifacts (the global output dir is /opt/stacks/.playwright-out)
+.playwright-out/
+
+# Live security-watch reports must never be committed. The sanitized sample at
+# tests/fixtures/security-report.json is intentionally tracked.
+/security-watch/
+/security-report.json
+/latest.json
+/latest.md
+tests/fixtures/local/

@@ -11,6 +11,7 @@ responsive browser UI, and optional integrations controlled by environment setti
 - Optional host-side streaming and desktop wake/power controls.
 - OpenCode Go usage and model limits; Mistral model table from LiteLLM config.
 - Shared, explicitly fetched Artificial Analysis benchmark scores.
+- Read-only SECURITY tab for the host watch's daily report (optional, off by default).
 
 ## Run locally
 
@@ -45,6 +46,10 @@ LiteLLM configuration mount:
 docker compose up -d --build
 ```
 
+It also enables the read-only SECURITY tab: the host watch's report directory
+is bind-mounted read-only and `SECURITY_REPORT_DIR` is set. See
+[SETUP.md](SETUP.md#security-watch-report-security-tab) for paths, overrides and safety.
+
 See [SETUP.md](SETUP.md) for integration details and host-side controls.
 Review host scripts before running them: they can change system targets or
 power state. Removing a credential from current files does not remove it from
@@ -54,8 +59,11 @@ Git history; revoke exposed credentials before publishing source.
 
 ```bash
 PYTHON_DOTENV_DISABLED=1 uv run --with httpx python -m unittest discover -s tests -v
-node --test tests/frontend.test.js
+node --test tests/*.test.js
 ```
 
 The tests mock integration calls or use temporary loopback TLS servers, with
-no real device controls or paid inference. TLS tests also require `openssl`.
+no real device controls or paid inference. Security tests read the sanitized
+sample `tests/fixtures/security-report.json` (copied to a temporary directory as
+`latest.json`) and never the host report directory. TLS tests also require
+`openssl`.

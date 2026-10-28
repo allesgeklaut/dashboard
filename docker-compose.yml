@@ -16,6 +16,8 @@ services:
       # Exact self-signed Portainer server certificate (not a private key).
       - PORTAINER_CA_FILE=/run/secrets/portainer-ca.pem
       - LITELLM_CONFIG_FILE=/run/litellm/config.yaml
+      # SECURITY tab — host security-watch report directory, read-only.
+      - SECURITY_REPORT_DIR=/run/security-watch
       # feature flag — set STREAM_SPOOL_DIR= in .env to disable the stream feature
       - STREAM_SPOOL_DIR=${STREAM_SPOOL_DIR-/stream-spool}
       # desktop wake/poweroff request spool (host handler acts on it)
@@ -37,6 +39,14 @@ services:
       - type: bind
         source: /opt/secrets/portainer-ca.pem
         target: /run/secrets/portainer-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      # Whole report directory: the host watch replaces latest.json atomically,
+      # so a single-file mount would keep serving the old inode. Source must exist.
+      - type: bind
+        source: "${SECURITY_REPORT_HOST_PATH:-${HOME}/.local/state/security-watch}"
+        target: /run/security-watch
         read_only: true
         bind:
           create_host_path: false

@@ -467,28 +467,65 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 .vram-card .stat-sub,
 .vram-card .pbar { position:relative; z-index:1; }
 
-/* ── TABS ── */
+/* ── TABS (single swipeable row, fixed legible labels) ── */
+.tab-bar-wrap {
+  position:relative; margin-bottom:12px; max-width:100%;
+  min-width:0;
+}
 .tab-bar {
-  display:flex; gap:0; margin-bottom:12px;
+  display:flex; flex-wrap:nowrap; gap:0;
   border-bottom:1px solid var(--border);
-  overflow-x:auto; /* never push the page sideways on narrow screens */
+  overflow-x:auto; /* one row: swipe instead of wrapping or shrinking */
+  overflow-y:hidden;
   padding-bottom:1px; /* keep the 2px active underline visible (overflow clips it otherwise) */
   scrollbar-width:none;
+  scroll-snap-type:x proximity;
+  scroll-padding-inline:26px;
+  overscroll-behavior-x:contain;
+  -webkit-overflow-scrolling:touch;
+  max-width:100%;
 }
 .tab-bar::-webkit-scrollbar { display:none; }
 .tab-btn {
+  flex:0 0 auto; min-width:44px; min-height:44px;
+  display:inline-flex; align-items:center; justify-content:center;
   font-family:var(--font); font-size:11px; font-weight:700;
-  letter-spacing:0.12em; text-transform:uppercase;
-  padding:8px 18px; background:transparent; color:var(--g-dim);
+  letter-spacing:0.1em; text-transform:uppercase;
+  padding:0 14px; background:transparent; color:var(--g-dim);
   border:none; border-bottom:2px solid transparent;
   margin-bottom:-1px; cursor:pointer;
   transition:color 0.15s, border-color 0.15s;
   white-space:nowrap;
+  scroll-snap-align:start;
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
 }
 .tab-btn:hover { color:var(--g); }
 .tab-btn.active { color:var(--g-bright); border-bottom-color:var(--g); }
+.tab-btn:focus-visible {
+  outline:2px solid var(--g-bright); outline-offset:-2px;
+}
+/* subtle scroll cues: edge fade + chevron, only while that side can scroll */
+.tab-bar-wrap::before,
+.tab-bar-wrap::after {
+  position:absolute; top:0; bottom:1px; z-index:2;
+  width:26px; display:flex; align-items:center;
+  font:700 18px/1 var(--font); color:var(--g-dim);
+  pointer-events:none; opacity:0; transition:opacity 0.15s;
+}
+.tab-bar-wrap::before {
+  content:'‹'; left:0; padding-left:4px;
+  background:linear-gradient(to right, var(--bg) 50%, rgba(10,10,10,0));
+}
+.tab-bar-wrap::after {
+  content:'›'; right:0; padding-right:4px; justify-content:flex-end;
+  background:linear-gradient(to left, var(--bg) 50%, rgba(10,10,10,0));
+}
+.tab-bar-wrap.can-left::before,
+.tab-bar-wrap.can-right::after { opacity:0.9; }
 @media (max-width:480px) {
-  .tab-btn { padding:8px 11px; letter-spacing:0.07em; font-size:10.5px; }
+  /* Keep 11px labels and 44px targets: the row swipes; it never shrinks or wraps. */
+  .tab-btn { padding:0 12px; }
   /* compact limits table so all four columns fit without sideways scrolling */
   #ocgl-table th, #ocgl-table td { padding:5px 6px; font-size:10px; }
   #mistral-table th, #mistral-table td { padding:5px 6px; font-size:10px; }
@@ -548,6 +585,284 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
   font-size: 11px;
   margin-bottom: 6px;
 }
+
+/* ── SECURITY WATCH ── */
+#tab-security, .sec-content, .sec-panel, .sec-card, .sec-toolbar { min-width:0; }
+.sec-content { max-width:100%; }
+.sec-note {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:9px 11px; margin-bottom:6px;
+  color:var(--g-dim); font-size:11px; line-height:1.5;
+  overflow-wrap:anywhere;
+}
+.sec-note b { color:var(--g); }
+.sec-note.sec-assessment-blocked, .sec-note.sec-resolution-blocked {
+  border-color:var(--red-dim); color:var(--g);
+}
+.sec-summary-card {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:10px 12px; margin-bottom:6px;
+  min-width:0;
+}
+.sec-meta {
+  display:flex; flex-wrap:wrap; gap:3px 10px;
+  font-size:10px; color:var(--g-dim); line-height:1.5;
+  overflow-wrap:anywhere;
+}
+.sec-meta b { color:var(--g); font-weight:600; }
+.sec-meta .sec-utc { color:var(--g-faint); }
+.sec-age { color:var(--g); }
+.sec-age.stale { color:var(--red); font-weight:700; }
+.sec-alerts { display:flex; flex-direction:column; gap:5px; margin-top:8px; }
+.sec-alert {
+  border:1px solid var(--border); border-radius:3px;
+  padding:6px 9px; font-size:10.5px; line-height:1.5;
+  color:var(--g-dim); background:var(--g-faint);
+  overflow-wrap:anywhere;
+}
+.sec-alert-label {
+  display:block; font-size:9px; font-weight:700;
+  letter-spacing:0.12em; text-transform:uppercase; margin-bottom:2px;
+}
+.sec-alert b { color:inherit; }
+.sec-alert.err { border-color:var(--red-dim); color:var(--red); background:rgba(255,64,64,0.06); }
+.sec-alert.warn { border-color:rgba(255,170,0,0.45); color:var(--yellow); background:rgba(255,170,0,0.05); }
+.sec-alert.info { border-color:var(--border); color:var(--g-dim); background:var(--g-faint); }
+.sec-summary {
+  margin-top:8px; font-size:11.5px; line-height:1.55;
+  color:var(--g); overflow-wrap:anywhere;
+}
+.sec-summary-note { margin-top:5px; font-size:10px; color:var(--g-dim); line-height:1.5; }
+.sec-toolbar { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
+.sec-tools { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.sec-tools .btn-stream { min-height:36px; }
+.sec-search-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.sec-search {
+  flex:1 1 170px; min-width:0; min-height:38px;
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; color:var(--g); font-family:var(--font);
+  font-size:11.5px; padding:7px 10px;
+}
+.sec-search::placeholder { color:var(--g-dim); }
+.sec-search:focus { outline:none; border-color:var(--border-hi); }
+.sec-pbtn:focus-visible,
+.sec-search:focus-visible,
+.sec-tools .btn-stream:focus-visible,
+.sec-card-sum:focus-visible,
+.sec-tech > summary:focus-visible,
+.sec-repo-link:focus-visible {
+  outline:2px solid var(--g-bright); outline-offset:2px;
+}
+.sec-shown { font-size:10px; color:var(--g-dim); white-space:nowrap; }
+.sec-priority { display:flex; flex-wrap:wrap; gap:5px; }
+.sec-pbtn {
+  font-family:var(--font); font-size:10px; letter-spacing:0.05em;
+  min-height:34px; padding:4px 9px; border-radius:2px; white-space:nowrap;
+  border:1px solid var(--border); background:transparent; color:var(--g-dim);
+  transition:all 0.15s;
+}
+.sec-pbtn:hover { border-color:var(--border-hi); color:var(--g); }
+.sec-pbtn.active { background:var(--g-faint); color:var(--g); border-color:var(--border-hi); }
+.sec-pbtn .n { color:var(--g-bright); font-weight:700; }
+.sec-pbtn.p-act_now.active { background:rgba(255,64,64,0.1); border-color:var(--red-dim); color:var(--red); }
+.sec-pbtn.p-act_now.active .n { color:var(--red); }
+.sec-pbtn.p-update_soon.active { background:rgba(255,170,0,0.09); border-color:rgba(255,170,0,0.5); color:var(--yellow); }
+.sec-pbtn.p-update_soon.active .n { color:var(--yellow); }
+.sec-pbtn.p-monitor.active { background:rgba(68,170,255,0.09); border-color:rgba(68,170,255,0.5); color:var(--blue); }
+.sec-pbtn.p-monitor.active .n { color:var(--blue); }
+.sec-card {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-left:3px solid var(--g-dim); border-radius:3px;
+  margin-bottom:6px; overflow:hidden;
+}
+.sec-card[data-priority="act_now"] { border-left-color:var(--red); }
+.sec-card[data-priority="update_soon"] { border-left-color:var(--yellow); }
+.sec-card[data-priority="monitor"] { border-left-color:var(--blue); }
+.sec-card-sum {
+  list-style:none; cursor:pointer; min-height:44px;
+  padding:9px 10px; display:flex; flex-direction:column; gap:5px;
+  -webkit-tap-highlight-color:transparent;
+}
+.sec-card-sum::-webkit-details-marker { display:none; }
+.sec-card-head { display:flex; align-items:flex-start; gap:8px; min-width:0; }
+.sec-card-top { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
+.sec-card-pri {
+  flex-shrink:0; font-size:9px; font-weight:700; letter-spacing:0.08em;
+  padding:1px 5px; border:1px solid var(--border); border-radius:2px;
+  color:var(--g-dim); text-transform:uppercase;
+}
+.sec-card-pri.p-act_now { color:var(--red); border-color:var(--red-dim); background:rgba(255,64,64,0.08); }
+.sec-card-pri.p-update_soon { color:var(--yellow); border-color:rgba(255,170,0,0.45); background:rgba(255,170,0,0.07); }
+.sec-card-pri.p-monitor { color:var(--blue); border-color:rgba(68,170,255,0.45); background:rgba(68,170,255,0.07); }
+.sec-card-id {
+  font-size:11.5px; font-weight:700; color:var(--g);
+  line-height:1.4; overflow-wrap:anywhere;
+}
+.sec-card-sub {
+  font-size:10px; color:var(--g-dim); line-height:1.45;
+  overflow-wrap:anywhere;
+}
+.sec-card-chevron {
+  flex-shrink:0; margin-left:auto; color:var(--g-dim);
+  font-size:12px; line-height:1.3; transition:transform 0.15s;
+}
+.sec-card[open] .sec-card-chevron { transform:rotate(180deg); }
+.sec-badges { display:flex; flex-wrap:wrap; gap:4px; }
+.sec-badge {
+  font-size:8.5px; font-weight:700; letter-spacing:0.07em;
+  text-transform:uppercase; padding:1px 5px;
+  border:1px solid var(--border); border-radius:2px; color:var(--g-dim);
+}
+.sec-badge.ok { color:var(--g); border-color:rgba(0,204,68,0.4); }
+.sec-badge.warn { color:var(--yellow); border-color:rgba(255,170,0,0.45); }
+.sec-badge.alert { color:var(--red); border-color:var(--red-dim); }
+.sec-badge.dim { color:var(--g-dim); }
+.sec-badge.not-rechecked {
+  color:#ff8080; border-color:var(--red);
+  background:rgba(255,64,64,0.14);
+}
+.sec-card-body {
+  padding:0 11px 11px; border-top:1px solid var(--g-faint);
+  overflow-wrap:anywhere;
+}
+.sec-grid {
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(min(150px,100%), 1fr));
+  gap:6px 10px; margin:8px 0;
+}
+.sec-k {
+  display:block; font-size:9px; font-weight:700;
+  letter-spacing:0.08em; color:var(--g-dim); text-transform:uppercase;
+}
+.sec-v {
+  display:block; font-size:10.5px; color:var(--g);
+  line-height:1.45; overflow-wrap:anywhere;
+}
+.sec-v.dim { color:var(--g-dim); }
+.sec-prose {
+  margin-top:7px; font-size:11px; line-height:1.55;
+  color:var(--g); overflow-wrap:anywhere;
+}
+.sec-prose .sec-k { margin-bottom:2px; }
+.sec-not-rechecked {
+  margin-top:8px; padding:6px 8px; font-size:10px; line-height:1.5;
+  border:1px solid var(--red-dim); border-radius:2px;
+  background:rgba(255,64,64,0.07); color:#ff9090;
+  overflow-wrap:anywhere;
+}
+.sec-links { list-style:none; margin:2px 0 0; padding:0; display:flex; flex-direction:column; gap:3px; }
+.sec-links li { font-size:10px; line-height:1.5; overflow-wrap:anywhere; }
+.sec-links a { color:var(--blue); text-decoration:none; overflow-wrap:anywhere; }
+.sec-links a:hover { text-decoration:underline; }
+.sec-links .sec-link-blocked { color:var(--g-dim); }
+.sec-rejected {
+  background:var(--bg-card); border:1px solid rgba(255,170,0,0.3);
+  border-left:3px solid rgba(255,170,0,0.55); border-radius:3px;
+  padding:8px 10px; margin-bottom:6px;
+}
+.sec-rejected-title { margin-top:4px; font-size:11px; color:var(--g); overflow-wrap:anywhere; }
+.sec-rejected p { margin-top:3px; font-size:10.5px; color:var(--g-dim); line-height:1.5; overflow-wrap:anywhere; }
+.sec-panel {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:9px 11px;
+}
+.sec-panel + .sec-panel { margin-top:6px; }
+.sec-panel-alert { border-color:var(--red-dim); }
+.sec-panel-head {
+  display:flex; flex-wrap:wrap; gap:5px; align-items:baseline;
+  margin-bottom:5px;
+}
+.sec-panel-head .sec-k { margin:0; }
+.sec-chips { display:flex; flex-wrap:wrap; gap:4px; }
+.sec-chip {
+  font-size:9.5px; color:var(--g-dim); border:1px solid var(--border);
+  border-radius:2px; padding:1px 5px; overflow-wrap:anywhere;
+}
+.sec-list { list-style:none; display:flex; flex-direction:column; gap:4px; }
+.sec-list li {
+  position:relative; padding-left:11px; font-size:10.5px;
+  line-height:1.5; color:var(--g); overflow-wrap:anywhere;
+}
+.sec-list li::before {
+  content:'·'; position:absolute; left:1px; color:var(--g-dim);
+}
+.sec-list.err li { color:var(--red); }
+.sec-list.err li::before { color:var(--red-dim); }
+.sec-tech {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; margin-top:6px;
+}
+.sec-tech > summary {
+  min-height:40px; padding:8px 10px; cursor:pointer;
+  display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px;
+  font-size:10.5px; color:var(--g); overflow-wrap:anywhere;
+  -webkit-tap-highlight-color:transparent;
+}
+.sec-tech > summary::marker { color:var(--g-dim); }
+.sec-tech pre {
+  margin:0; padding:8px 10px; border-top:1px solid var(--g-faint);
+  font-family:var(--font); font-size:9.5px; line-height:1.5;
+  color:var(--g-dim); white-space:pre-wrap; overflow-wrap:anywhere;
+  word-break:break-word; max-width:100%; max-height:340px; overflow:auto;
+}
+.sec-dep {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:8px 10px; margin-bottom:5px;
+}
+.sec-dep-head { display:flex; flex-wrap:wrap; gap:4px 7px; align-items:center; }
+.sec-dep-branch {
+  font-size:11px; font-weight:700; color:var(--g);
+  overflow-wrap:anywhere; min-width:0;
+}
+.sec-dep-meta {
+  display:block; margin-top:3px; font-size:10px;
+  color:var(--g-dim); line-height:1.5; overflow-wrap:anywhere;
+}
+.sec-new {
+  font-size:8.5px; font-weight:700; letter-spacing:0.08em;
+  color:var(--yellow); border:1px solid rgba(255,170,0,0.5);
+  border-radius:2px; padding:1px 5px;
+}
+.sec-repo-link {
+  display:inline-block; margin-top:4px; font-size:10px;
+  color:var(--blue); text-decoration:none; overflow-wrap:anywhere;
+}
+.sec-repo-link:hover { text-decoration:underline; }
+.sec-stats {
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(min(120px,100%), 1fr));
+  gap:6px; margin-bottom:6px;
+}
+.sec-stat {
+  background:var(--bg-card); border:1px solid var(--border);
+  border-radius:3px; padding:7px 9px; min-width:0;
+}
+.sec-stat-val {
+  display:block; margin-top:2px; font-size:14px; font-weight:700;
+  color:var(--g-bright); line-height:1.2; overflow-wrap:anywhere;
+}
+.sec-unavailable {
+  background:var(--bg-card); border:1px solid var(--red-dim);
+  border-radius:3px; padding:14px 13px;
+  background:linear-gradient(180deg, rgba(255,64,64,0.045), transparent 70%);
+}
+.sec-unavailable-title {
+  font-size:11px; font-weight:700; letter-spacing:0.12em;
+  text-transform:uppercase; color:var(--red); margin-bottom:6px;
+}
+.sec-unavailable p { font-size:11px; line-height:1.55; color:var(--g); margin-bottom:5px; overflow-wrap:anywhere; }
+.sec-unavailable .sec-code { font-size:10px; color:var(--g-dim); margin:7px 0 0; }
+.sec-unavailable .btn-stream { margin-top:10px; }
+.sec-zero { margin-bottom:0; }
+.sec-zero .sec-k { margin-bottom:3px; }
+@media (max-width:480px) {
+  .sec-tools .btn-stream, .sec-pbtn, .sec-search { min-height:44px; }
+  .sec-card-sum { padding:9px 9px; }
+  .sec-card-body { padding:0 9px 10px; }
+  .sec-toolbar { gap:5px; }
+  .sec-grid { grid-template-columns:1fr 1fr; }
+}
+@media (max-width:360px) {
+  .sec-grid { grid-template-columns:1fr; }
+}
 </style>
 </head>
 <body>
@@ -563,17 +878,20 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 </header>
 
 <main>
-  <!-- Tab bar -->
-  <div class="tab-bar">
-    <button class="tab-btn active" data-tab="server"     onclick="switchTab('server',this)">SERVER</button>
-    <button class="tab-btn"        data-tab="opencode"   onclick="switchTab('opencode',this)" style="display:none">OPENCODE</button>
-    <button class="tab-btn"        data-tab="mistral"    onclick="switchTab('mistral',this)" style="display:none">MISTRAL</button>
-    <button class="tab-btn"        data-tab="containers" onclick="switchTab('containers',this)">CONTAINERS</button>
-    <button class="tab-btn"        data-tab="processes"  onclick="switchTab('processes',this)">PROCESSES</button>
+  <!-- Tab bar: one swipeable row; labels keep their size, targets stay >=44px -->
+  <div class="tab-bar-wrap" id="tab-bar-wrap">
+    <nav class="tab-bar" id="tab-bar" role="tablist" aria-label="Dashboard sections" aria-orientation="horizontal" onscroll="updateTabOverflowCues()" onkeydown="tabKeydown(event)">
+      <button class="tab-btn active" id="tab-btn-server"     role="tab" aria-selected="true"  aria-controls="tab-server"     data-tab="server"     tabindex="0"  onclick="switchTab('server',this)">SERVER</button>
+      <button class="tab-btn"        id="tab-btn-opencode"   role="tab" aria-selected="false" aria-controls="tab-opencode"   data-tab="opencode"   tabindex="-1" onclick="switchTab('opencode',this)" style="display:none">OPENCODE</button>
+      <button class="tab-btn"        id="tab-btn-mistral"    role="tab" aria-selected="false" aria-controls="tab-mistral"    data-tab="mistral"    tabindex="-1" onclick="switchTab('mistral',this)" style="display:none">MISTRAL</button>
+      <button class="tab-btn"        id="tab-btn-containers" role="tab" aria-selected="false" aria-controls="tab-containers" data-tab="containers" tabindex="-1" onclick="switchTab('containers',this)">CONTAINERS</button>
+      <button class="tab-btn"        id="tab-btn-processes"  role="tab" aria-selected="false" aria-controls="tab-processes"  data-tab="processes"  tabindex="-1" onclick="switchTab('processes',this)">PROCESSES</button>
+      <button class="tab-btn"        id="tab-btn-security"   role="tab" aria-selected="false" aria-controls="tab-security"   data-tab="security"   tabindex="-1" onclick="switchTab('security',this)" style="display:none">SECURITY</button>
+    </nav>
   </div>
 
   <!-- ═══════════ SERVER TAB ═══════════ -->
-  <div id="tab-server" class="tab-pane">
+  <div id="tab-server" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-server">
 
     <!-- System -->
     <div class="sec-label">system</div>
@@ -677,7 +995,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
   </div><!-- /#tab-server -->
 
   <!-- ═══════════ OPENCODE TAB ═══════════ -->
-  <div id="tab-opencode" class="tab-pane" style="display:none">
+  <div id="tab-opencode" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-opencode" style="display:none">
 
     <!-- Usage (rolling 5h / weekly / monthly) — shown only when a key is configured -->
     <div class="sec-label" id="ocg-label" style="display:none">usage</div>
@@ -716,7 +1034,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
   </div><!-- /#tab-opencode -->
 
   <!-- ═══════════ MISTRAL TAB ═══════════ -->
-  <div id="tab-mistral" class="tab-pane" style="display:none">
+  <div id="tab-mistral" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-mistral" style="display:none">
     <div class="sec-label">mistral</div>
     <div class="stream-row" style="margin-bottom:10px">
       <div class="stream-btns">
@@ -753,7 +1071,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
   </div><!-- /#tab-mistral -->
 
   <!-- ═══════════ CONTAINERS TAB ═══════════ -->
-  <div id="tab-containers" class="tab-pane" style="display:none">
+  <div id="tab-containers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-containers" style="display:none">
     <div class="sec-label">
       containers <span id="ctr-count" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
     </div>
@@ -766,7 +1084,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
   </div><!-- /#tab-containers -->
 
   <!-- ═══════════ PROCESSES TAB ═══════════ -->
-  <div id="tab-processes" class="tab-pane" style="display:none">
+  <div id="tab-processes" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-processes" style="display:none">
     <div class="sec-label">
       processes <span id="proc-count" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
     </div>
@@ -787,6 +1105,69 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
       </table>
     </div>
   </div><!-- /#tab-processes -->
+
+  <!-- ═══════════ SECURITY TAB (read-only advisory report) ═══════════ -->
+  <div id="tab-security" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-security" style="display:none">
+    <div class="sec-label">
+      security watch <span id="sec-findings-total" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
+    </div>
+
+    <div id="sec-unavailable" class="sec-unavailable" role="status" aria-live="polite">
+      <div class="sec-unavailable-title">LOADING SECURITY REPORT…</div>
+      <p>Requesting the latest report from this dashboard.</p>
+    </div>
+
+    <div id="sec-content" class="sec-content" style="display:none">
+      <div class="sec-summary-card">
+        <div class="sec-meta" id="sec-meta"></div>
+        <div class="sec-alerts" id="sec-alerts" role="status" aria-live="polite"></div>
+        <p class="sec-summary" id="sec-summary"></p>
+      </div>
+
+      <div class="sec-label">findings</div>
+      <div class="sec-toolbar">
+        <div class="sec-tools">
+          <button class="btn-stream" id="btn-sec-refresh" onclick="securityRefresh()" aria-label="Refresh the security report">⟳ REFRESH REPORT</button>
+          <button class="btn-stream" id="btn-sec-json" onclick="securityDownload()" aria-label="Download the displayed security report as JSON">⤓ JSON</button>
+          <button class="btn-stream" id="btn-sec-expand" onclick="securityExpandAll(true)" aria-label="Expand all finding cards">▾ EXPAND ALL</button>
+          <button class="btn-stream" id="btn-sec-collapse" onclick="securityExpandAll(false)" aria-label="Collapse all finding cards">▸ COLLAPSE ALL</button>
+        </div>
+        <div class="sec-search-row">
+          <input class="sec-search" id="sec-search" type="search" placeholder="search findings, versions, sources…" aria-label="Search security findings" oninput="securitySearchChanged()">
+          <span class="sec-shown" id="sec-shown" aria-live="polite">—</span>
+        </div>
+        <div class="sec-priority" role="group" aria-label="Filter findings by priority">
+          <button class="sec-pbtn active" id="sec-filter-all" data-priority="all" aria-pressed="true" onclick="securitySetFilter('all')">ALL</button>
+          <button class="sec-pbtn p-act_now" id="sec-filter-act_now" data-priority="act_now" aria-pressed="false" onclick="securitySetFilter('act_now')">ACT NOW <span class="n" id="sec-count-act_now">0</span></button>
+          <button class="sec-pbtn p-update_soon" id="sec-filter-update_soon" data-priority="update_soon" aria-pressed="false" onclick="securitySetFilter('update_soon')">UPDATE SOON <span class="n" id="sec-count-update_soon">0</span></button>
+          <button class="sec-pbtn p-monitor" id="sec-filter-monitor" data-priority="monitor" aria-pressed="false" onclick="securitySetFilter('monitor')">MONITOR <span class="n" id="sec-count-monitor">0</span></button>
+        </div>
+      </div>
+      <div id="sec-findings"></div>
+
+      <div class="sec-label">assessed as not affected <span style="font-weight:400;text-transform:none;letter-spacing:0">evidence</span></div>
+      <div class="sec-note">Explicit not-affected assessments are evidence, not active findings. A not-affected
+        assessment clears an existing finding only when source and inventory checks are complete, no claims
+        were excluded, confidence is high, and the component was checked this run. Review the stated reason
+        and sources before relying on them.</div>
+      <div id="sec-assessments"></div>
+
+      <div class="sec-label">excluded claims <span style="font-weight:400;text-transform:none;letter-spacing:0">not active</span></div>
+      <div id="sec-rejected"></div>
+
+      <div class="sec-label">coverage &amp; source checks</div>
+      <div id="sec-coverage"></div>
+
+      <div class="sec-label">dependabot branches</div>
+      <div id="sec-dependabot"></div>
+
+      <div class="sec-label">inventory &amp; advisory details</div>
+      <div id="sec-details"></div>
+
+      <div class="sec-label">research provenance</div>
+      <div id="sec-provenance"></div>
+    </div>
+  </div><!-- /#tab-security -->
 
 </main>
 
@@ -872,7 +1253,8 @@ async function fetchJSON(path) {
 
 // ── feature flags ─────────────────────────────────────────────────────────────
 let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false,
-                  wake:false, desktop_power:false, desktop_status:false, opencode_go:false, mistral:false };
+                  wake:false, desktop_power:false, desktop_status:false, opencode_go:false, mistral:false,
+                  security:false };
 
 async function fetchFeatures() {
   try { _features = await fetchJSON('/api/features'); } catch(e) {}
@@ -895,7 +1277,9 @@ async function fetchFeatures() {
   // OpenCode tab — usage card polls only while the page is really visible
   // (server caches upstream for 60 s); the limits table is docs data (1 h cache).
   if (_features.opencode_go) {
-    document.querySelector('.tab-btn[data-tab="opencode"]').style.display = 'inline-block';
+    const tab = document.querySelector('.tab-btn[data-tab="opencode"]');
+    if (tab) tab.style.display = 'inline-block';
+    if (_activeTab === 'opencode') revealActiveTab(tab);
     document.getElementById('ocg-label').style.display = 'flex';
     document.getElementById('ocg-list').style.display  = 'flex';
     document.getElementById('ocgl-label').style.display = 'flex';
@@ -916,7 +1300,9 @@ async function fetchFeatures() {
   }
   // Mistral models are served locally; never query the configured path unless enabled.
   if (_features.mistral) {
-    document.querySelector('.tab-btn[data-tab="mistral"]').style.display = 'inline-block';
+    const tab = document.querySelector('.tab-btn[data-tab="mistral"]');
+    if (tab) tab.style.display = 'inline-block';
+    if (_activeTab === 'mistral') revealActiveTab(tab);
     document.getElementById('mistral-controls').style.display = 'flex';
     document.getElementById('mistral-wrap').style.display = 'block';
     document.getElementById('mistral-attrib').style.display = 'block';
@@ -935,21 +1321,1190 @@ async function fetchFeatures() {
   if (_features.shelly2) { fetchShelly2(); setInterval(fetchShelly2,  5000); }
   if (_features.stream)  { fetchStream();  setInterval(fetchStream,   5000); }
   if (_features.wake || _features.desktop_power) { fetchDesktop(); setInterval(fetchDesktop, 5000); }
+  securitySyncFeature();
+  // Optional tabs may have just become visible: refresh the swipe cues and
+  // make sure the restored/active tab is still on screen.
+  updateTabOverflowCues();
+  revealActiveTab();
+}
+
+// ── SECURITY WATCH (read-only report) ─────────────────────────────────────────
+// Fixed root repo for Dependabot branch searches; never derive it from report data.
+const SECURITY_REPO = 'https://github.com/allesgeklaut/home-lab';
+const SECURITY_STALE_MS = 36 * 60 * 60 * 1000;
+const SECURITY_ERROR_LABELS = {
+  not_configured: 'Security watch is not configured.',
+  missing: 'No security report has been generated yet.',
+  unreadable: 'The security report could not be read.',
+  invalid: 'The security report failed validation.',
+  too_large: 'The security report is too large to display.',
+  timeout: 'The report request timed out.',
+};
+const SECURITY_PRIORITIES = [
+  ['act_now', 'ACT NOW'],
+  ['update_soon', 'UPDATE SOON'],
+  ['monitor', 'MONITOR'],
+];
+const SECURITY_STATUS = {
+  confirmed: ['CONFIRMED', 'alert'],
+  possible: ['POSSIBLE', 'warn'],
+  unknown: ['UNKNOWN', 'dim'],
+  not_affected: ['NOT AFFECTED', 'ok'],
+};
+const SECURITY_CONFIDENCE = {
+  high: ['CONFIDENCE: HIGH', 'ok'],
+  medium: ['CONFIDENCE: MEDIUM', 'warn'],
+  low: ['CONFIDENCE: LOW', 'dim'],
+};
+const SECURITY_EXPLOITED = {
+  yes: ['EXPLOITED: YES', 'alert'],
+  no: ['EXPLOITED: NO', 'ok'],
+  unknown: ['EXPLOITED: UNKNOWN', 'dim'],
+};
+
+let _securityReport = null;
+let _securitySnapshot = '';
+let _securitySignature = '';
+let _securityLoadError = null;
+let _securityLoadedAt = 0;
+let _securityInFlight = null;
+let _securityBusy = false;
+let _securityFilter = 'all';
+let _securityOpen = new Set();
+
+function securityText(value) { return value == null ? '' : String(value); }
+function securityList(value) { return Array.isArray(value) ? value : []; }
+function securityObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+// Optional producer sections must be distinguished from explicitly empty
+// ones: absent means unknown, an explicit [] means "none reported".
+function securityHas(object, key) {
+  return !!object && Object.prototype.hasOwnProperty.call(object, key);
+}
+function escAttr(value) {
+  return escHtml(securityText(value)).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function setAria(el, name, value) {
+  if (!el) return;
+  if (typeof el.setAttribute === 'function') {
+    try { el.setAttribute(name, value); return; } catch(e) {}
+  }
+  el[name] = value;
+}
+function securityJson(value) {
+  try {
+    const text = JSON.stringify(value, null, 2);
+    return text == null ? 'null' : text;
+  } catch(e) {
+    return 'unavailable';
+  }
+}
+
+function securityTabButton() {
+  try { return document.querySelector('.tab-btn[data-tab="security"]'); }
+  catch(e) { return null; }
+}
+
+function updateTabOverflowCues() {
+  const bar = document.getElementById('tab-bar');
+  const wrap = document.getElementById('tab-bar-wrap');
+  if (!bar || !wrap) return;
+  if (typeof bar.scrollWidth !== 'number' || typeof bar.clientWidth !== 'number') return;
+  const max = bar.scrollWidth - bar.clientWidth;
+  const left = typeof bar.scrollLeft === 'number' ? bar.scrollLeft : 0;
+  wrap.classList.toggle('can-left', max > 1 && left > 1);
+  wrap.classList.toggle('can-right', max > 1 && left < max - 1);
+}
+
+function revealActiveTab(btn) {
+  const bar = document.getElementById('tab-bar');
+  const active = btn ||
+    (typeof document.querySelector === 'function' ? document.querySelector('.tab-btn.active') : null);
+  if (!bar || !active) return;
+  if (typeof active.offsetLeft !== 'number' || typeof active.offsetWidth !== 'number'
+      || typeof bar.clientWidth !== 'number' || !bar.clientWidth) return;
+  const viewLeft = typeof bar.scrollLeft === 'number' ? bar.scrollLeft : 0;
+  const viewRight = viewLeft + bar.clientWidth;
+  const left = active.offsetLeft;
+  const right = left + active.offsetWidth;
+  const pad = 30; // leave room for the edge fade/chevron cue
+  const maxScroll = typeof bar.scrollWidth === 'number'
+    ? Math.max(0, bar.scrollWidth - bar.clientWidth) : Number.POSITIVE_INFINITY;
+  let target = null;
+  if (left < viewLeft + pad) target = Math.max(0, left - pad);
+  else if (right > viewRight - pad) target = Math.max(0, right - bar.clientWidth + pad);
+  // Clamp explicitly: the padding can exceed the real scroll range, and a
+  // scrollLeft past maxScroll would leave the edge cues stale.
+  if (target !== null) bar.scrollLeft = Math.min(maxScroll, target);
+  updateTabOverflowCues();
+}
+
+// Webfont metrics can move the restored tab after first paint; re-sync once
+// they settle. document.fonts may be absent, so the hook stays optional.
+function syncTabBarAfterFonts() {
+  updateTabOverflowCues();
+  revealActiveTab();
+}
+
+(function watchTabFontMetrics() {
+  try {
+    const fonts = typeof document !== 'undefined' ? document.fonts : null;
+    if (!fonts) return;
+    if (fonts.ready && typeof fonts.ready.then === 'function') {
+      fonts.ready.then(syncTabBarAfterFonts, () => {});
+    }
+    if (typeof fonts.addEventListener === 'function') {
+      fonts.addEventListener('loadingdone', syncTabBarAfterFonts);
+    }
+  } catch (e) { /* CSS Font Loading API unavailable: resize still re-syncs */ }
+})();
+
+function visibleTabButtons() {
+  return Array.from(document.querySelectorAll('.tab-btn'))
+    .filter(button => button && button.style && button.style.display !== 'none' && !button.disabled);
+}
+
+// Native buttons + ARIA tabs: Left/Right/Home/End move focus among visible
+// tabs, activate the target (automatic activation) and scroll it into view.
+function tabKeydown(event) {
+  if (!event || !event.key) return;
+  // Alt+Left / Cmd+arrows etc. belong to the browser or OS, not the tab row.
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  const buttons = visibleTabButtons();
+  if (!buttons.length) return;
+  const target = event.target && typeof event.target.closest === 'function'
+    ? event.target.closest('.tab-btn') : event.target;
+  const index = buttons.indexOf(target);
+  if (index < 0) return;
+  let nextIndex;
+  if (event.key === 'ArrowLeft') nextIndex = (index - 1 + buttons.length) % buttons.length;
+  else if (event.key === 'ArrowRight') nextIndex = (index + 1) % buttons.length;
+  else if (event.key === 'Home') nextIndex = 0;
+  else if (event.key === 'End') nextIndex = buttons.length - 1;
+  else return;
+  event.preventDefault();
+  const next = buttons[nextIndex];
+  switchTab(next.dataset.tab, next);
+  if (typeof next.focus === 'function') next.focus();
+}
+
+function securityRelative(ms) {
+  const delta = Date.now() - ms;
+  const abs = Math.abs(delta);
+  if (abs < 45 * 1000) return 'just now';
+  let value;
+  if (abs < 60 * 60 * 1000) value = Math.round(abs / 60000) + 'm';
+  else if (abs < 48 * 60 * 60 * 1000) value = Math.round(abs / 3600000) + 'h';
+  else value = Math.round(abs / 86400000) + 'd';
+  return value + (delta < 0 ? ' from now' : ' ago');
+}
+
+function securityDate(iso) {
+  const ms = iso ? new Date(iso).getTime() : NaN;
+  if (Number.isNaN(ms)) return { ms: null, abs: 'timestamp unknown', rel: 'age unknown' };
+  const date = new Date(ms);
+  const abs = date.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
+  return { ms, abs, rel: securityRelative(ms) };
+}
+
+function securityAge() {
+  if (!_securityReport) return null;
+  const date = securityDate(_securityReport.checked_at);
+  if (date.ms === null) return { ...date, stale: false, future: false };
+  const ageMs = Date.now() - date.ms;
+  return { ...date, ageMs, stale: ageMs > SECURITY_STALE_MS, future: ageMs < -5 * 60 * 1000 };
+}
+
+function securityReportValid(report) {
+  return !!report && typeof report === 'object' && !Array.isArray(report)
+    && typeof report.checked_at === 'string'
+    && !Number.isNaN(new Date(report.checked_at).getTime())
+    && Array.isArray(report.findings);
+}
+
+function securityFailure(message, code) {
+  const error = new Error(message);
+  if (code) error.code = String(code);
+  return error;
+}
+
+function securityErrorMessage(error) {
+  const code = error && typeof error.code === 'string' ? error.code : '';
+  const mapped = SECURITY_ERROR_LABELS[code];
+  const raw = securityText(error && error.message);
+  if (mapped) {
+    return {
+      label: mapped,
+      detail: raw && raw !== mapped && !/^HTTP \d+$/.test(raw) ? raw : '',
+      code,
+    };
+  }
+  return {
+    label: 'The security report is unavailable.',
+    detail: raw || 'Check the connection and try again.',
+    code,
+  };
+}
+
+// Public https links only. Reject credentials, local/single-label hosts, IP
+// literals and non-443 ports; anything rejected is rendered as plain text.
+function securitySafeUrl(value) {
+  const url = securityText(value).trim();
+  if (!url || url.length > 2048) return false;
+  if (/[\u0000-\u0020\u007f\\]/.test(url)) return false;
+  if (!/^https:\/\//i.test(url)) return false;
+  const match = /^https:\/\/([^/?#]+)(?:[/?#].*)?$/i.exec(url);
+  if (!match) return false;
+  const authority = match[1];
+  if (!authority || authority.includes('@')) return false;
+  if (authority.includes('[') || authority.includes(']')) return false;
+  let host = authority;
+  const colon = authority.lastIndexOf(':');
+  if (colon !== -1) {
+    if (authority.indexOf(':') !== colon) return false;
+    if (authority.slice(colon + 1) !== '443') return false;
+    host = authority.slice(0, colon);
+  }
+  host = host.toLowerCase().replace(/\.$/, '');
+  if (!host || host.length > 253) return false;
+  const labels = host.split('.');
+  if (labels.length < 2) return false;
+  if (labels.some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return false;
+  const tld = labels[labels.length - 1];
+  if (!/^(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$/.test(tld)) return false;
+  if (/^\d+(?:\.\d+){3}$/.test(host)) return false;
+  if (labels.length === 4 && labels.every(label => /^\d+$/.test(label))) return false;
+  const blocked = ['localhost', 'local', 'localdomain', 'internal', 'intranet', 'lan', 'home',
+                   'test', 'example', 'invalid', 'onion'];
+  if (blocked.includes(tld) || blocked.includes(host)) return false;
+  if (/(?:\.local|\.internal|\.lan|\.home|\.home\.arpa|\.localhost)$/.test(host)) return false;
+  return true;
+}
+
+function securityEncode(value) {
+  try { return encodeURIComponent(securityText(value)); }
+  catch(e) { return ''; }
+}
+
+function securitySourceItem(url) {
+  const text = securityText(url);
+  if (securitySafeUrl(text)) {
+    return `<li><a href="${escAttr(text)}" target="_blank" rel="noopener noreferrer">${escHtml(text)}</a></li>`;
+  }
+  return `<li class="sec-link-blocked">unsafe link withheld — ${escHtml(text || 'empty source')}</li>`;
+}
+
+function securitySourcesHtml(sources) {
+  const list = securityList(sources);
+  if (!list.length) {
+    return '<div class="sec-prose"><span class="sec-k">SOURCES</span>not provided</div>';
+  }
+  return `<div class="sec-prose"><span class="sec-k">SOURCES</span><ul class="sec-links">${
+    list.map(securitySourceItem).join('')
+  }</ul></div>`;
+}
+
+function securityPriorityLabel(value) {
+  const found = SECURITY_PRIORITIES.find(priority => priority[0] === value);
+  return found ? found[1] : 'UNCLASSIFIED';
+}
+
+function securityPriorityIndex(value) {
+  const index = SECURITY_PRIORITIES.findIndex(priority => priority[0] === value);
+  return index < 0 ? 99 : index;
+}
+
+function securitySortedFindings(report = _securityReport) {
+  return securityList(report && report.findings)
+    .map((finding, index) => ({ finding, index }))
+    .sort((a, b) => {
+      const pa = securityPriorityIndex(a.finding && a.finding.priority);
+      const pb = securityPriorityIndex(b.finding && b.finding.priority);
+      return pa - pb || a.index - b.index;
+    })
+    .map(entry => entry.finding);
+}
+
+function securityPriorityCounts(findings) {
+  const counts = { act_now: 0, update_soon: 0, monitor: 0 };
+  securityList(findings).forEach(finding => {
+    const priority = finding && typeof finding.priority === 'string' ? finding.priority : '';
+    if (Object.prototype.hasOwnProperty.call(counts, priority)) counts[priority]++;
+  });
+  return counts;
+}
+
+function securityField(label, value) {
+  const text = securityText(value);
+  const missing = !text || text.toLowerCase() === 'unknown';
+  return `<div><span class="sec-k">${escHtml(label)}</span><span class="sec-v${missing ? ' dim' : ''}">${
+    escHtml(text || 'unknown')
+  }</span></div>`;
+}
+
+function securityBadge(map, value) {
+  const key = securityText(value).toLowerCase();
+  const badge = map[key];
+  if (badge) return `<span class="sec-badge ${badge[1]}">${escHtml(badge[0])}</span>`;
+  return `<span class="sec-badge dim">${escHtml(key ? key.toUpperCase() : 'UNKNOWN')}</span>`;
+}
+
+function securityFindingCard(finding, index, kind = 'finding', prefix = 'f') {
+  const item = securityObject(finding);
+  const priority = SECURITY_PRIORITIES.some(entry => entry[0] === item.priority)
+    ? item.priority : 'unknown';
+  const key = prefix + index;
+  const open = _securityOpen.has(key);
+  const notRechecked = item.not_rechecked === true;
+  const component = securityText(item.component) || 'unknown component';
+  const advisory = securityText(item.advisory) || 'unknown advisory';
+  return `<details class="sec-card sec-${kind}" data-key="${escAttr(key)}" data-priority="${escAttr(priority)}"${
+    open ? ' open' : ''
+  } ontoggle="securityToggleCard(this)">
+    <summary class="sec-card-sum">
+      <span class="sec-card-head">
+        <span class="sec-card-pri p-${escAttr(priority)}">${
+          escHtml(kind === 'assessment' ? 'ASSESSED' : securityPriorityLabel(priority))
+        }</span>
+        <span class="sec-card-top">
+          <span class="sec-card-id">${escHtml(component)} / ${escHtml(advisory)}</span>
+          <span class="sec-card-sub">${escHtml(securityText(item.title) || 'no title')}</span>
+        </span>
+        <span class="sec-card-chevron" aria-hidden="true">▾</span>
+      </span>
+      <span class="sec-badges">
+        ${securityBadge(SECURITY_STATUS, item.status)}
+        ${securityBadge(SECURITY_CONFIDENCE, item.confidence)}
+        ${securityBadge(SECURITY_EXPLOITED, item.exploited)}
+        ${notRechecked ? '<span class="sec-badge not-rechecked">NOT RECHECKED</span>' : ''}
+      </span>
+    </summary>
+    <div class="sec-card-body">
+      ${notRechecked ? '<div class="sec-not-rechecked">Carried forward from an earlier report — this finding was not rechecked in the report above. Verify it before acting.</div>' : ''}
+      <div class="sec-grid">
+        ${securityField('STATUS', item.status)}
+        ${securityField('CONFIDENCE', item.confidence)}
+        ${securityField('EXPLOITED', item.exploited)}
+        ${securityField('INSTALLED', item.installed_version)}
+        ${securityField('AFFECTED', item.affected_versions)}
+        ${securityField('FIXED', item.fixed_version)}
+      </div>
+      <div class="sec-prose"><span class="sec-k">TITLE</span>${escHtml(securityText(item.title) || 'not provided')}</div>
+      <div class="sec-prose"><span class="sec-k">REASON</span>${escHtml(securityText(item.reason) || 'not provided')}</div>
+      <div class="sec-prose"><span class="sec-k">ACTION</span>${escHtml(securityText(item.action) || 'not provided')}</div>
+      ${securitySourcesHtml(item.sources)}
+    </div>
+  </details>`;
+}
+
+function securityToggleCard(element) {
+  if (!element || !element.dataset) return;
+  const key = element.dataset.key;
+  if (element.open) _securityOpen.add(key);
+  else _securityOpen.delete(key);
+}
+
+function securityInitOpen(report) {
+  _securityOpen = new Set();
+  securitySortedFindings(report).forEach((finding, index) => {
+    if (finding && finding.priority === 'act_now') _securityOpen.add('f' + index);
+  });
+}
+
+function securityFindingSearchText(finding) {
+  const item = securityObject(finding);
+  const fields = ['component', 'advisory', 'title', 'installed_version', 'affected_versions',
+                  'fixed_version', 'reason', 'action', 'status', 'confidence', 'exploited',
+                  'priority'];
+  return fields.map(field => securityText(item[field]))
+    .concat(securityList(item.sources).map(securityText))
+    .join(' ').toLowerCase();
+}
+
+function securityQuery() {
+  const input = document.getElementById('sec-search');
+  return securityText(input && input.value).trim().toLowerCase();
+}
+
+function securityFilteredFindings() {
+  const sorted = securitySortedFindings();
+  const query = securityQuery();
+  const filtered = [];
+  sorted.forEach((finding, index) => {
+    const priority = finding && typeof finding.priority === 'string' ? finding.priority : '';
+    if (_securityFilter !== 'all' && priority !== _securityFilter) return;
+    if (query && !securityFindingSearchText(finding).includes(query)) return;
+    filtered.push({ finding, index });
+  });
+  return { sorted, filtered };
+}
+
+function securityUpdateFilterButtons() {
+  ['all', ...SECURITY_PRIORITIES.map(priority => priority[0])].forEach(value => {
+    const button = document.getElementById('sec-filter-' + value);
+    if (!button) return;
+    const active = _securityFilter === value;
+    button.classList.toggle('active', active);
+    setAria(button, 'aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function securityApplyView() {
+  if (!_securityReport) return;
+  const { sorted, filtered } = securityFilteredFindings();
+  const findings = document.getElementById('sec-findings');
+  if (findings) {
+    if (!sorted.length) {
+      findings.innerHTML = `<div class="sec-note sec-zero">
+        <span class="sec-k">NO ACTIONABLE FINDINGS IN THIS REPORT</span>
+        No actionable findings were identified within the checked sources. Coverage is limited: review the
+        limitations, source-check errors and excluded claims below. This report is advisory synthesis, not a
+        full vulnerability scan.
+      </div>`;
+    } else if (!filtered.length) {
+      findings.innerHTML = '<div class="sec-note">No findings match the current filter or search.</div>';
+    } else {
+      findings.innerHTML = filtered.map(({ finding, index }) =>
+        securityFindingCard(finding, index, 'finding', 'f')).join('');
+    }
+  }
+  const counts = securityPriorityCounts(sorted);
+  SECURITY_PRIORITIES.forEach(priority => {
+    const count = document.getElementById('sec-count-' + priority[0]);
+    if (count) count.textContent = String(counts[priority[0]]);
+  });
+  const shown = document.getElementById('sec-shown');
+  if (shown) {
+    shown.textContent = sorted.length ? `${filtered.length} / ${sorted.length} shown` : 'no findings';
+  }
+  const total = document.getElementById('sec-findings-total');
+  if (total) {
+    total.textContent = `— ${sorted.length} finding${sorted.length === 1 ? '' : 's'}`;
+  }
+  securityUpdateFilterButtons();
+}
+
+function securitySetFilter(value) {
+  _securityFilter = ['all', 'act_now', 'update_soon', 'monitor'].includes(value) ? value : 'all';
+  securityApplyView();
+}
+
+function securitySearchChanged() {
+  if (_securityReport) securityApplyView();
+}
+
+function securityExpandAll(open) {
+  securitySortedFindings().forEach((_finding, index) => {
+    const key = 'f' + index;
+    if (open) _securityOpen.add(key);
+    else _securityOpen.delete(key);
+  });
+  securityList(_securityReport && _securityReport.assessments)
+    .filter(finding => finding && typeof finding === 'object' && finding.status === 'not_affected')
+    .forEach((_finding, index) => {
+      const key = 'a' + index;
+      if (open) _securityOpen.add(key);
+      else _securityOpen.delete(key);
+    });
+  securityApplyView();
+  securityRenderAssessments();
+}
+
+function securityRenderSummary() {
+  const summary = document.getElementById('sec-summary');
+  if (!summary) return;
+  const text = securityText(_securityReport && _securityReport.summary).trim();
+  const empty = securityList(_securityReport && _securityReport.findings).length === 0;
+  const note = empty
+    ? `No actionable findings are listed, but that does not establish that nothing is affected.
+       Coverage is limited. This report is advisory synthesis, not a full vulnerability scan;
+       retained findings were not rechecked.`
+    : `Advisory synthesis, not a full vulnerability scan. Accepted assessments were locally validated
+       against their cited sources in this run; retained findings were not rechecked.
+       Excluded claims appear separately.`;
+  summary.innerHTML = `<span class="sec-k">SUMMARY</span>${
+    escHtml(text || 'No summary provided.')
+  }<div class="sec-summary-note">${note}</div>`;
+}
+
+function securityAlertItems(age) {
+  const items = [];
+  const report = _securityReport;
+  if (_securityLoadError) {
+    const loaded = _securityLoadedAt ? securityDate(new Date(_securityLoadedAt).toISOString()) : null;
+    items.push({
+      level: 'err',
+      label: 'REFRESH FAILED — SHOWING LAST LOADED REPORT',
+      body: `Could not refresh the security report${
+        _securityLoadError.code ? ` <span class="sec-code-inline">[${escHtml(_securityLoadError.code)}]</span>` : ''
+      }. ${escHtml(_securityLoadError.detail || _securityLoadError.label)}${
+        loaded ? ` Showing the report loaded at <b>${escHtml(loaded.abs)}</b> (${escHtml(loaded.rel)}).` : ''
+      } This view is not fresh and may lag the report source. The banner clears when a refresh returns a report.`,
+    });
+  }
+  if (age && age.future) {
+    items.push({
+      level: 'warn',
+      label: 'REPORT TIMESTAMP IS IN THE FUTURE — CLOCK OR SOURCE PROBLEM',
+      body: `The report says it was checked <b>${escHtml(age.abs)}</b> (${escHtml(age.rel)}),
+        more than five minutes ahead of this browser. Do not treat it as fresh; verify the report
+        source and the system clocks.`,
+    });
+  }
+  if (age && age.stale) {
+    items.push({
+      level: 'err',
+      label: 'REPORT STALE — OLDER THAN 36 HOURS',
+      body: `The report was checked <b>${escHtml(age.abs)}</b> (${escHtml(age.rel)}). Report age only:
+        source-check health is reported separately below.`,
+    });
+  }
+  const advisory = securityObject(report && report.advisory_checks);
+  const inventory = securityObject(report && report.inventory);
+  const sourceErrors = securityList(advisory.errors);
+  const sourceStatusKnown = securityHas(report, 'source_checks_complete');
+  const sourceStatus = sourceStatusKnown ? report.source_checks_complete : null;
+  if (sourceErrors.length) {
+    items.push({
+      level: 'err',
+      label: 'SOURCE CHECK ERRORS — COVERAGE IS PARTIAL',
+      body: `${sourceErrors.length} advisory source error${sourceErrors.length === 1 ? '' : 's'} reported.
+        See coverage details below.`,
+    });
+  } else if (sourceStatusKnown && sourceStatus === false) {
+    items.push({
+      level: 'err',
+      label: 'SOURCE CHECKS REPORTED INCOMPLETE — COVERAGE IS PARTIAL',
+      body: `The report marks source checks incomplete. This is check status only, not a resolution status.
+        See coverage details below.`,
+    });
+  }
+  const inventoryErrors = securityList(inventory.collection_errors);
+  if (inventoryErrors.length) {
+    items.push({
+      level: 'warn',
+      label: 'INVENTORY ERRORS — COMPONENTS MAY BE MISSING',
+      body: `${inventoryErrors.length} inventory collection error${inventoryErrors.length === 1 ? '' : 's'}
+        reported. Coverage is partial; see coverage details below.`,
+    });
+  }
+  const rejected = securityList(report && report.rejected_assessments);
+  const unchecked = securityList(report && report.limitations)
+    .filter(item => /^Not researched this run:/i.test(securityText(item)));
+  if (rejected.length) {
+    items.push({
+      level: 'warn',
+      label: 'RESEARCH PARTIAL COVERAGE',
+      body: `${rejected.length} claim${rejected.length === 1 ? '' : 's'} excluded by local validation.
+        Excluded claims are not active findings, and they block all not-affected dismissals in this
+        report. They are listed below.`,
+    });
+  } else if (unchecked.length) {
+    items.push({
+      level: 'warn',
+      label: 'RESEARCH PARTIAL COVERAGE',
+      body: `Not every inventoried component was researched this run. Coverage is partial;
+        review the limitations and checked-component list below.`,
+    });
+  }
+  const carried = securityList(report && report.findings)
+    .filter(finding => finding && finding.not_rechecked === true).length;
+  if (carried) {
+    items.push({
+      level: 'warn',
+      label: 'CARRIED FORWARD — NOT RECHECKED',
+      body: `${carried} finding${carried === 1 ? '' : 's'} not rechecked in this report.
+        They remain listed but may be outdated; verify before acting.`,
+    });
+  }
+  return items;
+}
+
+function securityRenderMeta() {
+  const meta = document.getElementById('sec-meta');
+  const alerts = document.getElementById('sec-alerts');
+  if (!_securityReport) return;
+  const age = securityAge();
+  if (meta) {
+    meta.innerHTML = `<span>report checked <b>${escHtml(age.abs)}</b>
+      <span class="sec-age${age.stale ? ' stale' : ''}">(${escHtml(age.rel)})</span></span>
+      <span class="sec-utc">UTC ${escHtml(securityText(_securityReport.checked_at))}</span>
+      ${age.stale ? '<span class="sec-age stale">STALE &gt; 36H</span>' : ''}
+      ${age.future ? '<span class="sec-age stale">FUTURE TIMESTAMP</span>' : ''}`;
+  }
+  if (alerts) {
+    alerts.innerHTML = securityAlertItems(age).map(item => `<div class="sec-alert ${item.level}">
+      <span class="sec-alert-label">${escHtml(item.label)}</span>${item.body}
+    </div>`).join('');
+  }
+}
+
+function securityAssessmentMatchesRetained(assessment) {
+  const item = securityObject(assessment);
+  const component = securityText(item.component);
+  const advisory = securityText(item.advisory).toLowerCase();
+  if (!component || !advisory) return [];
+  return securityList(_securityReport && _securityReport.findings).filter(finding => {
+    const current = securityObject(finding);
+    return securityText(current.component) === component
+      && securityText(current.advisory).toLowerCase() === advisory
+      && securityText(current.status) !== 'not_affected';
+  });
+}
+
+function securityRenderAssessments() {
+  const container = document.getElementById('sec-assessments');
+  if (!container) return;
+  const report = _securityReport;
+  if (!securityHas(report, 'assessments')) {
+    container.innerHTML = '<div class="sec-note">NOT REPORTED — this report does not include not-affected assessments, so none can be inferred from it.</div>';
+    return;
+  }
+  const assessments = securityList(report.assessments)
+    .filter(finding => finding && typeof finding === 'object' && finding.status === 'not_affected');
+  if (!assessments.length) {
+    container.innerHTML = '<div class="sec-note">No explicit not-affected assessments were reported in this report.</div>';
+    return;
+  }
+  container.innerHTML = assessments.map((finding, index) => {
+    const item = securityObject(finding);
+    const retained = securityAssessmentMatchesRetained(finding);
+    const activeThisRun = retained.some(entry => securityObject(entry).not_rechecked !== true);
+    const note = retained.length ? `<div class="sec-note sec-assessment-blocked">
+      <b>NOT DISMISSED</b> — ${escHtml(securityText(item.component) || 'this component')} /
+      ${escHtml(securityText(item.advisory) || 'this advisory')} is still listed as an active finding
+      ${activeThisRun ? 'in this report' : '(retained from an earlier report and not rechecked this run)'}.
+      The existing finding remains active; this assessment did not dismiss it. A not-affected assessment
+      clears an existing finding only when source and inventory checks are complete, no claims were
+      excluded, confidence is high, and the component was checked this run.
+    </div>` : '';
+    return securityFindingCard(finding, index, 'assessment', 'a') + note;
+  }).join('');
+}
+
+function securityRenderRejected() {
+  const container = document.getElementById('sec-rejected');
+  if (!container) return;
+  const report = _securityReport;
+  if (!securityHas(report, 'rejected_assessments')) {
+    container.innerHTML = '<div class="sec-note">NOT REPORTED — this report does not include excluded-claim results, so it does not establish that no claims were excluded.</div>';
+    return;
+  }
+  const rejected = securityList(report.rejected_assessments);
+  if (!rejected.length) {
+    container.innerHTML = '<div class="sec-note">No claims were excluded by local validation in this report.</div>';
+    return;
+  }
+  container.innerHTML = `<div class="sec-note sec-resolution-blocked">
+    <b>RESOLUTION BLOCKED</b> — excluded claims are not active findings, and while any claim is
+    excluded no not-affected assessment in this report can dismiss an existing finding. Source-check
+    completeness does not remove this block.
+  </div>` + rejected.map(item => {
+    const rejectedItem = securityObject(item);
+    return `<div class="sec-rejected">
+      <span class="sec-badge alert">EXCLUDED — NOT ACTIVE</span>
+      <div class="sec-rejected-title">${escHtml(securityText(rejectedItem.component) || 'unknown component')} /
+        ${escHtml(securityText(rejectedItem.advisory) || 'unknown advisory')}</div>
+      <p>${escHtml(securityText(rejectedItem.reason) || 'no reason provided')}</p>
+    </div>`;
+  }).join('');
+}
+
+function securityRenderCoverage() {
+  const container = document.getElementById('sec-coverage');
+  if (!container) return;
+  const report = _securityReport;
+  const hasInventory = securityHas(report, 'inventory');
+  const hasAdvisory = securityHas(report, 'advisory_checks');
+  const inventory = securityObject(hasInventory ? report.inventory : null);
+  const advisory = securityObject(hasAdvisory ? report.advisory_checks : null);
+  const checked = securityList(report && report.checked_components);
+  const limitations = securityList(report && report.limitations);
+  const sourceErrors = securityList(advisory.errors);
+  const inventoryErrors = securityList(inventory.collection_errors);
+  const hasGaps = hasInventory && Array.isArray(inventory.coverage_gaps);
+  const gaps = securityList(inventory.coverage_gaps);
+  const rejected = securityList(report && report.rejected_assessments);
+  const statusKnown = securityHas(report, 'source_checks_complete');
+  const status = statusKnown ? report.source_checks_complete : null;
+  let statusChip;
+  if (sourceErrors.length) {
+    statusChip = '<span class="sec-chip" style="color:var(--red);border-color:var(--red-dim)">source checks: errors reported — check status only</span>';
+  } else if (!statusKnown) {
+    statusChip = '<span class="sec-chip">source checks: not reported — status unknown</span>';
+  } else if (status === false) {
+    statusChip = '<span class="sec-chip" style="color:var(--red);border-color:var(--red-dim)">source checks: reported incomplete — check status only</span>';
+  } else if (status === true) {
+    statusChip = '<span class="sec-chip">source checks: reported complete — status only, not an all-clear</span>';
+  } else {
+    statusChip = '<span class="sec-chip">source checks: status unknown</span>';
+  }
+  const chips = [
+    statusChip,
+    `<span class="sec-chip">${escHtml(String(checked.length))} checked component${checked.length === 1 ? '' : 's'}</span>`,
+    `<span class="sec-chip">${escHtml(String(limitations.length))} limitation${limitations.length === 1 ? '' : 's'}</span>`,
+  ];
+  if (hasGaps) {
+    chips.push(`<span class="sec-chip">${escHtml(String(gaps.length))} coverage gap${gaps.length === 1 ? '' : 's'}</span>`);
+  } else if (hasInventory) {
+    chips.push('<span class="sec-chip">coverage gaps: not reported</span>');
+  } else {
+    chips.push('<span class="sec-chip">inventory: not reported</span>');
+  }
+  if (!hasAdvisory) chips.push('<span class="sec-chip">advisory checks: not reported</span>');
+  if (rejected.length) {
+    chips.push(`<span class="sec-chip" style="color:var(--red);border-color:var(--red-dim)">resolution blocked — ${escHtml(String(rejected.length))} excluded claim${rejected.length === 1 ? '' : 's'}</span>`);
+  } else if (!securityHas(report, 'rejected_assessments')) {
+    chips.push('<span class="sec-chip">resolution status: not reported</span>');
+  }
+  container.innerHTML = `<div class="sec-panel">
+    <div class="sec-panel-head">
+      <span class="sec-k">COVERAGE SUMMARY</span>
+      ${chips.join('')}
+    </div>
+    <div class="sec-note">Source-check status reflects advisory and inventory checks only. It is
+      not proof of coverage, does not resolve findings, and is not an all-clear.</div>
+    <span class="sec-k">CHECKED COMPONENTS</span>
+    ${checked.length
+      ? `<div class="sec-chips">${checked.map(component => `<span class="sec-chip">${escHtml(securityText(component))}</span>`).join('')}</div>`
+      : '<div class="sec-note">No checked components were reported.</div>'}
+  </div>
+  ${!hasInventory ? `<div class="sec-panel">
+    <span class="sec-k">INVENTORY</span>
+    <div class="sec-note">NOT REPORTED — inventory collection, components, packages, coverage gaps
+      and collection errors are unknown in this report.</div>
+  </div>` : ''}
+  ${sourceErrors.length ? `<div class="sec-panel sec-panel-alert">
+    <span class="sec-k">SOURCE CHECK ERRORS</span>
+    <ul class="sec-list err">${sourceErrors.map(error => `<li>${escHtml(securityText(error))}</li>`).join('')}</ul>
+  </div>` : ''}
+  ${inventoryErrors.length ? `<div class="sec-panel sec-panel-alert">
+    <span class="sec-k">INVENTORY COLLECTION ERRORS</span>
+    <ul class="sec-list err">${inventoryErrors.map(error => `<li>${escHtml(securityText(error))}</li>`).join('')}</ul>
+  </div>` : ''}
+  <div class="sec-panel">
+    <span class="sec-k">LIMITATIONS</span>
+    ${limitations.length
+      ? `<ul class="sec-list">${limitations.map(item => `<li>${escHtml(securityText(item))}</li>`).join('')}</ul>`
+      : '<div class="sec-note">No limitations were reported.</div>'}
+  </div>
+  ${hasGaps && gaps.length ? `<div class="sec-panel">
+    <span class="sec-k">INVENTORY COVERAGE GAPS</span>
+    <ul class="sec-list">${gaps.map(gap => `<li>${escHtml(securityText(gap))}</li>`).join('')}</ul>
+  </div>` : ''}
+  ${hasInventory && !hasGaps ? `<div class="sec-panel">
+    <span class="sec-k">INVENTORY COVERAGE GAPS</span>
+    <div class="sec-note">NOT REPORTED — this report's inventory has no coverage-gap list.</div>
+  </div>` : ''}`;
+}
+
+function securityDependabotFetchFailed(report) {
+  return securityList(report && report.limitations)
+    .some(item => /^Dependabot branches could not be fetched;/.test(securityText(item)));
+}
+
+function securityRenderDependabot() {
+  const container = document.getElementById('sec-dependabot');
+  if (!container) return;
+  const report = _securityReport;
+  if (!securityHas(report, 'dependabot')) {
+    container.innerHTML = `<div class="sec-note">NOT REPORTED — this report does not include Dependabot
+      branch data; update-branch availability is unknown.</div>`;
+    return;
+  }
+  const dependabot = securityObject(report.dependabot);
+  if (!securityHas(dependabot, 'open')) {
+    container.innerHTML = `<div class="sec-note">Branch availability NOT REPORTED — this report's
+      Dependabot section has no open-branch list; availability is unknown.</div>`;
+    return;
+  }
+  const open = securityList(dependabot.open);
+  const hasNew = securityHas(dependabot, 'new');
+  const fresh = new Set(securityList(dependabot.new)
+    .map(entry => securityText(securityObject(entry).branch)).filter(Boolean));
+  const fetchFailed = securityDependabotFetchFailed(report);
+  const intro = `<div class="sec-note">Pending Dependabot update branches across any ecosystem
+    (for example docker-compose, npm or pip; branch names follow dependabot/&lt;ecosystem&gt;/&lt;path&gt;).
+    <b>UNANNOUNCED</b> marks a branch not yet included in a successfully delivered notification — not
+    the branch or PR creation date. <b>opened</b> is the branch commit date — not the PR creation date.
+    Merging a PR does not by itself deploy anything; deployment is outside this report. Branch PR
+    search is limited to the root repository.</div>`;
+  if (!open.length) {
+    if (fetchFailed) {
+      container.innerHTML = intro + `<div class="sec-note">
+        <span class="sec-badge alert">BRANCH AVAILABILITY: UNKNOWN — FETCH FAILED</span>
+        The producer reported that Dependabot branches could not be fetched; this is not evidence
+        that no update branches exist.</div>`;
+    } else {
+      container.innerHTML = intro + `<div class="sec-note">No pending Dependabot update branches
+        were reported in this report.</div>`;
+    }
+    return;
+  }
+  const missingNewNote = hasNew ? '' : `<div class="sec-note">Notification status not reported —
+    UNANNOUNCED cannot be determined for these branches.</div>`;
+  container.innerHTML = intro + missingNewNote + open.map(entry => {
+    const item = securityObject(entry);
+    const branch = securityText(item.branch);
+    const opened = securityText(item.opened) || 'unknown';
+    const tip = securityText(item.tip) || 'unknown';
+    const query = branch ? `is:pr head:${branch}` : '';
+    const encodedQuery = securityEncode(query);
+    const searchUrl = encodedQuery ? `${SECURITY_REPO}/pulls?q=${encodedQuery}` : '';
+    const link = searchUrl && securitySafeUrl(searchUrl)
+      ? `<a class="sec-repo-link" href="${escAttr(searchUrl)}" target="_blank" rel="noopener noreferrer"
+           title="Search pull requests whose head branch is this branch in the root repository">PR search ↗</a>`
+      : '';
+    return `<div class="sec-dep">
+      <div class="sec-dep-head">
+        <span class="sec-dep-branch">${escHtml(branch || 'unknown branch')}</span>
+        ${fresh.has(branch) ? '<span class="sec-new">UNANNOUNCED</span>' : ''}
+      </div>
+      <span class="sec-dep-meta">branch commit: ${escHtml(opened)} · tip: ${escHtml(tip)}</span>
+      ${link}
+    </div>`;
+  }).join('');
+}
+
+function securityRenderDetails() {
+  const container = document.getElementById('sec-details');
+  if (!container) return;
+  const report = _securityReport;
+  const hasInventory = securityHas(report, 'inventory');
+  const hasAdvisory = securityHas(report, 'advisory_checks');
+  const inventory = securityObject(hasInventory ? report.inventory : null);
+  const advisory = securityObject(hasAdvisory ? report.advisory_checks : null);
+  const components = inventory.components;
+  const packages = inventory.packages;
+  const osvMatches = advisory.osv_matches;
+  const kev = advisory.kev_candidates;
+  const errors = advisory.errors;
+  const inventorySummary = hasInventory
+    ? `inventory — ${Array.isArray(components) ? `${components.length} component${components.length === 1 ? '' : 's'}` : 'components not reported'} ·
+        ${Array.isArray(packages) ? `${packages.length} package${packages.length === 1 ? '' : 's'}` : 'packages not reported'} ·
+        collected ${escHtml(securityText(inventory.collected_at) || 'unknown')}`
+    : 'inventory — NOT REPORTED';
+  const advisorySummary = hasAdvisory
+    ? `advisory checks — ${Array.isArray(osvMatches) ? `${osvMatches.length} OSV match${osvMatches.length === 1 ? '' : 'es'}` : 'OSV matches not reported'} ·
+        ${Array.isArray(kev) ? `${kev.length} KEV candidate${kev.length === 1 ? '' : 's'}` : 'KEV candidates not reported'} ·
+        ${Array.isArray(errors) ? `${errors.length} error${errors.length === 1 ? '' : 's'}` : 'errors not reported'} ·
+        checked ${escHtml(securityText(advisory.checked_at) || 'unknown')}`
+    : 'advisory checks — NOT REPORTED';
+  container.innerHTML = `
+    <details class="sec-tech">
+      <summary>${inventorySummary}</summary>
+      ${hasInventory
+        ? `<pre>${escHtml(securityJson(inventory))}</pre>`
+        : '<div class="sec-note">This report does not include inventory data; components, packages and collection time are unknown.</div>'}
+    </details>
+    <details class="sec-tech">
+      <summary>${advisorySummary}</summary>
+      ${hasAdvisory
+        ? `<pre>${escHtml(securityJson(advisory))}</pre>`
+        : '<div class="sec-note">This report does not include advisory-check data; OSV matches, KEV candidates and check errors are unknown.</div>'}
+    </details>`;
+}
+
+function securityRenderProvenance() {
+  const container = document.getElementById('sec-provenance');
+  if (!container) return;
+  const report = _securityReport;
+  const hasSources = securityHas(report, 'search_sources');
+  const hasUsage = securityHas(report, 'usage');
+  const sources = securityList(report && report.search_sources);
+  const usage = report && report.usage;
+  const searches = report && report.searches != null ? securityText(report.searches) : 'not reported';
+  container.innerHTML = `<div class="sec-stats">
+    <div class="sec-stat"><span class="sec-k">WEB SEARCH RUNS</span>
+      <span class="sec-stat-val">${escHtml(searches)}</span></div>
+    <div class="sec-stat"><span class="sec-k">SEARCH SOURCES</span>
+      <span class="sec-stat-val">${escHtml(hasSources ? String(sources.length) : 'not reported')}</span></div>
+  </div>
+  <details class="sec-tech">
+    <summary>${hasUsage ? 'usage — full JSON' : 'usage — NOT REPORTED'}</summary>
+    ${hasUsage
+      ? `<pre>${escHtml(securityJson(usage))}</pre>`
+      : '<div class="sec-note">NOT REPORTED — this report does not include usage data.</div>'}
+  </details>
+  <details class="sec-tech">
+    <summary>${hasSources ? `search sources — ${escHtml(String(sources.length))}` : 'search sources — NOT REPORTED'}</summary>
+    ${!hasSources
+      ? '<div class="sec-note" style="border:0;margin:0">NOT REPORTED — this report does not include search sources; they are unknown.</div>'
+      : sources.length
+        ? `<ul class="sec-links" style="padding:8px 10px">${sources.map(securitySourceItem).join('')}</ul>`
+        : '<div class="sec-note" style="border:0;margin:0">No search sources were reported.</div>'}
+  </details>`;
+}
+
+function securityShowUnavailable() {
+  const content = document.getElementById('sec-content');
+  const box = document.getElementById('sec-unavailable');
+  if (content) content.style.display = 'none';
+  if (box) box.style.display = 'block';
+}
+
+function securityUnavailableButton(busy) {
+  return `<button class="btn-stream" id="btn-sec-retry" onclick="securityRefresh()"${
+    busy ? ' disabled aria-busy="true"' : ''
+  }>${busy ? '⟳ REFRESHING…' : '⟳ REFRESH REPORT'}</button>`;
+}
+
+function securityRenderUnavailable() {
+  const box = document.getElementById('sec-unavailable');
+  if (!box) return;
+  if (_securityBusy) {
+    const previous = _securityLoadError
+      ? `<p class="sec-summary-note">Previous attempt: ${escHtml(_securityLoadError.label)}${
+          _securityLoadError.code ? ` [${escHtml(_securityLoadError.code)}]` : ''
+        }.</p>`
+      : '';
+    box.innerHTML = `<div class="sec-unavailable-title">${
+      _securityLoadError ? 'RETRYING SECURITY REPORT…' : 'LOADING SECURITY REPORT…'
+    }</div>
+      <p>Requesting the latest report from this dashboard. The refresh control is disabled until the
+      request finishes.</p>
+      ${previous}
+      ${securityUnavailableButton(true)}`;
+    return;
+  }
+  if (_securityLoadError) {
+    box.innerHTML = `<div class="sec-unavailable-title">SECURITY REPORT UNAVAILABLE</div>
+      <p>${escHtml(_securityLoadError.label)}</p>
+      ${_securityLoadError.detail ? `<p>${escHtml(_securityLoadError.detail)}</p>` : ''}
+      ${_securityLoadError.code ? `<div class="sec-code">code: ${escHtml(_securityLoadError.code)}</div>` : ''}
+      <p class="sec-summary-note">Only this error is shown. No findings are implied.</p>
+      ${securityUnavailableButton(false)}`;
+    return;
+  }
+  box.innerHTML = `<div class="sec-unavailable-title">SECURITY REPORT NOT LOADED</div>
+    <p>The security report has not been requested yet.</p>
+    ${securityUnavailableButton(false)}`;
+}
+
+function securityRenderState() {
+  if (_securityReport) {
+    const content = document.getElementById('sec-content');
+    const box = document.getElementById('sec-unavailable');
+    if (content) content.style.display = 'block';
+    if (box) box.style.display = 'none';
+    securityRenderMeta();
+  } else {
+    securityShowUnavailable();
+    securityRenderUnavailable();
+  }
+  securitySetBusy(_securityBusy);
+}
+
+function securityRenderAll() {
+  const content = document.getElementById('sec-content');
+  const box = document.getElementById('sec-unavailable');
+  if (content) content.style.display = 'block';
+  if (box) box.style.display = 'none';
+  securityRenderMeta();
+  securityRenderSummary();
+  securityApplyView();
+  securityRenderAssessments();
+  securityRenderRejected();
+  securityRenderCoverage();
+  securityRenderDependabot();
+  securityRenderDetails();
+  securityRenderProvenance();
+  securitySetBusy(_securityBusy);
+}
+
+function securitySetBusy(busy) {
+  _securityBusy = busy;
+  const refresh = document.getElementById('btn-sec-refresh');
+  if (refresh) {
+    refresh.disabled = busy;
+    refresh.textContent = busy ? '⟳ REFRESHING…' : '⟳ REFRESH REPORT';
+    setAria(refresh, 'aria-busy', busy ? 'true' : 'false');
+  }
+  const json = document.getElementById('btn-sec-json');
+  if (json) json.disabled = !_securitySnapshot;
+  const retry = document.getElementById('btn-sec-retry');
+  if (retry) {
+    retry.disabled = busy;
+    retry.textContent = busy ? '⟳ REFRESHING…' : '⟳ REFRESH REPORT';
+    setAria(retry, 'aria-busy', busy ? 'true' : 'false');
+  }
+}
+
+function securityAcceptReport(report) {
+  const signature = securityJson(report);
+  const unchanged = signature === _securitySignature && !!_securityReport;
+  _securityReport = report;
+  _securityLoadedAt = Date.now();
+  _securityLoadError = null;
+  if (unchanged) {
+    securityRenderState();
+    return;
+  }
+  _securitySignature = signature;
+  _securitySnapshot = securityJson(report);
+  securityInitOpen(report);
+  securityRenderAll();
+}
+
+function securityHandleLoadError(error, manual) {
+  const info = securityErrorMessage(error);
+  _securityLoadError = {
+    label: info.label,
+    detail: info.detail,
+    code: info.code,
+    at: Date.now(),
+  };
+  securityRenderState();
+  if (manual) toast('security refresh failed', true);
+}
+
+function securityFetch(manual = false) {
+  if (!_features.security) return Promise.resolve(null);
+  if (_securityInFlight) return _securityInFlight;
+  const request = (async () => {
+    securitySetBusy(true);
+    if (!_securityReport) securityRenderState();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+    try {
+      const response = await apiFetch('/api/security', { cache: 'no-store', signal: controller.signal });
+      let data = null;
+      try { data = await response.json(); } catch(e) { data = null; }
+      if (!response.ok || (data && typeof data.error === 'string')) {
+        const code = data && typeof data.code === 'string' ? data.code : '';
+        const message = data && typeof data.error === 'string'
+          ? data.error : `HTTP ${response.status}`;
+        throw securityFailure(message, code);
+      }
+      if (!data || typeof data !== 'object' || !securityReportValid(data.report)) {
+        throw securityFailure('The /api/security response did not contain a valid report.', 'invalid');
+      }
+      securityAcceptReport(data.report);
+      return data.report;
+    } catch(error) {
+      const failure = error && error.name === 'AbortError'
+        ? securityFailure(SECURITY_ERROR_LABELS.timeout, 'timeout')
+        : error;
+      securityHandleLoadError(failure, manual);
+      return null;
+    } finally {
+      clearTimeout(timer);
+      securitySetBusy(false);
+      // Re-render the initial-load panel after the request settles: the error
+      // path rendered the busy state while the request was still failing.
+      if (!_securityReport) securityRenderState();
+    }
+  })();
+  _securityInFlight = request;
+  request.finally(() => {
+    if (_securityInFlight === request) _securityInFlight = null;
+  });
+  return request;
+}
+
+function securityRefresh() {
+  if (!_features.security) return Promise.resolve(null);
+  return securityFetch(true);
+}
+
+function securityTick() {
+  if (!_features.security) return;
+  if (_activeTab !== 'security') return;
+  if (document.hidden) return;
+  securityFetch(false);
+}
+
+function securityOnEnter() {
+  if (!_features.security) return;
+  if (_activeTab !== 'security') return;
+  if (document.hidden) return;
+  securityFetch(false);
+}
+
+function securitySyncFeature() {
+  const button = securityTabButton();
+  if (_features.security) {
+    if (button) button.style.display = 'inline-block';
+    if (_activeTab === 'security') {
+      revealActiveTab(button);
+      securityOnEnter();
+    }
+  } else {
+    if (button) button.style.display = 'none';
+    if (_activeTab === 'security') {
+      switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'));
+    }
+  }
+}
+
+function securityDownload() {
+  if (!_securitySnapshot) {
+    toast('no security report to download', true);
+    return false;
+  }
+  const stamp = securityText(_securityReport && _securityReport.checked_at)
+    .replace(/[^0-9A-Za-z]+/g, '-').replace(/^-+|-+$/g, '') || 'report';
+  const filename = `security-report-${stamp}.json`;
+  try {
+    const blob = new Blob([_securitySnapshot], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => {
+      try { URL.revokeObjectURL(url); } catch(e) {}
+    }, 0);
+    return true;
+  } catch(e) {
+    toast('JSON download unavailable in this browser', true);
+    return false;
+  }
+}
+
+function securityReportJSON() {
+  return _securitySnapshot;
+}
+
+if (typeof document.addEventListener === 'function') {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) securityTick();
+  });
 }
 
 // ── tab switching ─────────────────────────────────────────────────────────────
+let _activeTab = 'server';
 function switchTab(name, btn) {
+  _activeTab = name;
   document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + name).style.display = 'block';
-  btn.classList.add('active');
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.remove('active');
+    setAria(b, 'aria-selected', 'false');
+    b.tabIndex = -1; // roving tab stop: only the active tab is in the tab order
+  });
+  const pane = document.getElementById('tab-' + name);
+  if (pane) pane.style.display = 'block';
+  if (btn) {
+    btn.classList.add('active');
+    setAria(btn, 'aria-selected', 'true');
+    btn.tabIndex = 0;
+  }
   const bar = document.getElementById('action-bar');
   const onContainers = name === 'containers';
   bar.style.display = onContainers ? 'flex' : 'none';
   document.body.style.paddingBottom = onContainers
     ? 'calc(var(--bar-h) + env(safe-area-inset-bottom))' : '12px';
   try { localStorage.setItem('activeTab', name); } catch(e) {}
+  revealActiveTab(btn);
   if (name === 'mistral' && _features.mistral) fetchMistralModels();
+  if (name === 'security') securityOnEnter();
 }
 
 // Restore saved tab on load
@@ -2259,6 +3814,13 @@ setInterval(fetchStorage,    8000);
 setInterval(() => {
   if (document.getElementById('tab-processes').style.display !== 'none') fetchProcesses();
 }, 5000);
+// Security report: polls only while its tab is active and the page is visible.
+// Entering the tab / regaining visibility also triggers a fresh check.
+setInterval(securityTick, 60000);
+syncTabBarAfterFonts();
+if (typeof window !== 'undefined' && window && typeof window.addEventListener === 'function') {
+  window.addEventListener('resize', syncTabBarAfterFonts, { passive: true });
+}
 </script>
 </body>
 </html>
