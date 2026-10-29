@@ -9,13 +9,12 @@ responsive browser UI, and optional integrations controlled by environment setti
 - Portainer container status and start/stop/restart controls.
 - Optional AdGuard, Shelly energy/power, llama.cpp, and Ollama monitoring.
 - Optional host-side streaming and desktop wake/power controls.
-- AI Services tab: OpenCode Go usage/limits, a Mistral console link, and one
-  LiteLLM-backed inventory table grouped by upstream model and mode, with
-  benchmark columns.
+- AI Services tab: always-visible OpenCode Go usage, collapsed allowances, a
+  Mistral console link, and one LiteLLM-backed inventory table grouped by upstream
+  model and mode. A dropdown selects its single benchmark score column.
 - Versioned benchmark snapshots from Harbor Terminal-Bench 4 and Epoch ECI by
-  default; LiveBench Coding is opt-in pending a reuse review, and DeepSWE is
-  optional (`HOMELAB_DEEPSWE_ENABLED=false` default) with a grading-defect
-  warning.
+  default; LiveBench's seven suites are opt-in (enabled on this private install).
+  DeepSWE is optional and off by default, with documented grading defects.
 - Read-only SECURITY tab for the host watch's daily report (optional, off by default).
 
 ## Run locally
@@ -82,17 +81,17 @@ HTML/JavaScript:
   Harbor documents unauthenticated reads for displaying public leaderboards on
   your website. Rows mix native agents, reasoning effort, and trial counts; the
   dashboard preserves that provenance instead of claiming a pure-model rank.
-- **LiveBench Coding** (optional, disabled by default) — pinned to release
+- **LiveBench 2.0** (optional, disabled by default) — seven suites pinned to release
   `20261025` ([table.csv](https://livebench.ai/data/20261025/table.csv),
   [categories.json](https://livebench.ai/data/20261025/categories.json),
-  [site](https://livebench.ai/)). No explicit terms or discoverable license on
-  the LiveBench site cover the published scores, and LiveBench2.0's code license
-  does not cover them, so `HOMELAB_LIVEBENCH_ENABLED` defaults to false. Enable
-  only after your own reuse review. Recommended project policy: keep visible
-  attribution to **LiveBench 2.0, release2026-10-25** linked to
-  <https://livebench.ai>; this does not establish reuse permission. Do not copy
-  tasks. While disabled, the table keeps its Coding column but shows the
-  source-disabled warning instead of data.
+  [site](https://livebench.ai/)). The original 2024 dataset's
+  [Apache-2.0 datasheet](https://github.com/LiveBench/LiveBench/blob/main/docs/DATASHEET.md)
+  does not conclusively establish reuse terms for the newer 2.0 score feed;
+  [results-reuse clarification](https://github.com/LiveBench/LiveBench/issues/558)
+  remains open. `HOMELAB_LIVEBENCH_ENABLED` defaults to false pending each
+  operator's review. This single-user private installation opts in; that is not
+  a blanket legal guarantee or permission to redistribute tasks. Disabled
+  sources disappear from the dropdown and never expose cached scores.
 - **Epoch Capabilities Index (ECI)** — default source.
   [Scores](https://epoch.ai/data/eci_scores.csv),
   [documentation](https://epoch.ai/eci). ECI is an abstract composite, not a
@@ -106,24 +105,27 @@ HTML/JavaScript:
   the website leaderboard artifact. Cite Datacurve 2026 (Wenqi Huang, Charley
   Lee, Leonard Tng, Serena Ge).
   Epoch AI found grading defects in at least 23 of 113 v1.1 tasks
-  ([review](https://epoch.ai/benchmarks/deepswe/review)); the column shows that
-  warning and no invented correction.
+  ([review](https://epoch.ai/benchmarks/deepswe/review)); the API preserves that
+  warning and no invented correction. Current undated rows have no summary score.
 
 Each dated result carries a `date_kind`: Harbor's Release Date
 and Epoch's `date` are model releases (`model_release`), and LiveBench's pin is
 a benchmark release (`benchmark_release`). DeepSWE's `generated_at` is
 source-level `source_updated`, not a per-result date, so its rows stay undated.
-The summary column uses the latest published dated result — ties break on
+The score column uses the latest published dated result — ties break on
 reasoning effort, then agent/configuration lexical order, never on score — and
-the detail keeps every configuration's own value. An evaluation date
-(`evaluation`) is shown only when the feed explicitly supplies one; otherwise
-it is labeled unknown. Undated or ambiguous configurations remain in the detail
-view without a summary.
+the API keeps every configuration's own value. Score hover text shows the
+selected result's agent, effort, confidence interval, date kind, trial count and
+benchmark model identity when available. Stale cached scores and missing reasons
+are also identified on hover. An evaluation date
+(`evaluation`) is used only when the feed explicitly supplies one. Undated or
+ambiguous configurations remain in the API without a summary score. There are
+no configuration panels, provider filters, source cards or multi-column picker.
 
 Harbor's website-display documentation is not a broader redistribution
-license. Epoch AI's data is CC BY 4.0. No explicit terms or discoverable license
-on the LiveBench site cover its published scores, and its code license does not
-cover them. The DeepSWE artifact has no express license, and the repository's
+license. Epoch AI's data is CC BY 4.0. The scope of LiveBench's older dataset/code
+licensing for the newer published scores remains unconfirmed. The DeepSWE
+artifact has no express license, and the repository's
 Apache-2.0 terms cover only original contributions/curation without explicitly
 licensing the website leaderboard artifact. These notes record current terms,
 not a verification of all reuse permissions or legal advice. Verify each

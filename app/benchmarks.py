@@ -261,9 +261,16 @@ SOURCE_ALIASES: dict[str, dict[str, str]] = {
         "grok-4.6": "Grok 4.6",
         "grok-4.7": "Grok 4.7",
         "muse-spark-1.3": "Muse Spark 1.3",
+        # User accepted the variant risk on this contributor route (2026-10-29).
+        "muse-spark-1.3-contributor": "Muse Spark 1.3",
         "claude-opus-4.8": "Opus 4.8",
         "claude-opus-5": "Opus 5",
         "claude-opus-5.5": "Opus 5.5",
+        # Terminal-Bench only evaluated the dated Qwen3.8-Max-0902 snapshot.
+        # User accepted the variant risk on the rolling qwen3.8-max route
+        # (2026-10-29): considered the same model even if the route may serve
+        # a newer snapshot than the 0902 evaluation.
+        "qwen3.8-max": "Qwen3.8-Max-0902",
         "qwen3.8-max-0902": "Qwen3.8-Max-0902",
         "claude-sonnet-5": "Sonnet 5",
         "claude-sonnet-5.5": "Sonnet 5.5",
@@ -302,13 +309,44 @@ SOURCE_ALIASES: dict[str, dict[str, str]] = {
         "qwen3.8-max-0902": "Qwen3.8 Max (0902)",
         "claude-sonnet-5": "Claude Sonnet 5",
         "claude-sonnet-5.5": "Claude Sonnet 5.5",
+        # Reviewed one-to-one identities (user-approved 2026-10-29): these are
+        # punctuation/spelling-only differences against a single matching row.
+        "kimi-k3": "Kimi K3",
+        "kimi-k2.7-code": "Kimi K2.7 Code",
+        "claude-haiku-5-5": "Claude Haiku 5.5",
+        "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
+        # User accepted the version/variant risk on these rolling, pinned and
+        # local routes (2026-10-29): qwen3.8-max maps to the unsuffixed
+        # "Qwen 3.8 Max" row (2026-08-02), not "Qwen3.8 Max (0902)" — the
+        # route ID carries no date suffix; Mistral's pinned 1017 snapshot maps
+        # to Epoch's single V4.1 Flash row; the local qwen3.8:27b is accepted
+        # as the stock "Qwen 3.8 27B"; the contributor route is accepted as
+        # stock Muse Spark 1.3.
+        "deepseek-v4-1-flash-1017": "DeepSeek V4.1 Flash",
+        "qwen3.8-max": "Qwen 3.8 Max",
+        "qwen3.8:27b": "Qwen 3.8 27B",
+        "muse-spark-1.3-contributor": "Muse Spark 1.3",
     },
-    # LiveBench's own identifiers are exact API-style IDs.  The only entries
-    # here are the reviewed Mistral-hosted ZAI API IDs above; there is no
-    # punctuation or version-prefix normalization.
+    # LiveBench's own identifiers are exact API-style IDs.  The entries here
+    # are reviewed one-to-one identities only; there is no punctuation or
+    # version-prefix normalization.
     "livebench": {
         "zai-glm-5-3": "glm-5.3",
         "zai-glm-5-3-flash": "glm-5.3-flash",
+        # Reviewed one-to-one identities (user-approved 2026-10-29), mirroring
+        # the same judgments already approved for the epoch/harbor tables:
+        # - exact Mistral-hosted snapshot ID, punctuation only;
+        # - stock claude-haiku-5-5 == LiveBench's claude-haiku-5.5;
+        # - local qwen3.8:27b == LiveBench's qwen3.8-27b;
+        # - contributor route accepted as stock Muse Spark 1.3.
+        "deepseek-v4-1-flash-1017": "deepseek-v4.1-flash-1017",
+        "claude-haiku-5-5": "claude-haiku-5.5",
+        "qwen3.8:27b": "qwen3.8-27b",
+        "muse-spark-1.3-contributor": "muse-spark-1.3",
+        # User explicitly accepted this rolling -> dated snapshot mapping on
+        # 2026-10-29 during branch review. The route may serve a newer snapshot
+        # than LiveBench's 1017 evaluation; no other rolling alias is inferred.
+        "deepseek-v4.1-flash": "deepseek-v4.1-flash-1017",
     },
     "deepswe": {
         "claude-opus-4.8": "claude-opus-4-8",
@@ -1940,9 +1978,9 @@ def _source_enabled(name: str, *, deepswe_enabled: bool | None = None,
 
 
 def _enabled_metrics(deepswe_enabled: bool | None = None) -> list[MetricSpec]:
-    # LiveBench definitions stay in the metrics table even while the source is
-    # disabled, so the UI can explain the unavailable column.  DeepSWE is
-    # fully optional and only appears once enabled.
+    # Keep LiveBench definitions in the API contract even while disabled;
+    # clients use sources.livebench.disabled to omit them from the dropdown.
+    # DeepSWE is fully optional and only appears once enabled.
     enabled = DEEPSWE_ENABLED if deepswe_enabled is None else deepswe_enabled
     return [spec for spec in METRICS if spec.source != "deepswe" or enabled]
 
@@ -1969,6 +2007,14 @@ def _identity_candidates(row: dict) -> list[str]:
         remainder = upstream.split("/", 1)[1]
         if remainder and remainder != upstream:
             candidates.append(remainder)
+            # LiteLLM gateway routes may sit behind the Responses-API pseudo
+            # provider (openai/responses/<model>); the model identity is below
+            # it. Only this exact segment is stripped — every other spelling
+            # stays verbatim so no punctuation normalization can sneak in.
+            if remainder.startswith("responses/"):
+                inner = remainder.split("/", 1)[1]
+                if inner and inner != remainder:
+                    candidates.append(inner)
     return candidates
 
 
@@ -2088,7 +2134,9 @@ def build_payload(inventory: list[dict], state: dict, *,
     models = []
     for row in inventory:
         mode = row.get("mode") or "chat"
-        unsupported = mode not in ("chat", "completion")
+        # "responses" is the OpenAI Responses API protocol, not a modality;
+        # routes using it are ordinary text models and stay coding-comparable.
+        unsupported = mode not in ("chat", "completion", "responses")
         model = {
             "name": row["name"],
             "upstream_model": row["upstream_model"],

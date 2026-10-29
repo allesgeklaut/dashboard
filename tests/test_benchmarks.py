@@ -2084,6 +2084,119 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(models[2]["results"], {})
         self.assertEqual(models[2]["missing"]["tb4"], "unmatched identity")
 
+    def test_responses_api_mode_is_coding_comparable(self):
+        # LiteLLM model_info.mode "responses" is the OpenAI Responses API
+        # protocol, not a modality; such routes must keep matching benchmarks.
+        state = self.state({
+            "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
+            "epoch": [entry("eci", "GPT-6.1 Sol", 168.37)],
+            "livebench": [], "deepswe": [],
+        })
+        model = benchmarks.build_payload([
+            inventory_model("chatgpt-gpt-6.1-sol", "chatgpt/gpt-6.1-sol",
+                            mode="responses"),
+        ], state)["models"][0]
+        self.assertEqual(model["mode"], "responses")
+        self.assertEqual(model["bench"]["tb4"], 58.18)
+        self.assertEqual(model["bench"]["eci"], 168.37)
+        self.assertNotIn("tb4", model["missing"])
+        self.assertNotIn("eci", model["missing"])
+
+    def test_responses_pseudo_provider_identity_is_resolved(self):
+        # Gateway routes like openai/responses/<model> must resolve to the
+        # model identity below the Responses-API pseudo provider segment.
+        state = self.state({
+            "harbor": [entry("tb4", "GPT-5.6 Luna", 52.12)],
+            "epoch": [entry("eci", "GPT-5.6 Luna", 156.5)],
+            "livebench": [], "deepswe": [],
+        })
+        model = benchmarks.build_payload([
+            inventory_model("gpt-5.6-luna", "openai/responses/gpt-5.6-luna"),
+        ], state)["models"][0]
+        self.assertEqual(model["bench"]["tb4"], 52.12)
+        self.assertEqual(model["bench"]["eci"], 156.5)
+
+    def test_user_approved_identity_aliases_resolve(self):
+        # Reviewed one-to-one identities approved by the operator on
+        # 2026-10-29 (see SOURCE_ALIASES comments for the risk notes).
+        state = self.state({
+            "epoch": [
+                entry("eci", "Kimi K3", 157.86),
+                entry("eci", "Kimi K2.7 Code", 150.11),
+                entry("eci", "Claude Haiku 5.5", 159.32),
+                entry("eci", "DeepSeek V4.1 Flash", 155.93),
+                entry("eci", "Qwen 3.8 Max", 157.4),
+                entry("eci", "Qwen 3.8 27B", 142.0),
+                entry("eci", "Muse Spark 1.3", 157.21),
+            ],
+            "harbor": [entry("tb4", "Muse Spark 1.3", 46.02)],
+            "livebench": [], "deepswe": [],
+        })
+        cases = [
+            ("kimi-k3", "openai/kimi-k3", 157.86),
+            ("kimi-k2.7-code", "openai/kimi-k2.7-code", 150.11),
+            ("claude-haiku-5-5", "anthropic/claude-haiku-5-5", 159.32),
+            ("deepseek-v4.1-flash", "openai/deepseek-v4.1-flash", 155.93),
+            ("deepseek-v4.1-flash-mistral",
+             "mistral/deepseek-v4-1-flash-1017", 155.93),
+            ("qwen3.8-max", "openai/qwen3.8-max", 157.4),
+            ("qwen3.8-27b", "openai/qwen3.8:27b", 142.0),
+            ("muse-spark-1.3-contributor",
+             "openai/responses/muse-spark-1.3-contributor", 157.21),
+        ]
+        for name, upstream, eci in cases:
+            with self.subTest(name=name):
+                model = benchmarks.build_payload(
+                    [inventory_model(name, upstream)], state)["models"][0]
+                self.assertEqual(model["bench"]["eci"], eci)
+                self.assertNotIn("eci", model["missing"])
+        contributor = benchmarks.build_payload([
+            inventory_model("muse-spark-1.3-contributor",
+                            "openai/responses/muse-spark-1.3-contributor"),
+        ], state)["models"][0]
+        self.assertEqual(contributor["bench"]["tb4"], 46.02)
+
+    def test_qwen38_max_rolling_route_maps_to_the_reviewed_tb4_snapshot(self):
+        # Terminal-Bench only evaluated the dated Qwen3.8-Max-0902 snapshot;
+        # the operator accepted the variant risk on the rolling qwen3.8-max
+        # route (2026-10-29) and considers it the same model.
+        state = self.state({
+            "harbor": [entry("tb4", "Qwen3.8-Max-0902", 51.6)],
+            "epoch": [], "livebench": [], "deepswe": [],
+        })
+        model = benchmarks.build_payload(
+            [inventory_model("qwen3.8-max", "openai/qwen3.8-max")], state)["models"][0]
+        self.assertEqual(model["bench"]["tb4"], 51.6)
+        self.assertNotIn("tb4", model["missing"])
+
+    def test_livebench_exact_api_ids_resolve_for_reviewed_routes(self):
+        # LiveBench publishes exact API-style IDs; these identities mirror the
+        # user-approved epoch/harbor judgments (2026-10-29). The operator also
+        # explicitly accepted rolling DeepSeek -> 1017 during branch review.
+        state = self.state({
+            "livebench": [
+                entry("livebench_coding", "deepseek-v4.1-flash-1017", 96.0),
+                entry("livebench_coding", "claude-haiku-5.5", 91.4),
+                entry("livebench_coding", "qwen3.8-27b", 86.8),
+                entry("livebench_coding", "muse-spark-1.3", 90.2),
+            ],
+            "harbor": [], "epoch": [], "deepswe": [],
+        })
+        cases = [
+            ("deepseek-v4.1-flash-mistral", "mistral/deepseek-v4-1-flash-1017", 96.0),
+            ("deepseek-v4.1-flash", "openai/deepseek-v4.1-flash", 96.0),
+            ("claude-haiku-5-5", "anthropic/claude-haiku-5-5", 91.4),
+            ("qwen3.8-27b", "openai/qwen3.8:27b", 86.8),
+            ("muse-spark-1.3-contributor",
+             "openai/responses/muse-spark-1.3-contributor", 90.2),
+        ]
+        for name, upstream, coding in cases:
+            with self.subTest(name=name):
+                model = benchmarks.build_payload(
+                    [inventory_model(name, upstream)], state)["models"][0]
+                self.assertEqual(model["bench"]["livebench_coding"], coding)
+                self.assertNotIn("livebench_coding", model["missing"])
+
     def test_no_fuzzy_prefix_or_rolling_latest_matching(self):
         state = self.state({
             "harbor": [entry("tb4", "Opus 5.5", 64.85)],

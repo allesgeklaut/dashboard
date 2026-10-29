@@ -13,10 +13,13 @@ import psutil, requests
 from dotenv import load_dotenv
 import yaml
 
+# Source opt-ins are initialized when benchmarks is imported, so local .env
+# settings must be available first (Compose already supplies process env).
+load_dotenv()
+
 import benchmarks
 import security_report
 
-load_dotenv()
 _log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────

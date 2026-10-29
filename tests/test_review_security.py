@@ -180,7 +180,11 @@ class HostBoundaryTests(unittest.TestCase):
                            DESKTOP_ENV_FILE=str(root / "absent.env"),
                            DESKTOP_SPOOL_DIR=str(spool), STREAM_SPOOL_DIR=str(spool),
                            WOL_DESKTOP_MAC="02:00:00:00:00:00",
-                           WOL_BROADCAST="127.0.0.1", WOL_PORT="9")
+                           WOL_BROADCAST="127.0.0.1", WOL_PORT="9",
+                           # Importing the app loads the repo .env into os.environ;
+                           # a real DESKTOP_SSH must not leak into the stubbed
+                           # handler — the poweroff marker requires it unset.
+                           DESKTOP_SSH="")
                 result = subprocess.run(["bash", str(script_dir / handler)], env=env,
                                         capture_output=True, text=True, timeout=5, check=True)
                 self.assertLess(result.stdout.index(older_marker),

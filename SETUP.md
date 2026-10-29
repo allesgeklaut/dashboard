@@ -68,8 +68,9 @@ and a Mistral console link preserved above it:
 
 - **OpenCode Go usage and limits** — the Go plan's rolling 5h / weekly /
   monthly usage plus the per-model limits table (est. requests per 5h and
-  monthly $). Limits still come from the opencode docs source (1 h cache). The
-  card stays hidden when no key is available. Use the same token the CLI uses
+  monthly $). Usage is always visible; only **allowances · go plan** is collapsed
+  by default. Limits still come from the opencode docs source (1 h cache). Both
+  sections stay hidden when no key is available. Use the same token the CLI uses
   (read it on the server from `~/.local/share/opencode/auth.json`, see
   `.env.example`); locally it can fall back to the dev machine's auth store
   (`OPENCODE_AUTH_FILE` overrides the path). Usage polls only while the page
@@ -81,13 +82,13 @@ and a Mistral console link preserved above it:
   `model_list`, not only `mistral/` routes. Routes are grouped by exact upstream
   model ID and mode, so a chat route and an embedding route that share one
   upstream model are separate rows; aliases with the same upstream model and
-  mode stay together on one row and list their routes. Columns include the
-  dashboard label (`model_name`), available routes, Terminal-Bench 4, LiveBench
-  Coding, Epoch ECI, and optionally DeepSWE. LiveBench Coding keeps its default
-  column but shows a source-disabled warning until an operator enables it. Rows
-  can be filtered by route/provider; audio and embedding routes stay visible
-  but are excluded from coding comparisons. There is no invented combined score
-  or rank.
+  mode stay together on one row and list their routes. The table is **MODEL |
+  SCORE | AVAILABLE ROUTES**, with a narrow score column. A dropdown selects
+  Terminal-Bench 4, Epoch ECI, or an enabled optional suite; its selection is
+  saved locally. Only enabled sources appear in that dropdown. Model and score
+  headers sort the rows. Audio and embedding routes stay visible but are
+  excluded from coding comparisons. There are no provider filters, column
+  pickers, source cards or configuration panels, and no invented combined score.
 
 When any AI Services feature is enabled, the tab button is visible. The browser
 loads `GET /api/ai-services` on tab entry and then every 60 seconds, but only
@@ -106,8 +107,9 @@ Identity matching is explicit. A row gets a benchmark only after an exact
 normalized identity match or a reviewed, source-specific mapping. There is no
 fuzzy prefix matching, version guessing, automatic `-latest` alias mapping, or
 copying a base model's score onto a modified/abliterated variant. An unmatched
-row shows a missing reason (not evaluated, unmatched identity, unsupported
-modality, or source unavailable). Missing coverage is not a fetch failure.
+row shows a dash with a hover-only missing reason (not evaluated, unmatched
+identity, unsupported modality, or source unavailable). Missing coverage is not
+a fetch failure.
 
 When a source has several results or configurations for an identity, the
 summary column uses the latest published dated result, never the maximum.
@@ -119,11 +121,13 @@ rows stay undated and have no summary. An actual evaluation or submission date,
 when the feed includes one, is labeled `evaluation`; otherwise the evaluation
 date is shown as unknown. Ties are broken by reasoning-effort priority, then
 agent/configuration lexical order — never by score. An undated or ambiguous
-configuration has no single summary; its results stay in the tab's
-**evaluations & configurations** detail with agent, harness, reasoning effort,
-evaluator, version, confidence interval, each result's own value, and its dated
-provenance. The **source status & provenance** section reports each feed's
-enabled/disabled/stale state and links to the publisher.
+configuration has no single summary. Hovering a scored cell shows its selected
+agent, effort, confidence interval, date kind, trial count and matched benchmark
+model when supplied; stale cached scores are identified on hover too.
+All configurations, their own values, evaluator/version and provenance remain
+in the API, as do per-source warnings and enabled/disabled/stale/error state.
+Those details have no separate visible panels in the simplified tab. The small
+Epoch CC BY attribution remains below the table.
 
 For local development, set `LITELLM_CONFIG_FILE` to the existing LiteLLM YAML,
 for example `../litellm/config.yaml` (relative to the server process working
@@ -149,10 +153,13 @@ bind mount from the main Compose file before recreating the service.
 
 #### Benchmark sources
 
-Harbor Terminal-Bench 4 and Epoch ECI are enabled by default. LiveBench Coding
+Harbor Terminal-Bench 4 and Epoch ECI are enabled by default. LiveBench 2.0
 is opt-in and DeepSWE is optional, so neither is fetched until explicitly
 enabled. The two opt-in flags are ordinary feature flags in the repository
-`.env` (used for Compose interpolation), not `/opt/secrets` credentials. All
+`.env` (used for Compose interpolation and local startup), not `/opt/secrets`
+credentials. This private, single-user installation uses
+`HOMELAB_LIVEBENCH_ENABLED=true`; DeepSWE remains off. Defaults in `.env.example`
+stay false for other installations. All
 benchmark fetches use `httpx` (a runtime dependency) against fixed, allowlisted
 HTTPS endpoints. Each response is streamed inside one absolute per-source
 deadline that bounds the HTTP connect, response-header, and body-read phases,
@@ -178,24 +185,27 @@ evidence.
   no current result is legitimate missing coverage, not a fetch failure. See the
   [Harbor leaderboard docs](https://docs.harborframework.com/harbor-hub/leaderboards)
   and [Terminal-Bench](https://www.tbench.ai/).
-- **LiveBench Coding** (optional, disabled by default) — no explicit terms or
-  discoverable license on the LiveBench site cover LiveBench2.0's published
-  scores, and its code license does not cover them. `HOMELAB_LIVEBENCH_ENABLED`
-  defaults to false (Compose forwards the variable), so nothing is fetched; the
-  table keeps its default Coding column as a source-disabled placeholder with a
-  warning, not a fetch failure. Enable it only after your own reuse review. The
+- **LiveBench 2.0** (optional, disabled by default) — the original June 2024
+  [dataset datasheet](https://github.com/LiveBench/LiveBench/blob/main/docs/DATASHEET.md)
+  says Apache-2.0 and no restrictions, but does not conclusively establish reuse
+  terms for the newer 2.0 score feed. The
+  [results-reuse question](https://github.com/LiveBench/LiveBench/issues/558)
+  remains open. `HOMELAB_LIVEBENCH_ENABLED` defaults to false (Compose forwards
+  it); disabled suites are absent from the dropdown and cached scores stay
+  hidden. Enable after your own review; this private installation opts in. The
   source is pinned to release `20261025`, because the feed has no structured
   "latest release" manifest and the tab never scrapes HTML/JS to discover one.
   It reads
   [table.csv](https://livebench.ai/data/20261025/table.csv) and
   [categories.json](https://livebench.ai/data/20261025/categories.json) from
   that release. Scores are 0–100. `categories.json` defines the version-specific
-  suite weights; Coding is the default column, other suites are selectable, and
+  suite weights; Coding, Long Agentic, Reasoning, Browser, Data Analysis,
+  Research and Design are selectable, and
   the tab does not compute an equal-weight overall score. Coding is
   deterministic; research and design use rubric/visual grading and can be
-  harder to compare. Recommended project policy: keep visible attribution to
-  **LiveBench 2.0, release2026-10-25** linked to <https://livebench.ai>; this
-  does not establish reuse permission. Do not copy tasks.
+  harder to compare. Provenance identifies **LiveBench 2.0, release 2026-10-25**
+  and <https://livebench.ai>. Private use is an operator choice, not a blanket
+  legal guarantee. Do not copy tasks.
 - **Epoch Capabilities Index (ECI)** (default source) — reads
   [eci_scores.csv](https://epoch.ai/data/eci_scores.csv). ECI is an abstract
   composite index, not a percentage, and mixes independent evaluations with
@@ -206,15 +216,15 @@ evidence.
   `HOMELAB_DEEPSWE_ENABLED=true` (Compose forwards the variable; no new
   service or volume). It reads Datacurve's v1.1
   [leaderboard JSON](https://deepswe.datacurve.ai/artifacts/v1.1/leaderboard-live.json)
-  and shows each pass@1 result (0–1 in the feed) as a percentage in the
-  evaluations detail, not best-of-four. Because its rows are undated, there is
-  no single summary value. The artifact itself has no express license; the
+  and stores each pass@1 result (0–1 in the feed) as a percentage in the API,
+  not best-of-four. Because its rows are undated, there is no single table
+  summary value. The artifact itself has no express license; the
   project repository's Apache-2.0 license covers original contributions and
   curation, but does not explicitly license the website leaderboard artifact.
   Cite Datacurve 2026 (Wenqi Huang, Charley Lee, Leonard Tng, Serena Ge) and do
   not copy tasks or training data. Epoch AI found grading defects in at least 23
-  of 113 v1.1 tasks, chiefly agent/hidden-test collisions; the column carries
-  that warning and links to the
+  of 113 v1.1 tasks, chiefly agent/hidden-test collisions; the API carries
+  that warning and a link to the
   [DeepSWE v1.1 review](https://epoch.ai/benchmarks/deepswe/review). No score
   correction is invented. Datacurve's benchmark is not the Together or
   Agentica coding agent of the same name; do not fill gaps from community
@@ -223,9 +233,9 @@ evidence.
 Harbor documents unauthenticated reads so you can display a public leaderboard
 on your website; this repository does not assert a broader redistribution
 license for the results. Epoch AI's data is CC BY 4.0 — attribution is shown and
-must be preserved. No explicit terms or discoverable license on the LiveBench
-site cover its published scores, and its code license does not cover them; its
-source stays disabled until an operator completes a reuse review. The DeepSWE artifact has
+must be preserved. The scope of LiveBench's older dataset/code licensing for
+the newer published scores remains unconfirmed; it is an operator opt-in,
+enabled here for private use after review. The DeepSWE artifact has
 no express license, and the repository's Apache-2.0 terms cover only original
 contributions/curation without explicitly licensing the website leaderboard
 artifact. These notes record current terms; they are not a verification of all
@@ -253,10 +263,10 @@ A refresh is per source, with bounded retries and backoff (including rate-limit
 responses); a failed source retries after five minutes, doubling up to one hour.
 One source failing, or returning invalid data, does not erase another source's
 snapshot or fail the whole refresh; the last good snapshot is retained and its
-error and age are shown. Disabled sources are not fetched or refreshed and never
-contribute cached rows: LiveBench shows its source-disabled
-warning and hides cached scores, DeepSWE shows a disabled state with no column,
-and any prior values are not treated as current. Empty, malformed,
+error and age are preserved in the API. Refresh feedback reports partial or
+failed refreshes; the minimal table has no source-status panel. Disabled sources
+are not fetched or refreshed, never contribute cached rows, and are absent from
+the dropdown. Any prior values are not treated as current. Empty, malformed,
 schema-drifted, or suspiciously short feeds are rejected before replacing a
 snapshot. Each source distinguishes when it was last checked, when it last
 succeeded, when the publisher updated it, and each result's published date plus
@@ -689,10 +699,10 @@ docker compose up -d --build
 | NFS mount shows "not mounted" | Check the read-only bind and `NFS_MOUNTS` in the Docker application env file |
 | AdGuard section missing | Section auto-hides on error — check `ADGUARD_URL` / credentials |
 | AI Services inventory empty or missing | Check `LITELLM_CONFIG_FILE` locally or the read-only `/run/litellm/config.yaml` mount in Docker; only valid `model_list` routes are listed |
-| Benchmark columns show missing reasons | The source has no exact identity match, the model is audio/embedding, or the source is unavailable; missing coverage is not a fetch failure |
-| Benchmark data stale or a source unavailable | Last-good snapshots stay visible; use the manual refresh and check the source link. An old Artificial Analysis cache is intentionally ignored |
+| Benchmark score is a dash | Hover for the missing reason: no exact identity match, audio/embedding modality, no dated summary, or an unavailable source. Missing coverage is not a fetch failure |
+| Benchmark data stale or a source unavailable | Last-good snapshots stay visible; use the manual refresh and inspect `sources` in `/api/ai-services`. An old Artificial Analysis cache is intentionally ignored |
 | Benchmark cache cannot be written | Sources report a storage error and stay stale with retry backoff; check `HOMELAB_BENCH_FILE` and `/data` volume permissions. The last good in-memory snapshot and previous cache file are retained |
-| LiveBench Coding shows source-disabled | It is disabled by default pending a reuse review; enable `HOMELAB_LIVEBENCH_ENABLED=true` only after checking the terms. The table keeps the column as a warning placeholder |
-| DeepSWE column absent | It is optional and off unless `HOMELAB_DEEPSWE_ENABLED=true`; when enabled, read the linked Epoch AI grading-defect review |
+| LiveBench suites absent from dropdown | Defaults off pending operator review; set `HOMELAB_LIVEBENCH_ENABLED=true` in the repo `.env` and recreate the container (or restart local uvicorn). This private install opts in |
+| DeepSWE absent or scoreless | Optional and off unless `HOMELAB_DEEPSWE_ENABLED=true`; current undated results have no summary, and grading-defect warnings remain in the API (see the review above) |
 | SECURITY tab missing | Locally, `SECURITY_REPORT_DIR` is unset; in Docker, check the report directory, its uid-1000 ownership, and the read-only mount (see the SECURITY tab section) |
 | SECURITY report unavailable | Check `latest.json` exists, is valid JSON, and is under 8 MiB; "stale" reflects report age, not the watch's job status |

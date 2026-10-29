@@ -1302,7 +1302,7 @@ async function loadAI(report = aiServicesReport(), options = {}) {
   return d;
 }
 
-test('AI services merges tabs and removes every AA selector, column and credit', () => {
+test('AI services merges tabs into one dropdown table without AA or explanation chrome', () => {
   const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
   assert.match(html, /id="tab-btn-ai-services"[^>]*aria-controls="tab-ai-services"[^>]*>AI SERVICES</);
   assert.match(html, /id="tab-ai-services" class="tab-pane"/);
@@ -1320,26 +1320,64 @@ test('AI services merges tabs and removes every AA selector, column and credit',
 
   const limits = html.match(/id="ocgl-table"[\s\S]*?<\/table>/)[0];
   assert.doesNotMatch(limits, /TB4|bench|score/i);
-  assert.match(html, /No overall rank is computed/);
-  assert.match(html, /reputable, not trusted/i);
-  assert.match(html, /Epoch AI ECI © Epoch AI/);
+
+  // The benchmark dropdown is the only selector; one score column follows it.
+  assert.match(html, /id="ai-metric-select"/);
+  assert.match(html, /aiSetMetric\(this\.value\)/);
+  assert.match(html, /aria-label="Select benchmark"/);
+  assert.match(html, /aiServicesMetric/);
+  assert.doesNotMatch(html, /aiServicesColumns/);
+
+  // Every piece of removed explanation chrome must stay removed.
+  for (const gone of [
+    'id="ai-caveats"', 'id="ai-warnings"', 'id="ai-filters"', 'id="ai-provider-filter"',
+    'id="ai-route-filter"', 'id="ai-col-picker"', 'id="ai-column-options"', 'id="ai-sources"',
+    'id="ai-configs"', 'ai-group-row', 'ai-th-src', 'ai-source-card', 'ai-warning"',
+    'Latest published dated result', 'reputable, not trusted', 'No overall rank is computed',
+    'evaluations &amp; configurations', 'source status &amp; provenance',
+  ]) {
+    assert.doesNotMatch(html, new RegExp(gone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), gone);
+  }
+
+  // The only remaining prose is the tiny CC BY licence line for Epoch data.
+  assert.match(html, /id="ai-attribution"[^>]*>Epoch AI ECI data/);
+  assert.match(html, /https:\/\/epoch\.ai\/eci/);
   assert.match(html, /https:\/\/creativecommons\.org\/licenses\/by\/4\.0\//);
-  assert.match(html, /\.ai-source-card a \{ color:var\(--g-bright\); \}/);
-  assert.match(html, /\.ai-source-card a:focus-visible \{ outline:2px solid var\(--g-bright\); /);
+  assert.match(html, /CC BY 4\.0/);
+  assert.match(html, /\.ai-attrib-mini \{ font-size:9px; color:var\(--g-dim\); margin-top:6px; \}/);
+
+  // Every removed render function must stay removed.
+  for (const gone of [
+    'aiRenderConfigs', 'aiRenderSources', 'aiRenderWarnings', 'aiRenderAttribution',
+    'aiToggleColumn', 'aiSetProvider', 'aiSetRoute', 'aiIsNonCoding', 'aiRememberConfigOpen',
+    'aiRenderFilters', 'aiRenderColumnPicker', 'aiAvailableOptionalMetrics',
+    'aiVisibleColumnKeys', 'aiResetHiddenSort', 'aiRestoreColumns', 'aiSaveColumns',
+    'aiAttributionGroups', 'aiConfigEntries', 'aiResultCard', 'aiDateFields', 'aiResultValue',
+    'aiSafeLink', 'aiTimestampMs', 'aiDeepSwePresent', 'aiLiveBenchPresent',
+  ]) {
+    assert.doesNotMatch(html, new RegExp(`\\b${gone}\\b`), gone);
+  }
 });
 
-test('one inventory table renders core benchmark columns, routes and preserved shell controls', async () => {
+test('one dropdown selects the benchmark; the table shows routes and one score column', async () => {
   const d = await loadAI();
+  const select = d.element('ai-metric-select');
+  // Enabled sources only: LiveBench and DeepSWE never appear as options.
+  assert.match(select.innerHTML, /Terminal-Bench 4\.0/);
+  assert.match(select.innerHTML, /Epoch Capabilities Index/);
+  assert.doesNotMatch(select.innerHTML, /LiveBench|DeepSWE/);
+  assert.equal(select.value, 'tb4');
+
   const thead = d.element('ai-thead').innerHTML;
   assert.match(thead, /MODEL/);
   assert.match(thead, /AVAILABLE ROUTES/);
-  assert.match(thead, /Terminal-Bench4/);
-  assert.match(thead, /LiveBench Coding/);
-  assert.match(thead, /Epoch ECI/);
+  // The score column comes second and uses the short label; the full name hovers.
+  assert.ok(thead.indexOf('MODEL') < thead.indexOf('TB4'), 'score column is second');
+  assert.ok(thead.indexOf('TB4') < thead.indexOf('AVAILABLE ROUTES'), 'routes column is last');
+  assert.match(thead, /title="Terminal-Bench 4\.0"/);
   assert.doesNotMatch(thead, /OVERALL|RANK/i);
-  assert.match(thead, /Harbor \(Terminal-Bench\)/);
-  assert.match(thead, /LiveBench 2\.0 · disabled/);
-  assert.match(thead, /Epoch AI/);
+  // Exactly one score column: no second benchmark, no source label under the header.
+  assert.doesNotMatch(thead, /Epoch Capabilities Index|Harbor|Epoch AI/);
 
   const tbody = d.element('ai-tbody').innerHTML;
   assert.match(tbody, /alpha/);
@@ -1347,207 +1385,118 @@ test('one inventory table renders core benchmark columns, routes and preserved s
   assert.match(tbody, /alpha-route/);
   assert.match(tbody, /alpha-backup/);
   assert.match(tbody, /72\.4%/);
-  assert.match(tbody, /41\.2/);
-  assert.doesNotMatch(tbody, /41\.2%/);
-  assert.match(tbody, /source disabled/);
-  assert.doesNotMatch(tbody, />0(?:\.0)?%</);
-  assert.match(tbody, /not evaluated — see configurations/);
-  assert.match(tbody, /unmatched identity/);
-  assert.match(tbody, /not evaluated/);
-  assert.match(tbody, /unsupported modality/);
-  assert.match(tbody, /non-coding model/i);
-  assert.match(tbody, /excluded/);
-  assert.match(d.element('ai-count').textContent, /4 \/ 4 models/);
+  assert.match(tbody, /50\.0%/);
+  assert.doesNotMatch(tbody, /41\.2/);
+  // Every model renders as a flat row; missing scores are dashes with hover reasons.
+  assert.match(tbody, /embed-one/);
+  assert.match(tbody, /title="not evaluated"/);
+  assert.match(tbody, /title="unsupported modality"/);
+  assert.doesNotMatch(tbody, /excluded/);
+  assert.doesNotMatch(tbody, /non-coding/i);
+  assert.match(d.element('ai-count').textContent, /4 models/);
   // pct values are already 0–100 percentage points in the contract.
   assert.equal(d.run("aiFormatValue(50,{unit:'pct'})"), '50.0%');
   assert.equal(d.run("aiFormatValue(0.5,{unit:'pct'})"), '0.5%');
   assert.equal(d.run("aiFormatValue(41.2,{unit:'index'})"), '41.2');
 });
 
-test('provider and route filters narrow the unified inventory table', async () => {
+test('score details are hover-only and keep provenance honest', async () => {
   const d = await loadAI();
-  const providers = d.element('ai-provider-filter').innerHTML;
-  for (const provider of ['ALL PROVIDERS', 'anthropic', 'openai', 'openrouter']) {
-    assert.match(providers, new RegExp(provider));
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /title="native · high · CI 68 – 76 · evaluation date 2026-09-30 · 5 trials · benchmark model alpha-2026"/);
+  // A score without result details gets no invented hover text.
+  assert.equal(d.run("aiScoreDetail({}, 'tb4')"), '');
+  assert.equal(d.run("aiScoreDetail({results:{tb4:[]}}, 'tb4')"), '');
+  assert.equal(
+    d.run("aiScoreDetail({results:{tb4:[{agent:'a', value:1, date:null, metadata:{}}]}}, 'tb4')"),
+    'a'
+  );
+});
+
+test('last-good scores disclose stale sources on hover without extra UI', async () => {
+  for (const state of [{ stale: true, error: null }, { stale: false, error: 'HTTP 503' }]) {
+    const report = aiServicesReport();
+    Object.assign(report.sources.harbor, state);
+    const d = await loadAI(report);
+    const rows = d.element('ai-tbody').innerHTML;
+    const modelRows = rows.match(/<tr>[\s\S]*?<\/tr>/g);
+    const alpha = modelRows.find(row => row.includes('<b>alpha</b>'));
+    const gamma = modelRows.find(row => row.includes('<b>gamma</b>'));
+    assert.match(alpha, /title="[^"]*cached score — source stale"[^>]*>72\.4%/);
+    assert.match(gamma, /title="cached score — source stale"[^>]*>50\.0%/);
+    assert.doesNotMatch(rows.replace(/title="[^"]*"/g, ''), /cached score|source stale/);
+    d.run('_aiData.sources.harbor.stale=false; _aiData.sources.harbor.error=null; aiRenderTable();');
+    assert.doesNotMatch(d.element('ai-tbody').innerHTML, /cached score — source stale/);
   }
-  d.run("aiSetProvider('anthropic')");
-  assert.equal(d.run('_aiProvider'), 'anthropic');
-  assert.match(d.element('ai-tbody').innerHTML, /beta/);
-  assert.doesNotMatch(d.element('ai-tbody').innerHTML, /alpha/);
-  assert.match(d.element('ai-count').textContent, /1 \/ 4 models/);
-
-  d.run("aiSetProvider('all'); aiSetRoute('alpha-backup')");
-  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
-  assert.doesNotMatch(d.element('ai-tbody').innerHTML, /beta/);
-  d.run("aiSetRoute('all')");
-  assert.match(d.element('ai-count').textContent, /4 \/ 4 models/);
 });
 
-test('optional LiveBench suites are selectable and disabled sources stay unavailable', async () => {
+test('switching benchmarks swaps the score column, formats and stored selection', async () => {
   const d = await loadAI();
-  assert.doesNotMatch(d.element('ai-thead').innerHTML, /LiveBench Reasoning/);
-  const picker = d.element('ai-column-options').innerHTML;
-  assert.match(picker, /LiveBench Reasoning/);
-  assert.match(picker, /disabled/);
-  // DeepSWE is only present in the contract once explicitly enabled.
-  assert.doesNotMatch(picker, /DeepSWE/);
-
-  d.run("aiToggleColumn('livebench_reasoning', true)");
-  assert.match(d.element('ai-thead').innerHTML, /LiveBench Reasoning/);
-  assert.match(d.element('ai-thead').innerHTML, /LiveBench 2\.0 · disabled/);
-  assert.match(d.storage.get('aiServicesColumns'), /livebench_reasoning/);
+  d.run("aiSetMetric('eci')");
+  assert.equal(d.run('_aiMetric'), 'eci');
+  assert.equal(d.element('ai-metric-select').value, 'eci');
+  assert.match(d.element('ai-thead').innerHTML, /ECI/);
+  assert.match(d.element('ai-thead').innerHTML, /title="Epoch Capabilities Index"/);
+  const tbody = d.element('ai-tbody').innerHTML;
+  // ECI is an abstract index, not a percentage.
+  assert.match(tbody, />41\.2</);
+  assert.doesNotMatch(tbody, /41\.2%/);
+  assert.match(tbody, /title="unmatched identity"/);
+  assert.match(tbody, /title="CI ± 1\.5 · model release date 2026-09-12 · benchmark model alpha-2026"/);
+  assert.equal(d.storage.get('aiServicesMetric'), '"eci"');
+  // A disabled benchmark can never be selected.
+  d.run("aiSetMetric('livebench_coding')");
+  assert.equal(d.run('_aiMetric'), 'eci');
+  d.run("aiSetMetric('tb4')");
+  assert.equal(d.run('_aiMetric'), 'tb4');
+  assert.equal(d.storage.get('aiServicesMetric'), '"tb4"');
 });
 
-test('DeepSWE becomes a selectable optional column when the backend provides it', async () => {
+test('a disabled stored benchmark falls back to the first available metric', async () => {
+  const d = await loadAI(aiServicesReport(), { localStorage: { aiServicesMetric: '"livebench_coding"' } });
+  assert.equal(d.run('_aiMetric'), 'tb4');
+  assert.equal(d.element('ai-metric-select').value, 'tb4');
+  assert.equal(d.storage.get('aiServicesMetric'), '"tb4"');
+  // A stored valid selection is honoured on load.
+  const eci = await loadAI(aiServicesReport(), { localStorage: { aiServicesMetric: '"eci"' } });
+  assert.equal(eci.run('_aiMetric'), 'eci');
+  assert.match(eci.element('ai-thead').innerHTML, /title="Epoch Capabilities Index"/);
+});
+
+test('the benchmark dropdown offers every enabled source metric', async () => {
+  const base = aiServicesReport();
+  const d = await loadAI();
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /LiveBench|DeepSWE/);
+
+  const enabled = await loadAI(aiServicesReport({
+    sources: { ...base.sources, livebench: { ...base.sources.livebench, disabled: false, warning: null } },
+  }));
+  const options = enabled.element('ai-metric-select').innerHTML;
+  assert.match(options, /LiveBench Coding/);
+  assert.match(options, /LiveBench Reasoning/);
+  assert.doesNotMatch(options, /DeepSWE/);
+  enabled.run("aiSetMetric('livebench_coding')");
+  assert.equal(enabled.run('_aiMetric'), 'livebench_coding');
+  assert.match(enabled.element('ai-thead').innerHTML, /LBC/);
+  assert.match(enabled.element('ai-thead').innerHTML, /title="LiveBench Coding"/);
+  assert.equal(enabled.storage.get('aiServicesMetric'), '"livebench_coding"');
+});
+
+test('metric source aliases resolve to the backend source key', async () => {
   const base = aiServicesReport();
   const report = aiServicesReport({
-    metrics: base.metrics.concat([aiMetric('deepswe', 'DSWE', 'DeepSWE pass@1', 'pct', 'deepswe')]),
-    sources: {
-      ...base.sources,
-      deepswe: { ...base.sources.deepswe, disabled: false, warning: 'grading defects documented' },
-    },
+    metrics: base.metrics.map(metric => metric.key === 'tb4'
+      ? { ...metric, source: 'tb4' } : metric),
+    sources: { ...base.sources, harbor: { ...base.sources.harbor, disabled: true } },
   });
   const d = await loadAI(report);
-  const picker = d.element('ai-column-options').innerHTML;
-  assert.match(picker, /DeepSWE pass@1/);
-  assert.doesNotMatch(d.element('ai-thead').innerHTML, /DeepSWE/);
-  d.run("aiToggleColumn('deepswe', true)");
-  assert.match(d.element('ai-thead').innerHTML, /DeepSWE pass@1/);
-  assert.match(d.storage.get('aiServicesColumns'), /deepswe/);
-  d.run("aiToggleColumn('deepswe', false)");
-  assert.doesNotMatch(d.element('ai-thead').innerHTML, /DeepSWE/);
+  // 'tb4' resolves to the harbor source, so its disabled state hides the metric.
+  assert.equal(d.run("aiMetricDisabled('tb4')"), true);
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /Terminal-Bench 4\.0/);
+  assert.equal(d.run('_aiMetric'), 'eci');
 });
 
-test('all evaluation configurations are listed with agents, dates, CIs and metadata', async () => {
-  const d = await loadAI();
-  const configs = d.element('ai-configs').innerHTML;
-  assert.match(configs, /alpha-2026/);
-  assert.match(configs, /agent \/ harness/);
-  assert.match(configs, /native/);
-  assert.match(configs, /effort/);
-  assert.match(configs, /high/);
-  assert.match(configs, /evaluator/);
-  assert.match(configs, /Terminal-Bench 4\.0/);
-  assert.match(configs, /evaluation date<\/span><span>2026-09-30/);
-  assert.doesNotMatch(configs, /evaluation date<\/span><span>2026-09-12/);
-  assert.doesNotMatch(configs, /evaluation date<\/span><span>2026-08-15/);
-  assert.match(configs, /model release date<\/span><span>2026-09-12/);
-  assert.match(configs, /benchmark release date<\/span><span>2026-08-15/);
-  assert.match(configs, /evaluation date<\/span><span>unknown/);
-  assert.doesNotMatch(configs, /date \(kind not reported\)/);
-  assert.match(configs, /\bCI\b/);
-  assert.match(configs, /68 – 76/);
-  assert.match(configs, /± 1\.5/);
-  assert.match(configs, /configuration/);
-  assert.match(configs, /native agent \/ high/);
-  assert.match(configs, /metadata\.n_trials/);
-  assert.match(configs, /metadata\.ci_method/);
-  assert.match(configs, /bootstrap/);
-  assert.match(configs, /SUMMARY/);
-  assert.match(configs, /72\.4%/);
-  assert.match(configs, /41\.2/);
-  assert.match(configs, /54\.2%/);
-  assert.match(configs, /51\.8%/);
-  assert.match(configs, /harness-a/);
-  assert.match(configs, /harness-b/);
-  assert.match(configs, /medium/);
-  assert.match(configs, /low/);
-});
-
-test('source status keeps checked, last success, source update and disabled states distinct', async () => {
-  const d = await loadAI();
-  const sources = d.element('ai-sources').innerHTML;
-  assert.match(sources, /checked/);
-  assert.match(sources, /last success/);
-  assert.match(sources, /source updated/);
-  assert.doesNotMatch(sources, /evaluations updated/);
-  assert.match(sources, /Harbor \(Terminal-Bench\)/);
-  assert.match(sources, /Epoch AI/);
-  assert.match(sources, /LiveBench 2\.0/);
-  assert.match(sources, /pinned release/);
-  assert.match(sources, /DISABLED/);
-  assert.match(sources, /2026-09-25/);
-  assert.match(sources, /2026-10-25/);
-  assert.doesNotMatch(sources, /1970/);
-  assert.doesNotMatch(sources, /ERROR/);
-  assert.doesNotMatch(sources, /STALE/);
-  assert.match(d.element('ai-configs').innerHTML, /evaluation date/);
-
-  const warnings = d.element('ai-warnings').innerHTML;
-  assert.match(warnings, /LiveBench ?2\.0 reuse terms unverified; opt-in after review/);
-  assert.match(warnings, /shown as disabled, not failed/);
-  assert.match(warnings, /23 of 113/);
-  assert.match(warnings, /https:\/\/epoch\.ai\/benchmarks\/deepswe\/review/);
-  assert.match(warnings, /Datacurve 2026/);
-  assert.match(warnings, /Wenqi Huang/);
-  assert.match(warnings, /Charley Lee/);
-  assert.match(warnings, /Leonard Tng/);
-  assert.match(warnings, /Serena Ge/);
-  assert.match(d.element('ai-attribution').innerHTML, /CC BY 4\.0/);
-});
-
-test('stale and error sources are explicit and do not erase the table', async () => {
-  const base = aiServicesReport();
-  const report = aiServicesReport({
-    sources: {
-      ...base.sources,
-      epoch: { ...base.sources.epoch, stale: true, error: 'upstream timeout', warning: 'partial coverage' },
-    },
-  });
-  const d = await loadAI(report);
-  const sources = d.element('ai-sources').innerHTML;
-  assert.match(sources, /STALE/);
-  assert.match(sources, /ERROR/);
-  assert.match(sources, /upstream timeout/);
-  assert.match(sources, /partial coverage/);
-  assert.match(d.element('ai-tbody').innerHTML, /41\.2/);
-});
-
-test('enabled LiveBench links its homepage and release date, not the CSV artifact', async () => {
-  const disabled = await loadAI();
-  assert.doesNotMatch(disabled.element('ai-attribution').innerHTML, /LiveBench 2\.0 · release/);
-
-  const base = aiServicesReport();
-  const report = aiServicesReport({
-    sources: {
-      ...base.sources,
-      livebench: { ...base.sources.livebench, disabled: false, warning: null },
-    },
-  });
-  const enabled = await loadAI(report);
-  const attribution = enabled.element('ai-attribution').innerHTML;
-  assert.match(attribution, /LiveBench 2\.0 · release 2026-10-25/);
-  assert.match(attribution, /href="https:\/\/livebench\.ai"/);
-  assert.doesNotMatch(attribution, /table\.csv/);
-  assert.match(attribution, /LiveBench 2\.0/);
-  assert.doesNotMatch(enabled.element('ai-warnings').innerHTML, /LIVEBENCH 2\.0 · DISABLED/);
-});
-
-test('LiveBench attribution falls back to the compact release version', async () => {
-  const base = aiServicesReport();
-  const report = aiServicesReport({
-    sources: {
-      ...base.sources,
-      livebench: {
-        ...base.sources.livebench, disabled: false, warning: null, source_updated: null,
-      },
-    },
-  });
-  const d = await loadAI(report);
-  assert.match(d.element('ai-attribution').innerHTML, /release 2026-10-25/);
-});
-
-test('attribution groups every metric under one source instead of repeating it', async () => {
-  const d = await loadAI();
-  const attribution = d.element('ai-attribution').innerHTML;
-  assert.equal((attribution.match(/LiveBench 2\.0/g) || []).length, 1);
-  assert.match(attribution, /LiveBench Coding/);
-  assert.match(attribution, /LiveBench Reasoning/);
-  assert.match(attribution, /Harbor \(Terminal-Bench\)/);
-  assert.match(attribution, /Epoch AI/);
-});
-
-test('result dates follow date_kind, unknown kinds never claim an evaluation date', async () => {
+test('hover dates keep the source meaning; unknown kinds never claim an evaluation date', async () => {
   const values = [
     { agent: 'sub', value: 61.2, date: '2026-07-01', date_kind: 'submission' },
     { agent: 'unknown-kind', value: 59.9, date: '2026-06-01' },
@@ -1564,16 +1513,144 @@ test('result dates follow date_kind, unknown kinds never claim an evaluation dat
     }],
   });
   const d = await loadAI(report);
-  const configs = d.element('ai-configs').innerHTML;
-  assert.match(configs, /submission date<\/span><span>2026-07-01/);
-  assert.match(configs, /date \(kind not reported\)<\/span><span>2026-06-01/);
-  const evalRows = configs.match(/evaluation date<\/span><span>([^<]*)</g) || [];
-  assert.ok(evalRows.length >= 3, 'every result without an evaluation date says so');
-  assert.ok(evalRows.every(row => /unknown/.test(row)), 'release dates never become evaluation dates');
-  assert.match(configs, /61\.2%/);
-  assert.match(configs, /59\.9%/);
-  assert.match(configs, /58\.4%/);
-  assert.match(configs, /score not reported/);
+  assert.match(d.element('ai-tbody').innerHTML, /submission date 2026-07-01/);
+  assert.doesNotMatch(d.element('ai-tbody').innerHTML, /evaluation date/);
+  assert.equal(d.run("aiDateKindLabel('submission')"), 'submission date');
+  assert.equal(d.run("aiDateKindLabel('model_release')"), 'model release date');
+  assert.equal(d.run("aiDateKindLabel('benchmark_release')"), 'benchmark release date');
+  assert.equal(d.run("aiDateKindLabel('odd-kind')"), 'date (odd kind)');
+  assert.equal(d.run("aiDateKindLabel('')"), 'date (kind not reported)');
+});
+
+test('AI inventory text is escaped in the table and hover details', async () => {
+  const hostile = '<img src=x onerror="boom()">';
+  const report = aiServicesReport({
+    models: [
+      {
+        name: hostile, upstream_model: '<script>upstream()</script>', provider: hostile, mode: 'chat',
+        routes: [{ name: '<svg onload="route()">', provider: '<b>provider</b>' }],
+        bench: { tb4: 0.5 },
+        results: {
+          tb4: [{
+            agent: '<iframe>agent</iframe>', effort: '<b>high</b>',
+            date: '<d>', date_kind: '<kind>', ci: '<c>',
+            metadata: { n_trials: 5, ci_method: '<script>ci()</script>' },
+          }],
+        },
+        missing: {},
+      },
+      {
+        name: 'missing-reason', upstream_model: 'openai/missing', provider: 'openai', mode: 'chat',
+        routes: [{ name: 'missing-route', provider: 'openai' }],
+        bench: {},
+        results: {},
+        missing: { tb4: '<svg onload="missing()">' },
+      },
+    ],
+  });
+  const d = await loadAI(report);
+  for (const id of ['ai-thead', 'ai-tbody', 'ai-metric-select']) {
+    const html = d.element(id).innerHTML;
+    assert.doesNotMatch(html, /<(img|script|svg|iframe)\b/, id);
+  }
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /&lt;img/);
+  assert.match(tbody, /&lt;iframe&gt;agent/);
+  assert.match(tbody, /&lt;svg onload=/);
+  assert.match(tbody, /&lt;d&gt;/);
+  assert.match(tbody, /0\.5%/);
+});
+
+test('an inventory error keeps the dropdown and table shell usable', async () => {
+  const d = await loadAI(aiServicesReport({ models: [], error: 'configuration unavailable' }));
+  assert.match(d.element('ai-error').textContent, /inventory unavailable: configuration unavailable/);
+  assert.doesNotMatch(d.element('ai-error').textContent, /AI services unavailable/);
+  assert.match(d.element('ai-tbody').innerHTML, /no models reported by the inventory/);
+  assert.match(d.element('ai-metric-select').innerHTML, /Terminal-Bench 4\.0/);
+  assert.match(d.element('ai-count').textContent, /0 models/);
+});
+
+test('undated results with no backend reason are ambiguous, not not-evaluated', async () => {
+  const report = aiServicesReport({
+    models: [{
+      name: 'ambiguous', upstream_model: 'openai/ambiguous', provider: 'openai', mode: 'chat',
+      routes: [{ name: 'ambiguous', provider: 'openai' }],
+      bench: {},
+      results: {
+        tb4: [
+          { agent: 'a', value: 60, date: '2026-01-01', metadata: {} },
+          { agent: 'b', value: 61, date: '2026-01-01', metadata: {} },
+        ],
+      },
+      missing: {},
+    }],
+  });
+  const d = await loadAI(report);
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /no single summary — undated or ambiguous configurations/);
+  assert.doesNotMatch(tbody, /not evaluated/);
+  // No single value is invented for ambiguous configurations.
+  assert.doesNotMatch(tbody, /60\.0%|61\.0%/);
+});
+
+test('an explicit missing reason wins over present results', async () => {
+  const d = await loadAI();
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /title="not evaluated"/);
+  assert.doesNotMatch(tbody, /no single summary/);
+  // The stored configuration values are not painted into the summary column.
+  assert.doesNotMatch(tbody, /54\.2%|51\.8%/);
+});
+
+test('the score column sorts; switching benchmarks resets the sort', async () => {
+  const d = await loadAI();
+  d.run("aiSort('tb4')");
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'tb4', dir: -1 }));
+  assert.match(d.element('ai-thead').innerHTML, /data-ai-key="tb4"[^>]*aria-sort="descending"/);
+  let rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('alpha') < rows.indexOf('gamma'), 'highest score sorts first');
+  d.run("aiSort('tb4')");
+  assert.equal(d.run('_aiSort.dir'), 1);
+  rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('gamma') < rows.indexOf('alpha'), 'ascending puts the lowest score first');
+  d.run("aiSort('model')");
+  assert.equal(d.run('_aiSort.key'), 'model');
+  assert.match(d.element('ai-thead').innerHTML, /data-ai-key="model"[^>]*aria-sort="ascending"/);
+  // Switching benchmarks restarts the sort; the old column is gone.
+  d.run("aiSort('tb4')");
+  d.run("aiSetMetric('eci')");
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
+  // The routes column is not sortable.
+  d.run("aiSort('routes')");
+  assert.equal(d.run('_aiSort.key'), 'model');
+});
+
+test('a payload that drops the sorted benchmark restores the model sort', async () => {
+  const d = await loadAI();
+  d.run("aiSetMetric('eci'); aiSort('eci');");
+  assert.equal(d.run('_aiSort.key'), 'eci');
+
+  // A payload that drops the selected metric falls back and resets the sort.
+  const dropped = aiServicesReport();
+  dropped.metrics = dropped.metrics.filter(metric => metric.key !== 'eci');
+  await d.run(`aiAcceptServices(${JSON.stringify(dropped)})`);
+  assert.equal(d.run('_aiMetric'), 'tb4');
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
+
+  // A source that turns disabled must not keep its benchmark selected or sorted.
+  await d.run(`aiAcceptServices(${JSON.stringify(aiServicesReport())})`);
+  d.run("aiSetMetric('eci'); aiSort('eci');");
+  const disabled = aiServicesReport();
+  disabled.sources.epoch = { ...disabled.sources.epoch, disabled: true };
+  await d.run(`aiAcceptServices(${JSON.stringify(disabled)})`);
+  assert.equal(d.run('_aiMetric'), 'tb4');
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
+
+  // The sort survives a redraw that keeps the selected benchmark.
+  await d.run(`aiAcceptServices(${JSON.stringify(aiServicesReport())})`);
+  d.run("aiSetMetric('eci'); aiSort('eci');");
+  await d.run(`aiAcceptServices(${JSON.stringify(aiServicesReport())})`);
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'eci', dir: -1 }));
 });
 
 test('manual refresh posts once and polls the same GET until refreshing clears', async () => {
@@ -1660,55 +1737,6 @@ test('concurrent inventory loads share one GET request', async () => {
   assert.match(d.element('ai-tbody').innerHTML, /alpha/);
 });
 
-test('AI inventory text is escaped and only safe public https source links render', async () => {
-  const hostile = '<img src=x onerror="boom()">';
-  const report = aiServicesReport({
-    models: [{
-      name: hostile, upstream_model: '<script>upstream()</script>', provider: hostile, mode: 'chat',
-      routes: [{ name: '<svg onload="route()">', provider: '<b>provider</b>' }],
-      bench: { tb4: 0.5, eci: 1.0 },
-      results: {
-        tb4: [{
-          agent: '<iframe>agent</iframe>', effort: '<b>high</b>', evaluator: '<i>eval</i>',
-          version: '<v>', date: '<d>', ci: '<c>',
-          configuration: '<b>config</b>',
-          metadata: { n_trials: 5, ci_method: '<script>ci()</script>' },
-        }],
-      },
-      missing: { eci: '<script>missing()</script>' },
-    }],
-    sources: {
-      harbor: {
-        last_checked: '<b>checked</b>', last_success: '<i>success</i>', source_updated: '<u>updated</u>',
-        stale: false, error: '<img src=x onerror="error()">', version: '<v>',
-        url: 'https://user:pass@example.com/advisory', warning: '<script>warning()</script>',
-      },
-      epoch: { ...aiServicesReport().sources.epoch, url: 'http://localhost/epoch' },
-      livebench: {
-        ...aiServicesReport().sources.livebench,
-        warning: '<img src=x onerror="livebench()">',
-      },
-      deepswe: {
-        ...aiServicesReport().sources.deepswe,
-        warning: '<svg onload="deepswe()">',
-      },
-    },
-  });
-  const d = await loadAI(report);
-  for (const id of ['ai-thead', 'ai-tbody', 'ai-sources', 'ai-configs', 'ai-warnings', 'ai-attribution']) {
-    const html = d.element(id).innerHTML;
-    assert.doesNotMatch(html, /<(img|script|svg|iframe)\b/, id);
-  }
-  assert.match(d.element('ai-tbody').innerHTML, /&lt;img/);
-  assert.match(d.element('ai-configs').innerHTML, /&lt;script/);
-  const sources = d.element('ai-sources').innerHTML;
-  assert.match(sources, /unsafe link withheld/);
-  assert.doesNotMatch(sources, /href="https:\/\/user:pass@example\.com/);
-  assert.doesNotMatch(sources, /href="http:\/\/localhost/);
-  assert.equal(d.run("securitySafeUrl('https://user:pass@example.com/x')"), false);
-  assert.equal(d.run("securitySafeUrl('http://localhost/x')"), false);
-});
-
 test('legacy OPENCODE and MISTRAL saved tabs migrate to AI SERVICES', () => {
   for (const old of ['opencode', 'mistral']) {
     const d = dashboard({ savedTab: old });
@@ -1763,38 +1791,6 @@ test('usage and allowance sections stay above the comparison and keep no score c
   assert.equal(d.element('ocgl-wrap').style.display, 'block');
 });
 
-test('metric source aliases resolve to the backend source key', async () => {
-  const base = aiServicesReport();
-  const report = aiServicesReport({
-    metrics: base.metrics.map(metric => metric.key === 'tb4'
-      ? { ...metric, source: 'tb4' } : metric),
-  });
-  const d = await loadAI(report);
-  assert.match(d.element('ai-thead').innerHTML, /Harbor \(Terminal-Bench\)/);
-  assert.match(d.element('ai-attribution').innerHTML, /Harbor \(Terminal-Bench\)/);
-});
-
-test('an inventory error keeps valid benchmark sources and warnings visible', async () => {
-  const d = await loadAI(aiServicesReport({ models: [], error: 'configuration unavailable' }));
-  assert.match(d.element('ai-error').textContent, /inventory unavailable: configuration unavailable/);
-  assert.doesNotMatch(d.element('ai-error').textContent, /AI services unavailable/);
-  assert.match(d.element('ai-sources').innerHTML, /Harbor \(Terminal-Bench\)/);
-  assert.match(d.element('ai-warnings').innerHTML, /LIVEBENCH 2\.0/);
-  assert.match(d.element('ai-tbody').innerHTML, /no models reported by the inventory/);
-});
-
-test('models without a summary keep every configuration value accessible', async () => {
-  const d = await loadAI();
-  assert.match(d.element('ai-tbody').innerHTML, /not evaluated — see configurations/);
-  const configs = d.element('ai-configs').innerHTML;
-  assert.match(configs, /beta/);
-  assert.match(configs, /54\.2%/);
-  assert.match(configs, /51\.8%/);
-  assert.match(configs, /harness-a/);
-  assert.match(configs, /harness-b/);
-  assert.match(configs, /benchmark release date/);
-});
-
 function refreshDashboard(report) {
   const d = dashboard();
   d.run("_features.ai_services=true; _activeTab='ai-services';");
@@ -1833,7 +1829,6 @@ test('a refresh completion with a source error is partial, never success', async
   const toastText = d.element('toast').textContent;
   assert.match(toastText, /refresh completed with source errors — last-good scores retained/);
   assert.doesNotMatch(toastText, /benchmark scores updated/);
-  assert.match(d.element('ai-sources').innerHTML, /harbor unavailable/);
   assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
   assert.equal(d.element('btn-ai-refresh').disabled, false);
 });
@@ -1853,11 +1848,10 @@ test('a refresh completion with every enabled source failed reports failure', as
   const toastText = d.element('toast').textContent;
   assert.match(toastText, /benchmark refresh failed — last-good scores retained/);
   assert.doesNotMatch(toastText, /benchmark scores updated/);
-  assert.match(d.element('ai-sources').innerHTML, /harbor down/);
   assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
 });
 
-test('disabled sources stay warnings and never count as refresh failures', async () => {
+test('disabled source errors never count as refresh failures', async () => {
   const base = aiServicesReport();
   const report = aiServicesReport({
     sources: {
@@ -1870,7 +1864,7 @@ test('disabled sources stay warnings and never count as refresh failures', async
   await d.run('aiRefreshBenchmarks()');
   await finishRefresh(d);
   assert.match(d.element('toast').textContent, /benchmark scores updated/);
-  assert.match(d.element('ai-warnings').innerHTML, /LIVEBENCH 2\.0 · DISABLED/);
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /LiveBench/);
 });
 
 test('an immediate completion from POST also reports source errors', async () => {
@@ -1892,35 +1886,6 @@ test('an immediate completion from POST also reports source errors', async () =>
   assert.match(d.element('toast').textContent, /benchmark refresh failed — last-good scores retained/);
   assert.equal(d.run('_aiRefreshActive'), false);
   assert.equal(d.element('btn-ai-refresh').disabled, false);
-});
-
-test('undated results with no backend reason are ambiguous, not not-evaluated', async () => {
-  const report = aiServicesReport({
-    models: [{
-      name: 'ambiguous', upstream_model: 'openai/ambiguous', provider: 'openai', mode: 'chat',
-      routes: [{ name: 'ambiguous', provider: 'openai' }],
-      bench: {},
-      results: {
-        tb4: [
-          { agent: 'a', value: 60, date: '2026-01-01', metadata: {} },
-          { agent: 'b', value: 61, date: '2026-01-01', metadata: {} },
-        ],
-      },
-      missing: {},
-    }],
-  });
-  const d = await loadAI(report);
-  assert.match(d.element('ai-tbody').innerHTML, /no single summary — see configurations/);
-  assert.match(d.element('ai-configs').innerHTML, /60\.0%/);
-  assert.match(d.element('ai-configs').innerHTML, /61\.0%/);
-});
-
-test('an explicit missing reason wins over present results but keeps their values', async () => {
-  const d = await loadAI();
-  const tbody = d.element('ai-tbody').innerHTML;
-  assert.match(tbody, /not evaluated — see configurations/);
-  assert.doesNotMatch(tbody, /no single summary — see configurations/);
-  assert.match(d.element('ai-configs').innerHTML, /54\.2%/);
 });
 
 // ── reviewer regression fixes ────────────────────────────────────────────────
@@ -1996,22 +1961,6 @@ test('loaded status shows an absolute time and an aging relative label', async (
   assert.match(d.element('ai-status').textContent, /\(20m ago\)/);
 });
 
-test('removing the sorted optional column restores the model sort', async () => {
-  const d = await loadAI();
-  d.run("aiToggleColumn('livebench_reasoning', true); aiSort('livebench_reasoning')");
-  assert.equal(d.run('_aiSort.key'), 'livebench_reasoning');
-  d.run("aiToggleColumn('livebench_reasoning', false)");
-  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
-
-  d.run("aiToggleColumn('livebench_reasoning', true); aiSort('livebench_reasoning')");
-  await d.run(`aiAcceptServices(${JSON.stringify(aiServicesReport())})`);
-  assert.equal(d.run('_aiSort.key'), 'livebench_reasoning', 'still present in the new payload');
-  const report = aiServicesReport();
-  report.metrics = report.metrics.filter(metric => metric.key !== 'livebench_reasoning');
-  await d.run(`aiAcceptServices(${JSON.stringify(report)})`);
-  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
-});
-
 test('the Mistral console link only shows when the Mistral feature is enabled', () => {
   const d = dashboard();
   d.run('_features.ai_services=true; _features.opencode_go=true; _features.mistral=false; aiServicesSyncFeature();');
@@ -2020,15 +1969,40 @@ test('the Mistral console link only shows when the Mistral feature is enabled', 
   assert.equal(d.element('ai-mistral-console').style.display, 'inline-flex');
 });
 
-test('open configuration details survive refresh redraws', async () => {
-  const d = await loadAI();
-  assert.match(d.element('ai-configs').innerHTML, /ontoggle="aiRememberConfigOpen\(this\.id, this\.open\)"/);
-  d.run("aiRememberConfigOpen('ai-config-0', true); aiRenderConfigs();");
-  assert.match(d.element('ai-configs').innerHTML, /id="ai-config-0" open/);
-  d.run('aiRenderConfigs();');
-  assert.match(d.element('ai-configs').innerHTML, /id="ai-config-0" open/);
-  d.run("aiRememberConfigOpen('ai-config-0', false); aiRenderConfigs();");
-  assert.doesNotMatch(d.element('ai-configs').innerHTML, /id="ai-config-0" open/);
+test('usage stays outside the collapsed allowances below the Mistral link', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
+  const mistral = html.indexOf('id="ai-mistral-console"');
+  const usage = html.indexOf('id="ocg-list"');
+  const allowances = html.indexOf('id="ocg-details"');
+  const comparison = html.indexOf('id="ai-count"');
+  assert.ok(mistral !== -1 && usage !== -1 && allowances !== -1 && comparison !== -1);
+  assert.ok(mistral < usage, 'the Mistral console link sits above the usage block');
+  assert.ok(usage < allowances && allowances < comparison);
+  const details = html.match(/<details[^>]*id="ocg-details"[^>]*>([\s\S]*?)<\/details>/);
+  assert.ok(details, 'allowances are wrapped in details');
+  assert.doesNotMatch(details[0].split('>')[0], /\bopen\b/, 'allowances default to collapsed');
+  assert.match(details[1], /<summary>allowances · go plan<\/summary>/);
+  assert.match(details[1], /id="ocgl-table"/);
+  assert.doesNotMatch(details[1], /id="ocg-(?:label|list)"/);
+  assert.match(html, /\.ai-col-picker summary::before \{ content:'▸'/);
+  assert.match(html, /\.ai-col-picker\[open\] summary::before \{ content:'▾'/);
+  assert.match(html, /\.ai-col-picker summary:focus-visible/);
+});
+
+test('usage and the entire allowances disclosure follow the OpenCode feature', () => {
+  const d = dashboard();
+  d.run('_features.ai_services=true; _features.opencode_go=false; aiServicesSyncFeature();');
+  for (const id of ['ocg-label', 'ocg-list', 'ocg-details']) {
+    assert.equal(d.element(id).style.display, 'none', id);
+  }
+  d.run('_aiUsageStarted=true; _features.opencode_go=true; aiServicesSyncFeature();');
+  assert.equal(d.element('ocg-label').style.display, 'flex');
+  assert.equal(d.element('ocg-list').style.display, 'flex');
+  assert.equal(d.element('ocg-details').style.display, 'block');
+  assert.equal(d.element('ocg-details').open, false);
+  d.element('ocg-details').open = true;
+  d.run('aiServicesSyncFeature();');
+  assert.equal(d.element('ocg-details').open, true, 'sync preserves the user toggle');
 });
 
 // ── AI inventory periodic tick (24h TTL / backoff / stale discovery) ─────────
@@ -2145,7 +2119,7 @@ test('a tick that finds a running refresh finishes it through the bounded monito
   assert.match(d.element('toast').textContent, /benchmark scores updated/);
 });
 
-test('the tick surfaces stale/error sources and keeps last-good data on failure', async () => {
+test('a tick adopts fresher scores and keeps last-good data on failure', async () => {
   const d = dashboard();
   d.run("_features.ai_services=true; _activeTab='ai-services';");
   d.context.fetch = async () => response(aiServicesReport());
@@ -2153,26 +2127,12 @@ test('the tick surfaces stale/error sources and keeps last-good data on failure'
   await settle();
   assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
 
-  const stale = aiServicesReport();
-  stale.sources.harbor = { ...stale.sources.harbor, stale: true, error: 'source fetch timed out' };
-  stale.models[0].bench = { tb4: 78.9, eci: 42.0 };
-  d.context.fetch = async () => response(stale);
+  const fresh = aiServicesReport();
+  fresh.models[0].bench = { tb4: 78.9, eci: 42.0 };
+  d.context.fetch = async () => response(fresh);
   d.run('aiServicesTick()');
   await settle();
-  const sources = d.element('ai-sources').innerHTML;
-  assert.match(sources, /ai-badge stale">STALE/);
-  assert.match(sources, /ai-badge error">ERROR/);
-  assert.match(sources, /source fetch timed out/);
   assert.match(d.element('ai-tbody').innerHTML, /78\.9%/);
-
-  // Recovery: the next successful tick clears the stale/error state again.
-  d.context.fetch = async () => response(aiServicesReport());
-  d.run('aiServicesTick()');
-  await settle();
-  const recovered = d.element('ai-sources').innerHTML;
-  assert.doesNotMatch(recovered, /STALE/);
-  assert.doesNotMatch(recovered, /ai-badge error/);
-  assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
 
   const lastGood = d.element('ai-tbody').innerHTML;
   d.context.fetch = async () => { throw new Error('offline'); };
@@ -2183,34 +2143,25 @@ test('the tick surfaces stale/error sources and keeps last-good data on failure'
   assert.match(d.element('ai-status').textContent, /inventory loaded/);
 });
 
-test('a tick redraw preserves provider/route filters, columns, sort and open configs', async () => {
+test('a tick redraw preserves the selected benchmark and its sort', async () => {
   const d = await loadAI();
   const posts = [];
   d.context.fetch = async (url, options) => {
     if ((options.method || 'GET') === 'POST') posts.push(url);
     return response(aiServicesReport());
   };
-  d.run(`aiSetProvider('openai'); aiSetRoute('alpha-route');
-         aiToggleColumn('livebench_reasoning', true);
-         aiSort('livebench_reasoning');
-         aiRememberConfigOpen('ai-config-0', true);`);
+  d.run("aiSetMetric('eci'); aiSort('eci');");
   const sortBefore = JSON.stringify(d.run('_aiSort'));
 
   d.run('aiServicesTick()');
   await settle();
   assert.equal(posts.length, 0, 'a tick never POSTs');
-  assert.equal(d.run('_aiProvider'), 'openai');
-  assert.equal(d.run('_aiRoute'), 'alpha-route');
-  assert.equal(d.element('ai-provider-filter').value, 'openai');
-  assert.equal(d.element('ai-route-filter').value, 'alpha-route');
+  assert.equal(d.run('_aiMetric'), 'eci');
+  assert.equal(d.element('ai-metric-select').value, 'eci');
   assert.equal(JSON.stringify(d.run('_aiSort')), sortBefore);
-  assert.ok(d.run('_aiColumns').includes('livebench_reasoning'));
   const header = d.element('ai-thead').innerHTML;
-  assert.match(header, /data-ai-key="livebench_reasoning"/);
-  assert.match(header, /data-ai-key="livebench_reasoning"[^>]*aria-sort="descending"/);
+  assert.match(header, /data-ai-key="eci"[^>]*aria-sort="descending"/);
   assert.match(d.element('ai-tbody').innerHTML, /alpha/);
-  assert.doesNotMatch(d.element('ai-tbody').innerHTML, /beta/);
-  assert.match(d.element('ai-configs').innerHTML, /id="ai-config-0" open/);
 });
 
 test('tick wiring keeps the 60s interval without touching the usage pollers', () => {
