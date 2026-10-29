@@ -90,6 +90,12 @@ def api_opencode_go_benchmarks_fetch():
 def api_mistral_models():
     return core.get_mistral_models()
 
+@app.get("/api/ai-services")
+def api_ai_services():
+    # Local cache read only; stale sources schedule a guarded background
+    # refresh. no-store keeps the poll from showing a stale refreshing flag.
+    return JSONResponse(core.get_ai_services(), headers={"Cache-Control": "no-store"})
+
 @app.post("/api/benchmarks/fetch")
 def api_benchmarks_fetch():
     res = core.fetch_benchmarks()

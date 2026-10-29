@@ -158,32 +158,123 @@ main { padding:10px 10px 4px; max-width:900px; margin:0 auto; }
 .ocg-info.alert { color:var(--red); }
 .ocg-num   { text-align:right !important; }
 .ocg-stale { color:var(--g-dim); font-size:10px; }
-#ocgl-attrib { margin-top:4px; }
-#ocgl-attrib a { color:var(--g-dim); }
-.ocgl-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
-.ocgl-dd { position:relative; }
-.ocgl-dd-btn {
-  font-family:var(--font); font-size:10px; letter-spacing:0.05em;
-  background:var(--bg-card); color:var(--g);
-  border:1px solid var(--border); border-radius:2px; padding:4px 8px;
-  cursor:pointer;
-}
-.ocgl-dd-btn:hover { border-color:var(--border-hi); }
-.ocgl-caret { color:var(--g-dim); }
-.ocgl-dd-menu {
-  position:absolute; top:calc(100% + 2px); left:0; z-index:30;
-  background:var(--bg-card); border:1px solid var(--border-hi); border-radius:2px;
-  min-width:100%; max-height:260px; overflow-y:auto;
-}
-.ocgl-dd-item {
-  display:flex; gap:8px; align-items:baseline;
-  padding:5px 10px; font-size:10px; cursor:pointer; white-space:nowrap;
-}
-.ocgl-dd-item:hover { background:var(--g-faint); }
-.ocgl-dd-abbr { color:var(--g); font-weight:700; min-width:52px; }
-.ocgl-dd-name { color:var(--g-dim); }
-.ocgl-dd-item.sel .ocgl-dd-abbr { color:var(--g-bright); }
 #ocgl-wrap { overflow-x:auto; } /* scroll instead of clipping on narrow phones */
+
+/* ── AI SERVICES: unified inventory + benchmark comparison ── */
+.ai-note {
+  background:var(--bg-card); border:1px solid var(--border); border-radius:3px;
+  padding:8px 10px; margin-bottom:8px;
+  font-size:10px; color:var(--g-dim); line-height:1.6;
+}
+.ai-note b { color:var(--g); }
+.ai-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
+.ai-status { font-size:10px; color:var(--g-dim); }
+.ai-status.busy { color:var(--yellow); }
+.ai-filters { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 4px; }
+.ai-filter {
+  display:flex; flex-direction:column; gap:2px;
+  font-size:9px; letter-spacing:0.08em; text-transform:uppercase; color:var(--g-dim);
+}
+.ai-select {
+  font-family:var(--font); font-size:10px; min-height:30px;
+  background:var(--bg-card); color:var(--g);
+  border:1px solid var(--border); border-radius:2px; padding:4px 7px;
+  max-width:220px;
+}
+.ai-select:hover { border-color:var(--border-hi); }
+.ai-select:focus-visible { outline:2px solid var(--g-bright); outline-offset:1px; }
+.ai-col-picker {
+  background:var(--bg-card); border:1px solid var(--border); border-radius:3px;
+  padding:5px 9px; margin:4px 0 8px;
+}
+.ai-col-picker summary {
+  cursor:pointer; font-size:10px; letter-spacing:0.08em;
+  text-transform:uppercase; color:var(--g-dim); min-height:26px;
+  display:flex; align-items:center;
+}
+.ai-col-picker summary:hover { color:var(--g); }
+.ai-col-options { display:flex; flex-wrap:wrap; gap:4px 14px; padding-top:4px; }
+.ai-col { display:inline-flex; gap:5px; align-items:center; font-size:10px; color:var(--g); min-height:28px; }
+.ai-col input { accent-color:var(--g); }
+.ai-attrib { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:10px; color:var(--g-dim); margin:4px 0; }
+.ai-attrib a, .ai-license a { color:var(--g-dim); }
+.ai-attrib b { color:var(--g); font-weight:600; }
+.ai-license { font-size:10px; color:var(--g-dim); margin:2px 0; overflow-wrap:anywhere; }
+.ai-license a { color:var(--g); }
+/* ID beats the later .proc-table-wrap { overflow:hidden } so phones can scroll the table */
+#ai-table-wrap { overflow-x:auto; overflow-y:hidden; }
+.ai-table { min-width:620px; }
+.ai-table th, .ai-table td { white-space:normal; vertical-align:top; }
+/* the shared .proc-table rule nowraps/ellipsizes every cell; comparison rows must wrap */
+.proc-table.ai-table th, .proc-table.ai-table td {
+  white-space:normal; overflow:visible; text-overflow:clip;
+}
+.ai-table .ai-num { text-align:right; }
+.ai-model b { color:var(--g-bright); font-weight:700; overflow-wrap:break-word; }
+.ai-model small, .ai-route, .ai-muted { display:block; color:var(--g-dim); font-size:9px; }
+.ai-route { line-height:1.35; overflow-wrap:break-word; }
+.ai-provider {
+  display:inline-block; margin-top:2px; font-size:9px; color:var(--g-dim);
+  border:1px solid var(--g-faint); padding:0 4px; border-radius:2px;
+}
+.ai-score { color:var(--g-bright); font-weight:600; }
+.ai-missing, .ai-ambiguous, .ai-disabled { color:var(--yellow); font-size:9px; }
+.ai-disabled { font-style:italic; }
+.ai-excluded { color:var(--g-dim); font-size:9px; font-style:italic; }
+.ai-group-row td {
+  background:rgba(0,204,68,0.06); color:var(--g-dim);
+  font-size:9px; letter-spacing:0.1em; text-transform:uppercase;
+  white-space:normal; padding:7px 10px;
+}
+.ai-th-src { display:block; font-size:8px; color:var(--g-dim); font-weight:400; letter-spacing:0.04em; }
+.ai-th-src.disabled { color:var(--yellow); }
+.ai-badge {
+  font-size:9px; border:1px solid var(--border); padding:0 4px; border-radius:2px;
+  color:var(--g-dim); letter-spacing:0.06em;
+}
+.ai-badge.disabled { color:var(--yellow); border-color:rgba(255,170,0,0.55); }
+.ai-badge.stale { color:var(--yellow); border-color:rgba(255,170,0,0.55); }
+.ai-badge.error { color:var(--red); border-color:var(--red-dim); }
+.ai-source-card, .ai-config {
+  background:var(--bg-card); border:1px solid var(--border); border-radius:3px;
+  padding:8px 10px; margin-bottom:6px;
+}
+.ai-source-card.disabled { border-color:rgba(255,170,0,0.35); }
+.ai-source-card.stale { border-color:rgba(255,170,0,0.55); }
+.ai-source-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:4px; }
+.ai-source-name { font-weight:700; color:var(--g-bright); font-size:11px; }
+.ai-kv { display:flex; gap:10px; justify-content:space-between; font-size:10px; padding:1px 0; }
+.ai-kv > span:first-child { color:var(--g-dim); flex-shrink:0; }
+.ai-kv > span:last-child { text-align:right; overflow-wrap:anywhere; }
+.ai-kv .ai-muted { display:inline; }
+/* source URLs are plain links inside the card; keep the terminal palette */
+.ai-source-card a { color:var(--g-bright); }
+.ai-source-card a:hover { color:var(--g); text-decoration:underline; }
+.ai-source-card a:focus-visible { outline:2px solid var(--g-bright); outline-offset:2px; }
+.ai-warn, .ai-err { font-size:10px; margin-top:4px; overflow-wrap:anywhere; }
+.ai-warn { color:var(--yellow); }
+.ai-err { color:var(--red); }
+.ai-warning {
+  border:1px solid rgba(255,170,0,0.55); background:rgba(255,170,0,0.06);
+  color:var(--yellow); padding:7px 10px; border-radius:3px;
+  margin:6px 0; font-size:10px; overflow-wrap:anywhere;
+}
+.ai-warning a { color:var(--yellow); }
+.ai-warning b { color:var(--yellow); }
+.ai-config summary {
+  cursor:pointer; font-size:11px; color:var(--g); min-height:26px;
+  display:flex; align-items:center; flex-wrap:wrap; gap:6px;
+}
+.ai-config-body { margin-top:6px; }
+.ai-eval-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+.ai-eval { border-top:1px solid var(--g-faint); padding-top:6px; }
+.ai-eval:first-child { border-top:none; padding-top:0; }
+.ai-eval-head { font-size:10px; color:var(--g-bright); overflow-wrap:anywhere; }
+.ai-eval-score { font-size:12px; font-weight:700; color:var(--g-bright); margin:2px 0; }
+.ai-eval-score .ai-muted { display:inline; font-weight:400; font-size:9px; }
+.ai-conf { margin-top:3px; font-size:9px; color:var(--g-dim); overflow-wrap:anywhere; }
+.ai-conf b { color:var(--g); }
+.ai-subhead { font-size:10px; color:var(--g-dim); text-transform:uppercase; letter-spacing:0.08em; margin:7px 0 3px; }
 
 
 /* ── SHELLY PLUG ROW ── */
@@ -526,12 +617,12 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 @media (max-width:480px) {
   /* Keep 11px labels and 44px targets: the row swipes; it never shrinks or wraps. */
   .tab-btn { padding:0 12px; }
-  /* compact limits table so all four columns fit without sideways scrolling */
+  /* compact limits table so its three columns fit without sideways scrolling */
   #ocgl-table th, #ocgl-table td { padding:5px 6px; font-size:10px; }
-  #mistral-table th, #mistral-table td { padding:5px 6px; font-size:10px; }
+  .ai-table { min-width:560px; }
+  .ai-filter { flex:1 1 44%; }
+  .ai-select { max-width:100%; }
 }
-
-.mistral-upstream { display:block; color:var(--g-dim); font-size:9px; }
 
 /* ── FAN ANIMATION ── */
 @keyframes fan-spin { to { transform:rotate(360deg); } }
@@ -882,8 +973,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
   <div class="tab-bar-wrap" id="tab-bar-wrap">
     <nav class="tab-bar" id="tab-bar" role="tablist" aria-label="Dashboard sections" aria-orientation="horizontal" onscroll="updateTabOverflowCues()" onkeydown="tabKeydown(event)">
       <button class="tab-btn active" id="tab-btn-server"     role="tab" aria-selected="true"  aria-controls="tab-server"     data-tab="server"     tabindex="0"  onclick="switchTab('server',this)">SERVER</button>
-      <button class="tab-btn"        id="tab-btn-opencode"   role="tab" aria-selected="false" aria-controls="tab-opencode"   data-tab="opencode"   tabindex="-1" onclick="switchTab('opencode',this)" style="display:none">OPENCODE</button>
-      <button class="tab-btn"        id="tab-btn-mistral"    role="tab" aria-selected="false" aria-controls="tab-mistral"    data-tab="mistral"    tabindex="-1" onclick="switchTab('mistral',this)" style="display:none">MISTRAL</button>
+      <button class="tab-btn"        id="tab-btn-ai-services" role="tab" aria-selected="false" aria-controls="tab-ai-services" data-tab="ai-services" tabindex="-1" onclick="switchTab('ai-services',this)" style="display:none">AI SERVICES</button>
       <button class="tab-btn"        id="tab-btn-containers" role="tab" aria-selected="false" aria-controls="tab-containers" data-tab="containers" tabindex="-1" onclick="switchTab('containers',this)">CONTAINERS</button>
       <button class="tab-btn"        id="tab-btn-processes"  role="tab" aria-selected="false" aria-controls="tab-processes"  data-tab="processes"  tabindex="-1" onclick="switchTab('processes',this)">PROCESSES</button>
       <button class="tab-btn"        id="tab-btn-security"   role="tab" aria-selected="false" aria-controls="tab-security"   data-tab="security"   tabindex="-1" onclick="switchTab('security',this)" style="display:none">SECURITY</button>
@@ -994,23 +1084,14 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 
   </div><!-- /#tab-server -->
 
-  <!-- ═══════════ OPENCODE TAB ═══════════ -->
-  <div id="tab-opencode" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-opencode" style="display:none">
+  <!-- ═══════════ AI SERVICES TAB ═══════════ -->
+  <div id="tab-ai-services" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-ai-services" style="display:none">
 
-    <!-- Usage (rolling 5h / weekly / monthly) — shown only when a key is configured -->
-    <div class="sec-label" id="ocg-label" style="display:none">usage</div>
+    <!-- Usage and allowances (OpenCode Go) — preserved above the comparison table -->
+    <div class="sec-label" id="ocg-label" style="display:none">usage · opencode go</div>
     <div class="ocg-list" id="ocg-list" style="display:none"></div>
 
-    <!-- Limits (Go plan, from the docs table) -->
-    <div class="sec-label" id="ocgl-label" style="display:none">limits · go plan</div>
-    <div class="ocgl-controls" id="ocgl-controls" style="display:none">
-      <div class="ocgl-dd">
-        <button class="ocgl-dd-btn" id="ocgl-metric-btn" onclick="toggleMetricMenu(event)" title="score column">TB4 <span class="ocgl-caret">▾</span></button>
-        <div class="ocgl-dd-menu" id="ocgl-metric-menu" style="display:none"></div>
-      </div>
-      <button class="btn-stream" id="btn-ocgl-fetch" onclick="fetchBenchmarks()">⟳ FETCH SCORES</button>
-      <span class="ocg-stale" id="ocgl-updated"></span>
-    </div>
+    <div class="sec-label" id="ocgl-label" style="display:none">allowances · go plan</div>
     <div class="proc-table-wrap" id="ocgl-wrap" style="display:none">
       <table class="proc-table" id="ocgl-table">
         <thead>
@@ -1018,57 +1099,67 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
             <th class="proc-sortable" data-key="name" onclick="sortLimits('name')">MODEL</th>
             <th class="ocg-num proc-sortable" data-key="req_5h" onclick="sortLimits('req_5h')">REQ / 5H</th>
             <th class="ocg-num proc-sortable" data-key="monthly" onclick="sortLimits('monthly')">MONTHLY</th>
-            <th class="ocg-num proc-sortable" data-key="bench" id="ocgl-bench-th" onclick="sortLimits('bench')">TB4</th>
           </tr>
         </thead>
         <tbody id="ocgl-tbody">
-          <tr><td colspan="4" class="empty">loading…</td></tr>
+          <tr><td colspan="3" class="empty">loading…</td></tr>
         </tbody>
       </table>
     </div>
-    <div class="ocg-stale" id="ocgl-attrib" style="display:none">benchmark scores ·
-      <a href="https://artificialanalysis.ai/leaderboards/models" target="_blank" rel="noopener">artificial analysis</a> ·
-      <a href="https://artificialanalysis.ai/evaluations" target="_blank" rel="noopener">evaluations</a></div>
     <div class="stor-error" id="ocgl-error" style="display:none"></div>
 
-  </div><!-- /#tab-opencode -->
-
-  <!-- ═══════════ MISTRAL TAB ═══════════ -->
-  <div id="tab-mistral" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-mistral" style="display:none">
-    <div class="sec-label">mistral</div>
-    <div class="stream-row" style="margin-bottom:10px">
+    <div class="stream-row" style="margin:10px 0 0">
       <div class="stream-btns">
-        <a class="btn-stream" href="https://admin.mistral.ai/subscription" target="_blank" rel="noopener noreferrer">OPEN MISTRAL ↗</a>
+        <a class="btn-stream" id="ai-mistral-console" href="https://admin.mistral.ai/subscription" target="_blank" rel="noopener noreferrer">OPEN MISTRAL ↗</a>
       </div>
     </div>
 
-    <div class="sec-label">model benchmarks</div>
-    <div class="ocgl-controls" id="mistral-controls" style="display:none">
-      <div class="ocgl-dd">
-        <button class="ocgl-dd-btn" id="mistral-metric-btn" onclick="toggleMistralMetricMenu(event)" title="score column">AA <span class="ocgl-caret">▾</span></button>
-        <div class="ocgl-dd-menu" id="mistral-metric-menu" style="display:none"></div>
-      </div>
-      <button class="btn-stream" id="btn-mistral-fetch" onclick="fetchBenchmarks()">⟳ FETCH SCORES</button>
-      <span class="ocg-stale" id="mistral-updated"></span>
+    <div class="sec-label">benchmark comparison <span id="ai-count" style="font-weight:400;text-transform:none;letter-spacing:0">—</span></div>
+    <div class="ai-note" id="ai-caveats">
+      <b>Latest published dated result only</b> — summaries use the latest dated result a source published, never the maximum.
+      Dates keep the source meaning: evaluation date, model release date, benchmark release date or submission date — a missing
+      evaluation date is shown as unknown, never filled in from a release date. Ties use effort priority, then agent/config order.
+      Undated or ambiguous configurations have no single summary; open <b>evaluations &amp; configurations</b> below.
+      Terminal-Bench 4.0 uses mixed native agents/harnesses, so it is not a pure model comparison.
+      Epoch ECI is an abstract index, not a percentage. No overall rank is computed.
+      Sources are reputable, not trusted: identity matching and third-party scores can be wrong — check provenance.
     </div>
-    <div class="proc-table-wrap" id="mistral-wrap" style="display:none">
-      <table class="proc-table" id="mistral-table">
-        <thead>
-          <tr>
-            <th class="proc-sortable" data-key="name" onclick="sortMistralModels('name')">MODEL</th>
-            <th class="ocg-num proc-sortable" data-key="bench" id="mistral-bench-th" onclick="sortMistralModels('bench')">AA</th>
-          </tr>
-        </thead>
-        <tbody id="mistral-tbody">
-          <tr><td colspan="2" class="empty">loading…</td></tr>
-        </tbody>
+
+    <div class="ai-controls">
+      <button class="btn-stream" id="btn-ai-refresh" onclick="aiRefreshBenchmarks()" aria-label="Refresh benchmark scores">⟳ REFRESH SCORES</button>
+      <span class="ai-status" id="ai-status" role="status" aria-live="polite">loading…</span>
+    </div>
+    <div id="ai-warnings" role="note"></div>
+    <div class="stor-error" id="ai-error" style="display:none"></div>
+    <div class="ai-attrib" id="ai-attribution"></div>
+
+    <div class="ai-filters">
+      <label class="ai-filter">provider
+        <select class="ai-select" id="ai-provider-filter" onchange="aiSetProvider(this.value)" aria-label="Filter models by provider"></select>
+      </label>
+      <label class="ai-filter">route
+        <select class="ai-select" id="ai-route-filter" onchange="aiSetRoute(this.value)" aria-label="Filter models by route"></select>
+      </label>
+    </div>
+    <details class="ai-col-picker" id="ai-col-picker">
+      <summary>optional benchmark columns</summary>
+      <div class="ai-col-options" id="ai-column-options"></div>
+    </details>
+
+    <div id="ai-empty" class="empty">loading ai services…</div>
+    <div class="proc-table-wrap ai-table-wrap" id="ai-table-wrap" style="display:none">
+      <table class="proc-table ai-table" id="ai-table" aria-label="AI model benchmark comparison">
+        <thead id="ai-thead"></thead>
+        <tbody id="ai-tbody"></tbody>
       </table>
     </div>
-    <div class="ocg-stale" id="mistral-attrib" style="display:none">benchmark scores ·
-      <a href="https://artificialanalysis.ai/leaderboards/models" target="_blank" rel="noopener noreferrer">artificial analysis</a> ·
-      <a href="https://artificialanalysis.ai/evaluations" target="_blank" rel="noopener noreferrer">evaluations</a></div>
-    <div class="stor-error" id="mistral-error" style="display:none"></div>
-  </div><!-- /#tab-mistral -->
+
+    <div class="sec-label">source status &amp; provenance</div>
+    <div id="ai-sources"></div>
+
+    <div class="sec-label">evaluations &amp; configurations</div>
+    <div id="ai-configs"></div>
+  </div><!-- /#tab-ai-services -->
 
   <!-- ═══════════ CONTAINERS TAB ═══════════ -->
   <div id="tab-containers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-containers" style="display:none">
@@ -1219,6 +1310,7 @@ const POLL_TARGETS = {
   '/api/llama': ['llama-section'],
   '/api/opencode-go': ['ocg-list'],
   '/api/opencode-go-limits': ['ocgl-wrap'],
+  '/api/ai-services': ['ai-table-wrap'],
   '/api/shelly': ['shelly-row'],
   '/api/shelly/history': ['shelly-chart-card'],
   '/api/shelly2': ['shelly2-row'],
@@ -1254,7 +1346,7 @@ async function fetchJSON(path) {
 // ── feature flags ─────────────────────────────────────────────────────────────
 let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false,
                   wake:false, desktop_power:false, desktop_status:false, opencode_go:false, mistral:false,
-                  security:false };
+                  ai_services:false, security:false };
 
 async function fetchFeatures() {
   try { _features = await fetchJSON('/api/features'); } catch(e) {}
@@ -1274,46 +1366,10 @@ async function fetchFeatures() {
   }
   // Feature-gated polls
   if (_features.adguard) { fetchAdGuard(); setInterval(fetchAdGuard, 15000); }
-  // OpenCode tab — usage card polls only while the page is really visible
-  // (server caches upstream for 60 s); the limits table is docs data (1 h cache).
-  if (_features.opencode_go) {
-    const tab = document.querySelector('.tab-btn[data-tab="opencode"]');
-    if (tab) tab.style.display = 'inline-block';
-    if (_activeTab === 'opencode') revealActiveTab(tab);
-    document.getElementById('ocg-label').style.display = 'flex';
-    document.getElementById('ocg-list').style.display  = 'flex';
-    document.getElementById('ocgl-label').style.display = 'flex';
-    document.getElementById('ocgl-wrap').style.display  = 'block';
-    document.getElementById('ocgl-controls').style.display = 'flex';
-    document.getElementById('ocgl-attrib').style.display = 'block';
-    fetchOpenCodeGo();
-    setInterval(fetchOpenCodeGo, 60000);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) fetchOpenCodeGo(); });
-    fetchOpenCodeGoLimits();
-    setInterval(fetchOpenCodeGoLimits, 3600000);
-  } else {
-    // don't let a saved OPENCODE tab stick when the feature is off
-    const active = document.querySelector('.tab-btn.active');
-    if (active && active.dataset.tab === 'opencode') {
-      switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'));
-    }
-  }
-  // Mistral models are served locally; never query the configured path unless enabled.
-  if (_features.mistral) {
-    const tab = document.querySelector('.tab-btn[data-tab="mistral"]');
-    if (tab) tab.style.display = 'inline-block';
-    if (_activeTab === 'mistral') revealActiveTab(tab);
-    document.getElementById('mistral-controls').style.display = 'flex';
-    document.getElementById('mistral-wrap').style.display = 'block';
-    document.getElementById('mistral-attrib').style.display = 'block';
-    fetchMistralModels();
-  } else {
-    // A saved tab may name a feature that is currently disabled.
-    const active = document.querySelector('.tab-btn.active');
-    if (active && active.dataset.tab === 'mistral') {
-      switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'));
-    }
-  }
+  // AI Services — one tab for usage/allowances, the inventory comparison table
+  // and the external benchmark provenance. Enabled by the new flag or either
+  // legacy provider flag. Usage/limit polls stay independent of the table.
+  aiServicesSyncFeature();
   if (_features.shelly)  {
     fetchShelly();        setInterval(fetchShelly,        5000);
     fetchShellyHistory(); setInterval(fetchShellyHistory, 60000);
@@ -2480,8 +2536,22 @@ if (typeof document.addEventListener === 'function') {
 }
 
 // ── tab switching ─────────────────────────────────────────────────────────────
+// The old OPENCODE and MISTRAL tabs were merged into AI SERVICES. Keep reading
+// the old names (and migrate the stored value) so an existing saved tab works.
+const TAB_ALIASES = { opencode: 'ai-services', mistral: 'ai-services' };
+function normalizeTabName(name) {
+  const key = String(name == null ? '' : name).trim();
+  return TAB_ALIASES[key] || key;
+}
+function tabButtonFor(name) {
+  try { return document.querySelector(`.tab-btn[data-tab="${name}"]`); }
+  catch(e) { return null; }
+}
+
 let _activeTab = 'server';
 function switchTab(name, btn) {
+  name = normalizeTabName(name);
+  if (!btn || btn.dataset.tab !== name) btn = tabButtonFor(name) || btn;
   _activeTab = name;
   document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
   document.querySelectorAll('.tab-btn').forEach(b => {
@@ -2503,16 +2573,18 @@ function switchTab(name, btn) {
     ? 'calc(var(--bar-h) + env(safe-area-inset-bottom))' : '12px';
   try { localStorage.setItem('activeTab', name); } catch(e) {}
   revealActiveTab(btn);
-  if (name === 'mistral' && _features.mistral) fetchMistralModels();
+  if (name === 'ai-services') aiServicesOnEnter();
   if (name === 'security') securityOnEnter();
 }
 
-// Restore saved tab on load
+// Restore saved tab on load; migrate the legacy names to the unified tab.
 (function() {
   try {
-    const saved = localStorage.getItem('activeTab');
-    if (!saved) return;
-    const btn = document.querySelector(`.tab-btn[data-tab="${saved}"]`);
+    const raw = localStorage.getItem('activeTab');
+    if (!raw) return;
+    const saved = normalizeTabName(raw);
+    if (saved !== raw) localStorage.setItem('activeTab', saved);
+    const btn = tabButtonFor(saved);
     if (btn) switchTab(saved, btn);
   } catch(e) {}
 })();
@@ -3175,110 +3247,1087 @@ function renderOpenCodeGo(d, stale) {
   }).join('');
 }
 
-// ── fetch opencode go limits (docs table, Go plan, sortable) ─────────────────
+// ── AI SERVICES: unified inventory comparison + preserved usage/allowances ───
+// The backend returns one inventory-backed model list plus benchmark metadata.
+// Nothing here invents an overall rank; summaries come from model.bench only.
+
+const AI_CORE_METRICS = ['tb4', 'livebench_coding', 'eci'];
+const AI_OPTIONAL_ORDER = [
+  'livebench_long_agentic', 'livebench_reasoning', 'livebench_browser',
+  'livebench_data_analysis', 'livebench_research', 'livebench_design', 'deepswe',
+];
+const AI_OPTIONAL_METRICS = new Set(AI_OPTIONAL_ORDER);
+const AI_CORE_TITLES = {
+  tb4: 'Terminal-Bench4',
+  livebench_coding: 'LiveBench Coding',
+  eci: 'Epoch ECI',
+};
+const AI_LIVEBENCH_KEYS = [
+  'livebench_coding', 'livebench_long_agentic', 'livebench_reasoning',
+  'livebench_browser', 'livebench_data_analysis', 'livebench_research', 'livebench_design',
+];
+const AI_METRIC_FALLBACK = {
+  tb4: { key: 'tb4', label: 'TB4', name: 'Terminal-Bench 4.0', unit: 'pct', source: 'harbor' },
+  livebench_coding: { key: 'livebench_coding', label: 'LBC', name: 'LiveBench Coding', unit: 'pct', source: 'livebench' },
+  eci: { key: 'eci', label: 'ECI', name: 'Epoch Capabilities Index', unit: 'index', source: 'epoch' },
+  livebench_long_agentic: { key: 'livebench_long_agentic', label: 'LB-LA', name: 'LiveBench Long Agentic', unit: 'pct', source: 'livebench' },
+  livebench_reasoning: { key: 'livebench_reasoning', label: 'LB-R', name: 'LiveBench Reasoning', unit: 'pct', source: 'livebench' },
+  livebench_browser: { key: 'livebench_browser', label: 'LB-B', name: 'LiveBench Browser', unit: 'pct', source: 'livebench' },
+  livebench_data_analysis: { key: 'livebench_data_analysis', label: 'LB-DA', name: 'LiveBench Data Analysis', unit: 'pct', source: 'livebench' },
+  livebench_research: { key: 'livebench_research', label: 'LB-RE', name: 'LiveBench Research', unit: 'pct', source: 'livebench' },
+  livebench_design: { key: 'livebench_design', label: 'LB-DE', name: 'LiveBench Design', unit: 'pct', source: 'livebench' },
+  deepswe: { key: 'deepswe', label: 'DSWE', name: 'DeepSWE', unit: 'pct', source: 'deepswe' },
+};
+const AI_METRIC_SOURCE_FALLBACK = {
+  tb4: 'harbor', livebench_coding: 'livebench', eci: 'epoch', deepswe: 'deepswe',
+  livebench_long_agentic: 'livebench', livebench_reasoning: 'livebench',
+  livebench_browser: 'livebench', livebench_data_analysis: 'livebench',
+  livebench_research: 'livebench', livebench_design: 'livebench',
+};
+const AI_SOURCE_LABELS = {
+  harbor: 'Harbor (Terminal-Bench)',
+  tb4: 'Harbor (Terminal-Bench)',
+  epoch: 'Epoch AI',
+  livebench: 'LiveBench 2.0',
+  deepswe: 'DeepSWE (Datacurve)',
+};
+// Backends have used both benchmark keys and source keys for metric.source.
+// Resolve the known aliases, then fall back to the key actually present.
+const AI_SOURCE_ALIASES = {
+  tb4: 'harbor', terminalbench: 'harbor', terminalbench4: 'harbor',
+  eci: 'epoch',
+  livebenchcoding: 'livebench', livebenchlongagentic: 'livebench',
+  livebenchreasoning: 'livebench', livebenchbrowser: 'livebench',
+  livebenchdataanalysis: 'livebench', livebenchresearch: 'livebench',
+  livebenchdesign: 'livebench',
+};
+const AI_LIVEBENCH_WARNING = 'LiveBench2.0 reuse terms unverified; opt-in after review';
+const AI_DEEPSWE_REVIEW_URL = 'https://epoch.ai/benchmarks/deepswe/review';
+const AI_EPOCH_URL = 'https://epoch.ai/eci';
+const AI_CC_BY_URL = 'https://creativecommons.org/licenses/by/4.0/';
+// Attribution links to the project homepage, not the fetched CSV/artifact URL.
+const AI_LIVEBENCH_HOME = 'https://livebench.ai';
+// Feed dates are not all evaluation dates: Harbor publishes release dates,
+// Epoch dates are model release dates, LiveBench dates are benchmark release
+// dates. Label exactly what the source reported and never infer "evaluation".
+const AI_DATE_KIND_LABELS = {
+  evaluation: 'evaluation date',
+  eval: 'evaluation date',
+  submission: 'submission date',
+  model_release: 'model release date',
+  benchmark_release: 'benchmark release date',
+  released: 'release date',
+  release: 'release date',
+  published: 'published date',
+};
+const AI_REFRESH_POLL_MS = 2000;
+const AI_REFRESH_MAX_POLLS = 40;
+
 let _ocglData = null, _ocglSort = { key: 'monthly', dir: 1 }; // default: cheap → expensive
-let _ocglMetric = 'tb4';       // which benchmark column is shown
-let _ocglMetrics = [];         // [{key,label,name,unit}] from the backend
-try { _ocglMetric = localStorage.getItem('ocglMetric') || 'tb4'; } catch(e) {}
+let _aiData = null, _aiMetricMap = Object.create(null), _aiLoadedAt = 0;
+let _aiInFlight = null;
+let _aiLoadFailed = false, _aiRefreshUnknown = false;
+let _aiSort = { key: 'model', dir: 1 };
+let _aiProvider = 'all', _aiRoute = 'all';
+let _aiColumns = aiRestoreColumns();
+let _aiRefreshPromise = null, _aiRefreshTimer = null, _aiRefreshActive = false;
+let _aiUsageStarted = false;
+let _aiEnterHooked = false, _aiLastEnterAt = 0;
+const _aiOpenConfigs = new Set();
 
-let _mistralData = null, _mistralMetrics = [], _mistralMetric = 'aa';
-let _mistralSort = { key: 'name', dir: 1 }, _mistralRequestId = 0, _mistralInFlight = null;
-try {
-  _mistralMetric = localStorage.getItem('mistralMetric') || 'aa';
-  const saved = JSON.parse(localStorage.getItem('mistralSort') || 'null');
-  if (saved && ['name', 'bench'].includes(saved.key)) {
-    _mistralSort = { key: saved.key, dir: saved.dir === -1 ? -1 : 1 };
+function aiObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+function aiText(value) { return value == null ? '' : String(value); }
+function aiMessage(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(aiMessage).filter(Boolean).join('; ');
+  if (typeof value === 'object') {
+    const reason = value.reason != null ? value.reason
+      : value.message != null ? value.message
+      : value.detail != null ? value.detail : null;
+    if (reason != null) return aiMessage(reason);
+    return securityJson(value);
   }
-} catch(e) {}
-
-function findMetric(metrics, key, fallback) {
-  return metrics.find(m => m.key === key) || fallback;
+  return String(value);
+}
+function aiSourceKeyValue(source) {
+  if (source && typeof source === 'object') return aiText(source.key || source.name).trim().toLowerCase();
+  return aiText(source).trim().toLowerCase();
+}
+function aiSafeLink(url, label) {
+  const value = aiText(url).trim();
+  if (!value) return '<span class="ai-muted">not reported</span>';
+  if (!securitySafeUrl(value)) {
+    return `<span class="ai-muted">unsafe link withheld — ${escHtml(value)}</span>`;
+  }
+  return `<a href="${escAttr(value)}" target="_blank" rel="noopener noreferrer">${escHtml(label || value)}</a>`;
+}
+function aiTimestampMs(value) {
+  // Source check timestamps are epoch seconds; result/source dates are ISO
+  // date strings. Never guess by rendering seconds as milliseconds.
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1e12 ? value * 1000 : value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value).getTime();
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+function aiDateValue(value) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const midnight = new Date(value + 'T00:00:00Z').getTime();
+    return `${escHtml(value)} <span class="ai-muted">(${escHtml(securityRelative(midnight))})</span>`;
+  }
+  const ms = aiTimestampMs(value);
+  if (ms === null) return 'not reported';
+  const abs = new Date(ms).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+  return `${escHtml(abs)} <span class="ai-muted">(${escHtml(securityRelative(ms))})</span>`;
+}
+function aiFormatValue(value, metric) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+  const unit = metric && metric.unit;
+  // The contract carries pct values as 0–100 percentage points and ECI as an
+  // abstract index. Never infer a different scale from the number itself.
+  if (unit === 'pct') return value.toFixed(1) + '%';
+  if (unit === 'index') return value.toFixed(1);
+  return value.toFixed(2);
+}
+function aiNumberText(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : aiMessage(value);
 }
 
-function metricDef(key) {
-  return findMetric(_ocglMetrics, key, { label: 'TB4', name: 'Terminal-Bench 4.0', unit: 'pct' });
+function aiServicesEnabled() {
+  return !!(_features.ai_services || _features.opencode_go || _features.mistral);
 }
 
-function mistralMetricDef(key=_mistralMetric) {
-  return findMetric(_mistralMetrics, key, { key: 'aa', label: 'AA', name: 'Artificial Analysis', unit: 'index' });
+function aiRestoreColumns() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('aiServicesColumns') || '[]');
+    if (Array.isArray(saved)) {
+      return AI_OPTIONAL_ORDER.filter(key => saved.includes(key));
+    }
+  } catch(e) {}
+  return [];
 }
-
-function formatBenchScore(value, metric) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  if (metric.unit === 'elo') return String(Math.round(value));
-  if (metric.unit === 'index') return value.toFixed(1);
-  return (value * 100).toFixed(1) + '%';
+function aiSaveColumns() {
+  try { localStorage.setItem('aiServicesColumns', JSON.stringify(_aiColumns)); } catch(e) {}
 }
-
-function updateScoreMetricButton(buttonId, metric) {
-  const button = document.getElementById(buttonId);
-  button.textContent = String(metric.label || 'AA') + ' ';
-  const caret = document.createElement('span');
-  caret.className = 'ocgl-caret';
-  caret.textContent = '▾';
-  button.appendChild(caret);
+function aiBuildMetrics(metrics) {
+  const map = Object.create(null);
+  (Array.isArray(metrics) ? metrics : []).forEach(item => {
+    if (!item || typeof item.key !== 'string') return;
+    const key = item.key.trim();
+    if (!key) return;
+    map[key] = {
+      key,
+      label: aiText(item.label) || key.toUpperCase(),
+      name: aiText(item.name) || aiText(item.label) || key,
+      unit: item.unit === 'pct' || item.unit === 'index' ? item.unit : aiText(item.unit) || 'index',
+      source: aiSourceKeyValue(item.source),
+    };
+  });
+  return map;
 }
-
-function renderMetricMenu(menuId, metrics, selectedKey, onSelect) {
-  const menu = document.getElementById(menuId);
-  menu.replaceChildren();
-  metrics.forEach(metric => {
-    if (!metric || typeof metric.key !== 'string') return;
-    const item = document.createElement('div');
-    item.className = 'ocgl-dd-item' + (metric.key === selectedKey ? ' sel' : '');
-    item.dataset.key = metric.key;
-    item.setAttribute('role', 'menuitem');
-    const abbr = document.createElement('span');
-    abbr.className = 'ocgl-dd-abbr';
-    abbr.textContent = String(metric.label || metric.key);
-    const name = document.createElement('span');
-    name.className = 'ocgl-dd-name';
-    name.textContent = String(metric.name || '');
-    item.append(abbr, name);
-    item.addEventListener('click', () => onSelect(metric.key));
-    menu.appendChild(item);
+function aiMetricMeta(key) {
+  return _aiMetricMap[key] || AI_METRIC_FALLBACK[key] || {
+    key, label: String(key || '').toUpperCase(), name: String(key || ''),
+    unit: 'index', source: '',
+  };
+}
+function aiSourcesObject() {
+  return aiObject(_aiData && _aiData.sources);
+}
+function aiSourceKeyFor(key) {
+  const metric = _aiMetricMap[key];
+  return ((metric && metric.source) || AI_METRIC_SOURCE_FALLBACK[key] || '').toLowerCase();
+}
+function aiResolvedSourceKey(key) {
+  const sources = aiSourcesObject();
+  const candidate = aiSourceKeyFor(key);
+  if (!candidate) return '';
+  if (Object.prototype.hasOwnProperty.call(sources, candidate)) return candidate;
+  const alias = AI_SOURCE_ALIASES[candidate.replace(/[^a-z0-9]/g, '')];
+  if (alias && Object.prototype.hasOwnProperty.call(sources, alias)) return alias;
+  if (candidate === 'harbor' && Object.prototype.hasOwnProperty.call(sources, 'tb4')) return 'tb4';
+  return candidate;
+}
+function aiSourceData(key) {
+  const sources = aiSourcesObject();
+  const resolved = aiResolvedSourceKey(key);
+  if (!resolved) return null;
+  return aiObject(sources[resolved]);
+}
+function aiMetricDisabled(key) {
+  const source = aiSourceData(key);
+  return !!(source && source.disabled === true);
+}
+function aiSourceLabel(key) {
+  const resolved = aiResolvedSourceKey(key);
+  if (!resolved) return '';
+  const source = aiObject(aiSourcesObject()[resolved]);
+  return aiText(source.name || source.title) || AI_SOURCE_LABELS[resolved] || resolved.toUpperCase();
+}
+function aiAvailableOptionalMetrics() {
+  return AI_OPTIONAL_ORDER.filter(key => !!_aiMetricMap[key]);
+}
+function aiDeepSwePresent() {
+  if (_aiMetricMap.deepswe) return true;
+  if (aiSourcesObject().deepswe) return true;
+  return (_aiData && Array.isArray(_aiData.models) ? _aiData.models : []).some(model => {
+    const bench = aiObject(model.bench);
+    const results = aiObject(model.results);
+    const missing = aiObject(model.missing);
+    return typeof bench.deepswe === 'number' || Array.isArray(results.deepswe) || missing.deepswe != null;
+  });
+}
+function aiLiveBenchPresent() {
+  if (AI_LIVEBENCH_KEYS.some(key => !!_aiMetricMap[key])) return true;
+  if (aiSourcesObject().livebench) return true;
+  return (_aiData && Array.isArray(_aiData.models) ? _aiData.models : []).some(model => {
+    const bench = aiObject(model.bench);
+    const results = aiObject(model.results);
+    return AI_LIVEBENCH_KEYS.some(key => typeof bench[key] === 'number' || Array.isArray(results[key]));
   });
 }
 
-function buildMetricMenu() {
-  renderMetricMenu('ocgl-metric-menu', _ocglMetrics, _ocglMetric, setMetric);
+function aiRoutes(model) {
+  return Array.isArray(model && model.routes)
+    ? model.routes.filter(route => route && typeof route === 'object') : [];
+}
+function aiModelName(model) { return aiText(model && model.name) || 'unnamed model'; }
+function aiIsNonCoding(model) {
+  // The backend treats every mode other than chat/completion as an unsupported
+  // modality for coding comparisons. Mirror it so table grouping cannot drift.
+  const mode = aiText(model && model.mode).trim().toLowerCase();
+  if (!mode) return false;
+  return mode !== 'chat' && mode !== 'completion';
+}
+function aiProviderValues() {
+  const values = new Set();
+  (_aiData && Array.isArray(_aiData.models) ? _aiData.models : []).forEach(model => {
+    const provider = aiText(model.provider).trim();
+    if (provider) values.add(provider);
+    aiRoutes(model).forEach(route => {
+      const routeProvider = aiText(route.provider).trim();
+      if (routeProvider) values.add(routeProvider);
+    });
+  });
+  return [...values].sort((a, b) => a.localeCompare(b));
+}
+function aiRouteValues() {
+  const values = new Set();
+  (_aiData && Array.isArray(_aiData.models) ? _aiData.models : []).forEach(model => {
+    aiRoutes(model).forEach(route => {
+      const name = aiText(route.name).trim();
+      if (name) values.add(name);
+    });
+  });
+  return [...values].sort((a, b) => a.localeCompare(b));
+}
+function aiMatchesProvider(model, provider) {
+  if (provider === 'all') return true;
+  if (aiText(model.provider).trim() === provider) return true;
+  return aiRoutes(model).some(route => aiText(route.provider).trim() === provider);
+}
+function aiVisibleModels() {
+  const models = _aiData && Array.isArray(_aiData.models) ? _aiData.models : [];
+  return models.filter(model => {
+    if (!aiMatchesProvider(model, _aiProvider)) return false;
+    if (_aiRoute === 'all') return true;
+    return aiRoutes(model).some(route => aiText(route.name).trim() === _aiRoute);
+  });
+}
+function aiSelectOptions(values, selected, allLabel) {
+  return [`<option value="all">${escHtml(allLabel)}</option>`].concat(
+    values.map(value => `<option value="${escAttr(value)}"${value === selected ? ' selected' : ''}>${escHtml(value)}</option>`)
+  ).join('');
+}
+function aiRenderFilters() {
+  const provider = document.getElementById('ai-provider-filter');
+  const route = document.getElementById('ai-route-filter');
+  const providers = aiProviderValues();
+  const routes = aiRouteValues();
+  if (_aiProvider !== 'all' && !providers.includes(_aiProvider)) _aiProvider = 'all';
+  if (_aiRoute !== 'all' && !routes.includes(_aiRoute)) _aiRoute = 'all';
+  provider.innerHTML = aiSelectOptions(providers, _aiProvider, 'ALL PROVIDERS');
+  route.innerHTML = aiSelectOptions(routes, _aiRoute, 'ALL ROUTES');
+  provider.value = _aiProvider;
+  route.value = _aiRoute;
+}
+function aiSetProvider(value) {
+  _aiProvider = aiText(value) || 'all';
+  aiRenderFilters();
+  aiRenderTable();
+}
+function aiSetRoute(value) {
+  _aiRoute = aiText(value) || 'all';
+  aiRenderFilters();
+  aiRenderTable();
+}
+function aiResetHiddenSort() {
+  // A removed optional column must not keep sorting an invisible field.
+  if (AI_OPTIONAL_METRICS.has(_aiSort.key) && !_aiColumns.includes(_aiSort.key)) {
+    _aiSort = { key: 'model', dir: 1 };
+  }
+}
+function aiToggleColumn(key, checked) {
+  if (!AI_OPTIONAL_METRICS.has(key) || !_aiMetricMap[key]) return;
+  const selected = new Set(_aiColumns);
+  if (checked) selected.add(key); else selected.delete(key);
+  _aiColumns = AI_OPTIONAL_ORDER.filter(metricKey => selected.has(metricKey));
+  aiResetHiddenSort();
+  aiSaveColumns();
+  aiRenderColumnPicker();
+  aiRenderTable();
+}
+function aiRenderColumnPicker() {
+  const box = document.getElementById('ai-column-options');
+  const available = aiAvailableOptionalMetrics();
+  if (!available.length) {
+    box.innerHTML = '<span class="ai-muted">no optional benchmark columns reported</span>';
+    return;
+  }
+  box.innerHTML = available.map(key => {
+    const metric = aiMetricMeta(key);
+    const disabled = aiMetricDisabled(key);
+    return `<label class="ai-col">
+      <input type="checkbox" value="${escAttr(key)}"${_aiColumns.includes(key) ? ' checked' : ''} onchange="aiToggleColumn(this.value,this.checked)">
+      <span>${escHtml(metric.name || metric.label || key)}${disabled ? ' · disabled' : ''}</span>
+    </label>`;
+  }).join('');
 }
 
-function updateMetricButton() {
-  updateScoreMetricButton('ocgl-metric-btn', metricDef(_ocglMetric));
+function aiHasResults(model, key) {
+  const results = aiObject(model && model.results);
+  return Array.isArray(results[key]) && results[key].length > 0;
+}
+function aiBenchState(model, key) {
+  if (aiMetricDisabled(key)) return { disabled: true };
+  const bench = aiObject(model && model.bench);
+  const value = bench[key];
+  if (typeof value === 'number' && Number.isFinite(value)) return { value };
+  const missing = aiObject(model && model.missing);
+  if (missing[key] != null && missing[key] !== '') return { missing: aiMessage(missing[key]) };
+  // Only guess "ambiguous" when the backend gave no reason; undated results
+  // (for example DeepSWE rows) must stay "no summary" without inventing one.
+  if (aiHasResults(model, key)) return { ambiguous: true };
+  return {};
+}
+function aiSortValue(model) {
+  if (_aiSort.key === 'model') return aiModelName(model).toLowerCase();
+  if (_aiSort.key === 'routes') {
+    return aiRoutes(model).map(route => aiText(route.name)).join(' ').toLowerCase();
+  }
+  const state = aiBenchState(model, _aiSort.key);
+  return typeof state.value === 'number' ? state.value : null;
+}
+function aiSort(key) {
+  if (key === 'routes') return;
+  if (_aiSort.key === key) _aiSort.dir *= -1;
+  else { _aiSort.key = key; _aiSort.dir = key === 'model' ? 1 : -1; }
+  aiRenderTable();
+}
+function aiSortableHeader(key, label) {
+  const active = _aiSort.key === key;
+  const aria = active ? (_aiSort.dir === 1 ? 'ascending' : 'descending') : 'none';
+  const cls = active ? (_aiSort.dir === 1 ? ' sorted-asc' : ' sorted-desc') : '';
+  return `<th scope="col" class="proc-sortable${cls}" data-ai-key="${escAttr(key)}" aria-sort="${aria}" onclick="aiSort(this.dataset.aiKey)">${escHtml(label)}</th>`;
+}
+function aiMetricHeader(key) {
+  const metric = aiMetricMeta(key);
+  const title = AI_CORE_TITLES[key] || metric.name || metric.label || key;
+  const disabled = aiMetricDisabled(key);
+  const source = aiSourceLabel(key);
+  const sourceText = source || 'source not reported';
+  const active = _aiSort.key === key;
+  const aria = active ? (_aiSort.dir === 1 ? 'ascending' : 'descending') : 'none';
+  const cls = active ? (_aiSort.dir === 1 ? ' sorted-asc' : ' sorted-desc') : '';
+  const caveat = key === 'tb4' ? '; mixed native agents — not a pure model comparison' : '';
+  return `<th scope="col" class="ocg-num proc-sortable ai-num${cls}" data-ai-key="${escAttr(key)}" aria-sort="${aria}"
+      title="${escAttr(`${title} — source: ${sourceText}${disabled ? ' (disabled)' : ''}${caveat}`)}"
+      onclick="aiSort(this.dataset.aiKey)">${escHtml(title)}<span class="ai-th-src${disabled ? ' disabled' : ''}">${escHtml(sourceText)}${disabled ? ' · disabled' : ''}</span></th>`;
+}
+function aiRoutesCell(model) {
+  const routes = aiRoutes(model);
+  if (!routes.length) return '<span class="ai-muted">no route reported</span>';
+  return routes.map(route => {
+    const name = aiText(route.name) || 'unnamed route';
+    const provider = aiText(route.provider);
+    return `<span class="ai-route">${escHtml(name)}${provider ? ' · ' + escHtml(provider) : ''}</span>`;
+  }).join('');
+}
+function aiBenchCell(model, key) {
+  const nonCoding = aiIsNonCoding(model);
+  const state = aiBenchState(model, key);
+  let text = 'not reported';
+  let cls = 'ocg-num ai-num ai-muted';
+  let title = 'no result reported for this benchmark';
+  if (nonCoding) {
+    text = state.missing ? `excluded — ${state.missing}` : 'excluded';
+    cls = 'ocg-num ai-num ai-excluded';
+    title = `non-coding mode${aiText(model.mode) ? ' (' + aiText(model.mode) + ')' : ''} — excluded from coding comparisons`;
+  } else if (state.disabled) {
+    text = 'source disabled';
+    cls = 'ocg-num ai-num ai-disabled';
+    title = 'benchmark source disabled — opt-in after review';
+  } else if (typeof state.value === 'number') {
+    text = aiFormatValue(state.value, aiMetricMeta(key));
+    cls = 'ocg-num ai-num ai-score';
+    title = '';
+  } else if (state.ambiguous) {
+    text = 'no single summary — see configurations';
+    cls = 'ocg-num ai-num ai-ambiguous';
+    title = 'undated or ambiguous configurations have no single summary';
+  } else if (state.missing) {
+    text = aiHasResults(model, key) ? `${state.missing} — see configurations` : state.missing;
+    cls = 'ocg-num ai-num ai-missing';
+    title = state.missing;
+  }
+  return `<td class="${cls}" title="${escAttr(title)}">${escHtml(text)}</td>`;
+}
+function aiGroupRow(label, columns) {
+  return `<tr class="ai-group-row"><td colspan="${columns}">${escHtml(label)}</td></tr>`;
+}
+function aiModelRow(model, keys) {
+  const nonCoding = aiIsNonCoding(model);
+  const upstream = aiText(model.upstream_model);
+  const provider = aiText(model.provider);
+  const mode = aiText(model.mode);
+  const modelCell = `<td class="ai-model">
+      <b>${escHtml(aiModelName(model))}</b>
+      ${upstream ? `<small>${escHtml(upstream)}</small>` : ''}
+      ${provider ? `<span class="ai-provider">${escHtml(provider)}</span>` : ''}
+      ${nonCoding ? `<small>mode: ${escHtml(mode || 'not reported')} · non-coding</small>` : ''}
+    </td>`;
+  const cells = keys.map(key => aiBenchCell(model, key)).join('');
+  return `<tr>${modelCell}<td class="ai-routes">${aiRoutesCell(model)}</td>${cells}</tr>`;
+}
+function aiRenderTable() {
+  const thead = document.getElementById('ai-thead');
+  const tbody = document.getElementById('ai-tbody');
+  if (!_aiData) { thead.innerHTML = ''; tbody.innerHTML = ''; return; }
+  const keys = AI_CORE_METRICS.concat(_aiColumns);
+  const columnCount = 2 + keys.length;
+  thead.innerHTML = `<tr>${aiSortableHeader('model', 'MODEL')}<th scope="col">AVAILABLE ROUTES</th>${
+    keys.map(aiMetricHeader).join('')
+  }</tr>`;
+
+  const visible = aiVisibleModels();
+  const sorted = sortByValue(visible, _aiSort.dir, aiSortValue);
+  const coding = sorted.filter(model => !aiIsNonCoding(model));
+  const nonCoding = sorted.filter(aiIsNonCoding);
+  const rows = [];
+  if (!visible.length) {
+    const reason = (_aiData.models && _aiData.models.length)
+      ? 'no models match the current provider/route filters'
+      : 'no models reported by the inventory';
+    rows.push(`<tr><td colspan="${columnCount}" class="empty">${escHtml(reason)}</td></tr>`);
+  } else {
+    if (coding.length) {
+      rows.push(aiGroupRow('models with coding routes', columnCount));
+      rows.push(coding.map(model => aiModelRow(model, keys)).join(''));
+    } else {
+      rows.push(aiGroupRow('no coding-comparable models match these filters', columnCount));
+    }
+    if (nonCoding.length) {
+      rows.push(aiGroupRow(
+        `${nonCoding.length} non-coding model${nonCoding.length === 1 ? '' : 's'} — excluded from coding comparisons`,
+        columnCount
+      ));
+      rows.push(nonCoding.map(model => aiModelRow(model, keys)).join(''));
+    }
+  }
+  tbody.innerHTML = rows.join('');
+  const total = _aiData.models && _aiData.models.length ? _aiData.models.length : 0;
+  document.getElementById('ai-count').textContent = `${visible.length} / ${total} models`;
 }
 
-function toggleScoreMenu(e, menuId) {
-  e.stopPropagation();
-  const menu = document.getElementById(menuId);
-  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+function aiRenderWarnings() {
+  const box = document.getElementById('ai-warnings');
+  if (!_aiData) { box.innerHTML = ''; return; }
+  const warnings = [];
+  if (aiLiveBenchPresent()) {
+    const source = aiSourceData('livebench_coding') || aiSourceData('livebench_reasoning');
+    const disabled = !!(source && source.disabled === true);
+    const warning = aiMessage(source && source.warning) || (disabled ? AI_LIVEBENCH_WARNING : '');
+    if (disabled || warning) {
+      warnings.push(`<div class="ai-warning"><b>LIVEBENCH 2.0${disabled ? ' · DISABLED' : ''}</b> — ${
+        escHtml(warning || AI_LIVEBENCH_WARNING)
+      }${disabled ? ' LiveBench is opt-in and is shown as disabled, not failed.' : ''}</div>`);
+    }
+  }
+  if (aiDeepSwePresent()) {
+    const source = aiSourceData('deepswe');
+    const disabled = !!(source && source.disabled === true);
+    warnings.push(`<div class="ai-warning"><b>DEEPSWE${disabled ? ' · DISABLED' : ''}</b> — known task defects affect
+      at least 23 of 113 tasks (${aiSafeLink(AI_DEEPSWE_REVIEW_URL, 'review the defect analysis')}).
+      Citation: Datacurve 2026 (Wenqi Huang, Charley Lee, Leonard Tng, Serena Ge).${
+        disabled ? ' DeepSWE is opt-in and is shown as disabled, not failed.' : ''
+      }</div>`);
+  }
+  box.innerHTML = warnings.join('');
 }
 
-function toggleMetricMenu(e) { toggleScoreMenu(e, 'ocgl-metric-menu'); }
-function toggleMistralMetricMenu(e) { toggleScoreMenu(e, 'mistral-metric-menu'); }
-
-function closeMetricMenu() {
-  document.getElementById('ocgl-metric-menu').style.display = 'none';
-  document.getElementById('mistral-metric-menu').style.display = 'none';
+function aiRenderSources() {
+  const box = document.getElementById('ai-sources');
+  if (!_aiData) {
+    box.innerHTML = '<div class="ai-note">Source status has not loaded.</div>';
+    return;
+  }
+  const sources = aiSourcesObject();
+  const keys = Object.keys(sources);
+  if (!keys.length) {
+    box.innerHTML = '<div class="ai-note">Source status was not reported; no freshness claim is made.</div>';
+    return;
+  }
+  const order = ['harbor', 'tb4', 'epoch', 'livebench', 'deepswe'];
+  keys.sort((a, b) => {
+    const ai = order.indexOf(a), bi = order.indexOf(b);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    return a.localeCompare(b);
+  });
+  box.innerHTML = keys.map(key => {
+    const source = aiObject(sources[key]);
+    const disabled = source.disabled === true;
+    const stale = !disabled && source.stale === true;
+    const label = AI_SOURCE_LABELS[key] || aiText(source.name || source.title) || key.toUpperCase();
+    const versionLabel = key === 'livebench' ? 'pinned release' : 'version';
+    const warning = aiMessage(source.warning) || (disabled && key === 'livebench' ? AI_LIVEBENCH_WARNING : '');
+    return `<div class="ai-source-card${disabled ? ' disabled' : ''}${stale ? ' stale' : ''}">
+      <div class="ai-source-head">
+        <span class="ai-source-name">${escHtml(label)}</span>
+        ${disabled ? '<span class="ai-badge disabled">DISABLED</span>' : ''}
+        ${stale ? '<span class="ai-badge stale">STALE</span>' : ''}
+        ${source.error ? '<span class="ai-badge error">ERROR</span>' : ''}
+      </div>
+      <div class="ai-kv"><span>checked</span><span>${aiDateValue(source.last_checked)}</span></div>
+      <div class="ai-kv"><span>last success</span><span>${aiDateValue(source.last_success)}</span></div>
+      <div class="ai-kv"><span>source updated</span><span>${aiDateValue(source.source_updated)}</span></div>
+      <div class="ai-kv"><span>${versionLabel}</span><span>${escHtml(aiText(source.version) || 'not reported')}</span></div>
+      <div class="ai-kv"><span>source</span><span>${aiSafeLink(source.url)}</span></div>
+      ${warning ? `<div class="ai-warn">warning: ${escHtml(warning)}</div>` : ''}
+      ${source.error ? `<div class="ai-err">error: ${escHtml(aiMessage(source.error))}</div>` : ''}
+    </div>`;
+  }).join('');
 }
-document.addEventListener('click', closeMetricMenu);
 
-function setMetric(key) {
-  _ocglMetric = key;
-  try { localStorage.setItem('ocglMetric', key); } catch(e) {}
-  updateMetricButton();
-  buildMetricMenu();
-  renderLimits();
+function aiAttributionGroups() {
+  const keys = [...new Set(AI_CORE_METRICS.concat(Object.keys(_aiMetricMap)))];
+  const groups = [];
+  const byKey = Object.create(null);
+  keys.forEach(key => {
+    const metric = aiMetricMeta(key);
+    const sourceKey = aiResolvedSourceKey(key);
+    const groupKey = sourceKey || `metric:${key}`;
+    let group = byKey[groupKey];
+    if (!group) {
+      group = {
+        label: aiSourceLabel(key) || 'source not reported',
+        disabled: aiMetricDisabled(key),
+        titles: [],
+      };
+      byKey[groupKey] = group;
+      groups.push(group);
+    }
+    group.titles.push(AI_CORE_TITLES[key] || metric.name || metric.label || key);
+    group.disabled = group.disabled && aiMetricDisabled(key);
+  });
+  return groups;
+}
+function aiLiveBenchRelease(source) {
+  // LiveBench identifies releases by date; prefer the recorded release date and
+  // fall back to the compact YYYYMMDD version string.
+  const updated = aiText(source && source.source_updated).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(updated)) return updated;
+  const version = aiText(source && source.version).trim();
+  if (/^\d{8}$/.test(version)) {
+    return `${version.slice(0, 4)}-${version.slice(4, 6)}-${version.slice(6, 8)}`;
+  }
+  return version || 'release not reported';
+}
+function aiRenderAttribution() {
+  const box = document.getElementById('ai-attribution');
+  if (!_aiData) { box.innerHTML = ''; return; }
+  const items = aiAttributionGroups().map(group =>
+    `<span><b>${escHtml(group.label)}</b> · ${escHtml(group.titles.join(', '))}${
+      group.disabled ? ' · disabled' : ''
+    }</span>`
+  );
+  let license = `<div class="ai-license">Epoch AI ECI © Epoch AI —
+    ${aiSafeLink(AI_EPOCH_URL, 'Epoch AI ECI')}, ${aiSafeLink(AI_CC_BY_URL, 'CC BY 4.0')}.</div>`;
+  if (aiLiveBenchPresent() && !aiMetricDisabled('livebench_coding')) {
+    const source = aiSourceData('livebench_coding') || aiSourceData('livebench_reasoning');
+    // Link the project homepage; source.url is the fetched CSV artifact.
+    license += `<div class="ai-license">LiveBench 2.0 · release ${escHtml(aiLiveBenchRelease(source))} ·
+      ${aiSafeLink(AI_LIVEBENCH_HOME, 'livebench.ai')} — scores use that pinned release.</div>`;
+  }
+  box.innerHTML = `<div class="ai-attrib">${items.join('')}</div>${license}`;
 }
 
-function setMistralMetric(key) {
-  _mistralMetric = key;
-  try { localStorage.setItem('mistralMetric', key); } catch(e) {}
-  updateScoreMetricButton('mistral-metric-btn', mistralMetricDef());
-  renderMetricMenu('mistral-metric-menu', _mistralMetrics, _mistralMetric, setMistralMetric);
-  renderMistralModels();
+function aiResultsKeys(model) {
+  const results = aiObject(model && model.results);
+  const keys = Object.keys(results).filter(key => Array.isArray(results[key]) && results[key].length);
+  const order = AI_CORE_METRICS.concat(_aiColumns, AI_OPTIONAL_ORDER);
+  return keys.sort((a, b) => {
+    const ai = order.indexOf(a), bi = order.indexOf(b);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    return a.localeCompare(b);
+  });
+}
+function aiConfigEntries(result, metric) {
+  const entries = [];
+  const configuration = result && result.configuration;
+  if (configuration != null) {
+    if (typeof configuration !== 'object' || Array.isArray(configuration)) {
+      entries.push(['configuration', aiMessage(configuration)]);
+    } else {
+      Object.keys(configuration).forEach(key => {
+        if (key === 'value') return; // the score is rendered once, above
+        const value = configuration[key];
+        entries.push([key, aiMessage(value)]);
+      });
+    }
+  }
+  const metadata = result && result.metadata;
+  if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    Object.keys(metadata).forEach(key => {
+      const value = metadata[key];
+      entries.push([`metadata.${key}`, key === 'suite_weights' && value && typeof value === 'object'
+        ? securityJson(value) : aiMessage(value)]);
+    });
+  }
+  return entries;
+}
+function aiCiText(result) {
+  const ci = result && result.ci;
+  if (Array.isArray(ci)) {
+    const values = ci.filter(value => value != null).map(aiNumberText);
+    if (values.length) return values.join(' – ');
+  }
+  if (ci && typeof ci === 'object') {
+    const low = ci.low != null ? ci.low : ci.lower;
+    const high = ci.high != null ? ci.high : ci.upper;
+    if (low != null || high != null) {
+      return `${low != null ? aiNumberText(low) : '?'} – ${high != null ? aiNumberText(high) : '?'}`;
+    }
+    if (ci.half_width != null) return `± ${aiNumberText(ci.half_width)}`;
+    return aiMessage(ci);
+  }
+  if (ci != null && ci !== '') return aiMessage(ci);
+  const low = result && (result.ci_low != null ? result.ci_low : result.ci_lower);
+  const high = result && (result.ci_high != null ? result.ci_high : result.ci_upper);
+  if (low != null || high != null) {
+    return `${low != null ? aiNumberText(low) : '?'} – ${high != null ? aiNumberText(high) : '?'}`;
+  }
+  return '';
+}
+function aiResultValue(result) {
+  if (!result || typeof result !== 'object') return null;
+  if (result.value != null && result.value !== '') return result.value;
+  const configuration = result.configuration;
+  if (configuration && typeof configuration === 'object' && !Array.isArray(configuration)
+      && configuration.value != null && configuration.value !== '') {
+    return configuration.value;
+  }
+  return null;
+}
+function aiDateKindLabel(kind) {
+  const key = aiText(kind).trim().toLowerCase();
+  if (AI_DATE_KIND_LABELS[key]) return AI_DATE_KIND_LABELS[key];
+  // Unknown kinds keep their own words; never silently call them evaluations.
+  if (key) return `date (${key.replace(/[_-]+/g, ' ')})`;
+  return 'date (kind not reported)';
+}
+function aiDateFields(result) {
+  const kind = aiText(result && result.date_kind).trim();
+  const value = result && result.date;
+  const hasDate = value != null && value !== '';
+  const normalized = kind.toLowerCase();
+  if (!hasDate && !kind) return [['evaluation date', 'unknown']];
+  const fields = [[aiDateKindLabel(kind), hasDate ? aiMessage(value) : 'not reported']];
+  // A release/submission date is not an evaluation date; state that explicitly.
+  if (normalized !== 'evaluation' && normalized !== 'eval') {
+    fields.push(['evaluation date', 'unknown']);
+  }
+  return fields;
+}
+function aiResultCard(result, metric) {
+  if (!result || typeof result !== 'object') return '';
+  const fields = [];
+  if (result.model != null && result.model !== '') fields.push(['result model', aiMessage(result.model)]);
+  const agent = aiMessage(result.agent || result.harness);
+  if (result.agent != null && result.agent !== '') fields.push(['agent / harness', aiMessage(result.agent)]);
+  if (result.harness != null && result.harness !== ''
+      && aiMessage(result.harness) !== aiMessage(result.agent)) {
+    fields.push(['harness', aiMessage(result.harness)]);
+  }
+  if (result.effort != null && result.effort !== '') fields.push(['effort', aiMessage(result.effort)]);
+  if (result.evaluator != null && result.evaluator !== '') fields.push(['evaluator', aiMessage(result.evaluator)]);
+  if (result.version != null && result.version !== '') fields.push(['version', aiMessage(result.version)]);
+  aiDateFields(result).forEach(field => fields.push(field));
+  const ci = aiCiText(result);
+  if (ci) fields.push(['CI', ci]);
+  const value = aiResultValue(result);
+  const score = typeof value === 'number' && Number.isFinite(value)
+    ? aiFormatValue(value, metric) : (value != null ? aiMessage(value) : '');
+  const entries = aiConfigEntries(result, metric);
+  return `<li class="ai-eval">
+    <div class="ai-eval-head">${escHtml(agent || 'agent / harness not reported')}${
+      result.selected === true ? ' <span class="ai-badge">SUMMARY</span>' : ''
+    }</div>
+    <div class="ai-eval-score">${score ? escHtml(score) : '<span class="ai-muted">score not reported</span>'}</div>
+    ${fields.map(([label, value]) => `<div class="ai-kv"><span>${escHtml(label)}</span><span>${escHtml(value)}</span></div>`).join('')}
+    ${entries.length ? `<div class="ai-conf">${entries.map(([key, value]) =>
+      `<div><b>${escHtml(key)}</b>: ${escHtml(value)}</div>`).join('')}</div>` : ''}
+  </li>`;
+}
+function aiRememberConfigOpen(id, open) {
+  if (open) _aiOpenConfigs.add(id);
+  else _aiOpenConfigs.delete(id);
+}
+function aiRenderConfigs() {
+  const box = document.getElementById('ai-configs');
+  if (!_aiData) {
+    box.innerHTML = '<div class="ai-note">Evaluation configurations have not loaded.</div>';
+    return;
+  }
+  const models = _aiData.models.filter(model => aiResultsKeys(model).length);
+  if (!models.length) {
+    box.innerHTML = '<div class="ai-note">No evaluation configurations were reported.</div>';
+    return;
+  }
+  // Poll redraws must not collapse a configuration the user opened.
+  const currentIds = new Set(models.map((model, index) => `ai-config-${index}`));
+  _aiOpenConfigs.forEach(id => { if (!currentIds.has(id)) _aiOpenConfigs.delete(id); });
+  box.innerHTML = models.map((model, index) => {
+    const resultKeys = aiResultsKeys(model);
+    const total = resultKeys.reduce((sum, key) => sum + model.results[key].length, 0);
+    const upstream = aiText(model.upstream_model);
+    const provider = aiText(model.provider);
+    const sections = resultKeys.map(key => {
+      const metric = aiMetricMeta(key);
+      const title = AI_CORE_TITLES[key] || metric.name || metric.label || key;
+      if (aiMetricDisabled(key)) {
+        return `<div class="ai-subhead">${escHtml(title)}</div>
+          <div class="ai-muted">Source disabled — evaluation details withheld until opt-in review.</div>`;
+      }
+      const results = Array.isArray(model.results[key]) ? model.results[key] : [];
+      return `<div class="ai-subhead">${escHtml(title)}</div>
+        <ol class="ai-eval-list">${results.map(result => aiResultCard(result, metric)).join('')}</ol>`;
+    }).join('');
+    const id = `ai-config-${index}`;
+    return `<details class="ai-config" id="${id}"${_aiOpenConfigs.has(id) ? ' open' : ''}
+      ontoggle="aiRememberConfigOpen(this.id, this.open)">
+      <summary>${escHtml(aiModelName(model))}
+        <span class="ai-muted">— ${total} evaluation${total === 1 ? '' : 's'} across ${resultKeys.length} benchmark${resultKeys.length === 1 ? '' : 's'}</span>
+      </summary>
+      <div class="ai-config-body">
+        <div class="ai-muted">${upstream ? 'upstream: ' + escHtml(upstream) : 'upstream model not reported'}${
+          provider ? ' · provider: ' + escHtml(provider) : ''
+        }</div>
+        ${sections}
+      </div>
+    </details>`;
+  }).join('');
 }
 
+function aiLoadedStatusText() {
+  const at = new Date(_aiLoadedAt);
+  const absolute = at.toLocaleTimeString(undefined, {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  return `inventory loaded ${absolute} (${securityRelative(_aiLoadedAt)})`;
+}
+function aiRenderStatus() {
+  const status = document.getElementById('ai-status');
+  const busy = _aiRefreshActive;
+  status.classList.toggle('busy', busy);
+  if (_aiRefreshActive) {
+    status.textContent = 'refreshing benchmark sources — polling…';
+    return;
+  }
+  if (_aiData && _aiData.refreshing && _aiRefreshUnknown) {
+    status.textContent = 'refresh status unknown — showing the last loaded inventory';
+    return;
+  }
+  if (_aiData && _aiData.refreshing) {
+    // No poll is running (for example just after a restart); never imply one.
+    status.textContent = 'benchmark refresh in progress';
+    return;
+  }
+  if (_aiLoadedAt) {
+    status.textContent = aiLoadedStatusText();
+    return;
+  }
+  if (_aiLoadFailed) {
+    status.textContent = 'ai services unavailable';
+    return;
+  }
+  status.textContent = 'loading…';
+}
+function aiRenderAll() {
+  aiRenderFilters();
+  aiRenderColumnPicker();
+  aiRenderTable();
+  aiRenderWarnings();
+  aiRenderSources();
+  aiRenderAttribution();
+  aiRenderConfigs();
+  aiRenderStatus();
+}
+
+function aiAcceptServices(data) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.models)) return false;
+  const models = data.models.filter(model => model && typeof model === 'object');
+  const metricMap = aiBuildMetrics(data.metrics);
+  _aiMetricMap = metricMap;
+  _aiColumns = AI_OPTIONAL_ORDER.filter(key => _aiColumns.includes(key) && metricMap[key]);
+  aiResetHiddenSort();
+  _aiData = {
+    models,
+    metrics: Array.isArray(data.metrics) ? data.metrics : [],
+    sources: aiObject(data.sources),
+    refreshing: data.refreshing === true,
+    error: aiText(data.error),
+  };
+  _aiLoadedAt = Date.now();
+  _aiLoadFailed = false;
+  if (!_aiData.refreshing) _aiRefreshUnknown = false;
+  const errorBox = document.getElementById('ai-error');
+  if (_aiData.error) {
+    errorBox.textContent = `inventory unavailable: ${_aiData.error}`;
+    errorBox.style.display = 'block';
+  } else {
+    errorBox.style.display = 'none';
+    errorBox.textContent = '';
+  }
+  document.getElementById('ai-empty').style.display = 'none';
+  document.getElementById('ai-table-wrap').style.display = 'block';
+  aiRenderAll();
+  if (_aiData.refreshing && !_aiRefreshActive) aiBeginRefreshPoll();
+  return true;
+}
+
+function aiErrorText(error) {
+  if (!error) return 'unknown error';
+  if (error.name === 'AbortError') return 'request timed out';
+  return aiText(error.message || error);
+}
+function aiShowLoadError(error) {
+  const hasData = !!_aiData;
+  if (!hasData) _aiLoadFailed = true;
+  const box = document.getElementById('ai-error');
+  box.textContent = hasData
+    ? `refresh failed — showing the last loaded inventory: ${aiErrorText(error)}`
+    : `AI services unavailable: ${aiErrorText(error)}`;
+  box.style.display = 'block';
+  if (!hasData) {
+    const empty = document.getElementById('ai-empty');
+    empty.textContent = 'ai services unavailable';
+    empty.style.display = 'block';
+    document.getElementById('ai-table-wrap').style.display = 'none';
+    document.getElementById('ai-sources').innerHTML =
+      '<div class="ai-note">Source status is unavailable until the inventory loads.</div>';
+    document.getElementById('ai-configs').innerHTML =
+      '<div class="ai-note">Evaluation configurations are unavailable until the inventory loads.</div>';
+  }
+  aiRenderStatus();
+}
+
+function aiFetchServices() {
+  if (!aiServicesEnabled()) return Promise.resolve(null);
+  if (_aiInFlight) return _aiInFlight;
+  const request = (async () => {
+    try {
+      const data = await fetchJSON('/api/ai-services');
+      if (!data || typeof data !== 'object') throw new Error('invalid response');
+      // An inventory error can coexist with valid benchmark/source payloads;
+      // accept the shape and render the inventory problem without hiding them.
+      if (!Array.isArray(data.models)) throw new Error('invalid model list response');
+      aiAcceptServices(data);
+      return data;
+    } catch(error) {
+      aiShowLoadError(error);
+      return null;
+    }
+  })();
+  _aiInFlight = request;
+  request.finally(() => {
+    if (_aiInFlight === request) _aiInFlight = null;
+  });
+  return request;
+}
+
+function aiServicesOnEnter() {
+  if (!aiServicesEnabled()) return;
+  if (_activeTab !== 'ai-services') return;
+  if (document.hidden) return;
+  aiFetchServices();
+}
+function aiHandleVisibility() {
+  if (document.hidden) return;
+  if (!aiServicesEnabled()) return;
+  if (_activeTab === 'ai-services') aiRenderStatus(); // age the loaded-at label
+  if (_activeTab !== 'ai-services') return;
+  // visibilitychange + pageshow often fire together; coalesce them.
+  const now = Date.now();
+  if (now - _aiLastEnterAt < 1000) return;
+  _aiLastEnterAt = now;
+  aiServicesOnEnter();
+}
+function aiHookEnterEvents() {
+  if (_aiEnterHooked) return;
+  _aiEnterHooked = true;
+  if (document && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', aiHandleVisibility);
+  }
+  if (window && typeof window.addEventListener === 'function') {
+    window.addEventListener('pageshow', aiHandleVisibility);
+  }
+}
+
+function aiSetRefreshBusy(busy) {
+  const button = document.getElementById('btn-ai-refresh');
+  button.disabled = busy;
+  button.textContent = busy ? '… REFRESHING' : '⟳ REFRESH SCORES';
+}
+function aiRefreshOutcome() {
+  // A completed refresh is only a success when every enabled source reports no
+  // error. Disabled sources are explained by warnings, never treated as errors.
+  const sources = aiSourcesObject();
+  const enabled = Object.keys(sources)
+    .map(key => aiObject(sources[key]))
+    .filter(source => source.disabled !== true);
+  if (!enabled.length) return 'unknown'; // nothing to verify — do not claim success
+  const failed = enabled.filter(source => aiMessage(source.error) !== '');
+  if (!failed.length) return 'ok';
+  return failed.length === enabled.length ? 'failed' : 'partial';
+}
+function aiFinishRefresh(outcome) {
+  _aiRefreshActive = false;
+  _aiRefreshTimer = null;
+  _aiRefreshPromise = null;
+  aiSetRefreshBusy(false);
+  if (outcome === 'ok') toast('benchmark scores updated');
+  else if (outcome === 'partial') toast('refresh completed with source errors — last-good scores retained', true);
+  else if (outcome === 'failed') toast('benchmark refresh failed — last-good scores retained', true);
+  else if (outcome === 'unknown') toast('refresh completed — source status not reported', true);
+  else if (outcome === 'timeout') toast('refresh still running — previous data retained', true);
+  aiRenderStatus();
+}
+function aiPollRefresh(attempt) {
+  if (!aiServicesEnabled()) { aiFinishRefresh('silent'); return; }
+  if (attempt >= AI_REFRESH_MAX_POLLS) {
+    const box = document.getElementById('ai-error');
+    if (_aiData && box) {
+      box.textContent = 'refresh status unknown — showing the last loaded inventory';
+      box.style.display = 'block';
+      _aiRefreshUnknown = true;
+    }
+    aiFinishRefresh('timeout');
+    return;
+  }
+  _aiRefreshTimer = setTimeout(async () => {
+    _aiRefreshTimer = null;
+    const data = await aiFetchServices();
+    if (!data) { aiPollRefresh(attempt + 1); return; } // transient: keep the last data and retry
+    if (data.refreshing === false) { aiFinishRefresh(aiRefreshOutcome()); return; }
+    aiPollRefresh(attempt + 1);
+  }, AI_REFRESH_POLL_MS);
+}
+function aiBeginRefreshPoll() {
+  if (_aiRefreshActive) return _aiRefreshPromise || Promise.resolve(null);
+  _aiRefreshActive = true;
+  _aiRefreshUnknown = false;
+  _aiRefreshPromise = Promise.resolve(null);
+  aiSetRefreshBusy(true);
+  aiRenderStatus();
+  aiPollRefresh(0);
+  return _aiRefreshPromise;
+}
+function aiRefreshBenchmarks() {
+  if (!aiServicesEnabled()) return Promise.resolve(null);
+  if (_aiRefreshActive) return _aiRefreshPromise || Promise.resolve(null);
+  _aiRefreshActive = true;
+  _aiRefreshUnknown = false;
+  _aiRefreshPromise = null;
+  aiSetRefreshBusy(true);
+  aiRenderStatus();
+  const request = (async () => {
+    try {
+      const result = await apiPost('/api/benchmarks/fetch', 25000);
+      if (!result || result.ok !== true) {
+        toast('fetch failed: ' + aiText(result && (result.detail || result.error) || 'request failed'), true);
+        aiFinishRefresh('silent');
+        return null;
+      }
+      if (result.refreshing === false) {
+        const data = await aiFetchServices();
+        aiFinishRefresh(data ? aiRefreshOutcome() : 'failed');
+        return data;
+      }
+      aiPollRefresh(0);
+      return result;
+    } catch(error) {
+      toast('benchmark refresh failed: ' + aiErrorText(error), true);
+      aiFinishRefresh('silent');
+      return null;
+    }
+  })();
+  _aiRefreshPromise = request;
+  return request;
+}
+
+function aiServicesSyncFeature() {
+  const button = tabButtonFor('ai-services');
+  if (!aiServicesEnabled()) {
+    if (button) button.style.display = 'none';
+    const active = document.querySelector('.tab-btn.active');
+    if (active && normalizeTabName(active.dataset.tab) === 'ai-services') {
+      switchTab('server', tabButtonFor('server'));
+    }
+    return;
+  }
+  if (button) button.style.display = 'inline-block';
+  aiHookEnterEvents();
+  const consoleLink = document.getElementById('ai-mistral-console');
+  if (consoleLink) consoleLink.style.display = _features.mistral ? 'inline-flex' : 'none';
+  const ocgLabel = document.getElementById('ocg-label');
+  const ocgList = document.getElementById('ocg-list');
+  const ocglLabel = document.getElementById('ocgl-label');
+  const ocglWrap = document.getElementById('ocgl-wrap');
+  if (_features.opencode_go) {
+    ocgLabel.style.display = 'flex';
+    ocgList.style.display = 'flex';
+    ocglLabel.style.display = 'flex';
+    ocglWrap.style.display = 'block';
+    if (!_aiUsageStarted) {
+      _aiUsageStarted = true;
+      fetchOpenCodeGo();
+      setInterval(fetchOpenCodeGo, 60000);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) fetchOpenCodeGo(); });
+      fetchOpenCodeGoLimits();
+      setInterval(fetchOpenCodeGoLimits, 3600000);
+    }
+  } else {
+    // The usage card needs the Go key; never show empty/zero allowances.
+    ocgLabel.style.display = 'none';
+    ocgList.style.display = 'none';
+    ocglLabel.style.display = 'none';
+    ocglWrap.style.display = 'none';
+  }
+  if (_activeTab === 'ai-services') {
+    revealActiveTab(button);
+    aiServicesOnEnter();
+  }
+}
+
+// ── fetch opencode go limits (allowances only; benchmark scores live in the
+//    unified inventory table above and never duplicate here) ─────────────────
 function toggleSortState(state, key, firstDirection=1) {
   if (state.key === key) state.dir *= -1;
   else { state.key = key; state.dir = firstDirection; }
@@ -3296,46 +4345,6 @@ function sortByValue(rows, direction, valueFor) {
   });
 }
 
-function relTime(ts) {
-  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
-  if (s < 60) return 'just now';
-  if (s < 3600) return Math.floor(s / 60) + 'm ago';
-  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-  return Math.floor(s / 86400) + 'd ago';
-}
-
-let _benchFetchPromise = null;
-
-function fetchBenchmarks() {
-  if (!_features.opencode_go && !_features.mistral) return Promise.resolve();
-  if (_benchFetchPromise) return _benchFetchPromise;
-  const buttons = ['btn-ocgl-fetch', 'btn-mistral-fetch']
-    .map(id => document.getElementById(id)).filter(Boolean);
-  buttons.forEach(btn => { btn.disabled = true; btn.textContent = '… FETCHING'; });
-
-  const request = (async () => {
-    try {
-      const d = await apiPost('/api/benchmarks/fetch', 65000).catch(() => ({}));
-      if (d.ok) {
-        toast(`scores updated · ${d.models} models`);
-        const refreshes = [];
-        if (_features.opencode_go) refreshes.push(fetchOpenCodeGoLimits(true));
-        if (_features.mistral) refreshes.push(fetchMistralModels(true));
-        await Promise.all(refreshes);
-      } else {
-        toast('fetch failed: ' + (d.detail || d.error || 'request timed out'), true);
-      }
-    } catch(e) {
-      toast('network error', true);
-    } finally {
-      buttons.forEach(btn => { btn.disabled = false; btn.textContent = '⟳ FETCH SCORES'; });
-      _benchFetchPromise = null;
-    }
-  })();
-  _benchFetchPromise = request;
-  return request;
-}
-
 function sortLimits(key) {
   toggleSortState(_ocglSort, key);
   renderLimits();
@@ -3344,31 +4353,26 @@ function sortLimits(key) {
 function renderLimits() {
   if (!_ocglData) return;
   const { key, dir } = _ocglSort;
-  const metric = metricDef(_ocglMetric);
-  const benchVal = m => (m.bench && Number.isFinite(m.bench[_ocglMetric])) ? m.bench[_ocglMetric] : null;
+  const models = Array.isArray(_ocglData.models) ? _ocglData.models : [];
   const value = m => {
     if (key === 'name') return String(m.name || '').toLowerCase();
-    if (key === 'bench') return benchVal(m);
     const v = m[key];
     if (typeof v === 'number') return v;
     if (v === 'unlimited') return Infinity;
     return null;
   };
-  // Missing limits/scores stay last in both directions; unlimited sorts as ∞.
-  const models = sortByValue(_ocglData.models, dir, value);
+  // Missing limits stay last in both directions; unlimited sorts as ∞.
+  const sorted = sortByValue(models, dir, value);
   const num = v => typeof v === 'number' ? v.toLocaleString()
                  : v === 'unlimited' ? 'unlimited' : '—';
   const money = v => typeof v === 'number' ? '$' + v
                     : v === 'unlimited' ? 'unlimited' : '—';
-  const bench = m => formatBenchScore(benchVal(m), metric);
-  document.getElementById('ocgl-bench-th').textContent = String(metric.label || 'TB4');
-  const rows = models.map(m => `<tr>
+  const rows = sorted.map(m => `<tr>
       <td>${escHtml(m.name)}</td>
       <td class="ocg-num">${num(m.req_5h)}</td>
       <td class="ocg-num">${money(m.monthly)}</td>
-      <td class="ocg-num">${bench(m)}</td>
     </tr>`);
-  if (_ocglData.stale) rows.push('<tr><td colspan="4" class="ocg-stale">stale — docs source unreachable</td></tr>');
+  if (_ocglData.stale) rows.push('<tr><td colspan="3" class="ocg-stale">stale — docs source unreachable</td></tr>');
   document.getElementById('ocgl-tbody').innerHTML = rows.join('');
   document.querySelectorAll('#ocgl-table th').forEach(th => {
     th.classList.toggle('sorted-asc',  th.dataset.key === key && dir === 1);
@@ -3387,124 +4391,14 @@ async function fetchOpenCodeGoLimits(force=false) {
       err.style.display = 'block';
       if (!_ocglData) {
         document.getElementById('ocgl-tbody').innerHTML =
-          '<tr><td colspan="4" class="empty">unavailable</td></tr>';
+          '<tr><td colspan="3" class="empty">unavailable</td></tr>';
       }
       return;
     }
     err.style.display = 'none';
     _ocglData = d;
-    // metric dropdown + "scores fetched …" line
-    _ocglMetrics = d.bench_metrics || [];
-    if (_ocglMetrics.length) {
-      if (!_ocglMetrics.some(m => m.key === _ocglMetric)) _ocglMetric = _ocglMetrics[0].key;
-      buildMetricMenu();
-      updateMetricButton();
-    }
-    document.getElementById('ocgl-updated').textContent =
-      d.bench_fetched_at ? `scores ${relTime(d.bench_fetched_at)}` : 'no scores yet — press fetch';
     renderLimits();
   } catch(e) { /* ignore */ }
-}
-
-// ── Mistral model list and selected Artificial Analysis score ─────────────────
-function showMistralError(message, configError=false) {
-  const error = document.getElementById('mistral-error');
-  const hasRows = !!(_mistralData && Array.isArray(_mistralData.models) && _mistralData.models.length);
-  error.textContent = (configError ? 'configuration unavailable: ' : 'unable to load models: ') + message +
-    (hasRows ? ' · showing stale data' : '');
-  error.style.display = 'block';
-  if (hasRows) {
-    renderMistralModels(true);
-  } else {
-    document.getElementById('mistral-tbody').innerHTML =
-      '<tr><td colspan="2" class="empty">unavailable</td></tr>';
-  }
-}
-
-async function fetchMistralModels(force=false) {
-  if (!_features.mistral) return;
-  if (_mistralInFlight && !force) return _mistralInFlight;
-  const requestId = ++_mistralRequestId;
-  const request = (async () => {
-    try {
-      const r = await apiFetch('/api/mistral-models');
-      const d = await r.json().catch(() => ({}));
-      if (requestId !== _mistralRequestId) return;
-      if (d.error || !r.ok) {
-        showMistralError(d.error || `HTTP ${r.status}`, true);
-        return;
-      }
-      if (!Array.isArray(d.models)) {
-        showMistralError('invalid model list response', true);
-        return;
-      }
-
-      _mistralData = d;
-      _mistralMetrics = Array.isArray(d.bench_metrics)
-        ? d.bench_metrics.filter(m => m && typeof m.key === 'string') : [];
-      if (_mistralMetrics.length) {
-        if (!_mistralMetrics.some(m => m.key === _mistralMetric)) _mistralMetric = _mistralMetrics[0].key;
-      } else {
-        _mistralMetric = 'aa';
-      }
-      try { localStorage.setItem('mistralMetric', _mistralMetric); } catch(e) {}
-      updateScoreMetricButton('mistral-metric-btn', mistralMetricDef());
-      renderMetricMenu('mistral-metric-menu', _mistralMetrics, _mistralMetric, setMistralMetric);
-      document.getElementById('mistral-error').style.display = 'none';
-      renderMistralModels();
-    } catch(e) {
-      if (requestId === _mistralRequestId) showMistralError('network error');
-    }
-  })();
-  _mistralInFlight = request;
-  await request;
-  if (_mistralInFlight === request) _mistralInFlight = null;
-}
-
-function sortMistralModels(key) {
-  toggleSortState(_mistralSort, key);
-  try { localStorage.setItem('mistralSort', JSON.stringify(_mistralSort)); } catch(e) {}
-  renderMistralModels();
-}
-
-function renderMistralModels(stale=false) {
-  if (!_mistralData) return;
-  const models = Array.isArray(_mistralData.models) ? _mistralData.models : [];
-  const tbody = document.getElementById('mistral-tbody');
-  const metric = mistralMetricDef();
-  const score = model => model.bench && Number.isFinite(model.bench[_mistralMetric])
-    ? model.bench[_mistralMetric] : null;
-  document.getElementById('mistral-bench-th').textContent = String(metric.label || 'AA');
-
-  if (!models.length) {
-    tbody.innerHTML = '<tr><td colspan="2" class="empty">no Mistral models configured</td></tr>';
-  } else {
-    const value = model => _mistralSort.key === 'name'
-      ? String(model.name || '').toLowerCase() : score(model);
-    const sorted = sortByValue(models, _mistralSort.dir, value);
-    tbody.innerHTML = sorted.map(model => {
-      const alias = escHtml(model.name == null ? '' : model.name);
-      const upstream = model.upstream_model
-        ? `<small class="mistral-upstream">${escHtml(model.upstream_model)}</small>` : '';
-      return `<tr><td>${alias}${upstream}</td><td class="ocg-num">${formatBenchScore(score(model), metric)}</td></tr>`;
-    }).join('');
-  }
-
-  const hasScores = models.some(model => score(model) !== null);
-  const updated = document.getElementById('mistral-updated');
-  if (!_mistralData.bench_fetched_at) {
-    updated.textContent = 'no scores yet — press fetch';
-  } else if (!hasScores) {
-    updated.textContent = `no AA scores for ${metric.label || 'selected metric'} · scores ${relTime(_mistralData.bench_fetched_at)}`;
-  } else {
-    updated.textContent = `scores ${relTime(_mistralData.bench_fetched_at)}`;
-  }
-  if (stale) updated.textContent += ' · stale';
-
-  document.querySelectorAll('#mistral-table th').forEach(th => {
-    th.classList.toggle('sorted-asc', th.dataset.key === _mistralSort.key && _mistralSort.dir === 1);
-    th.classList.toggle('sorted-desc', th.dataset.key === _mistralSort.key && _mistralSort.dir === -1);
-  });
 }
 
 // ── fetch shelly plug ─────────────────────────────────────────────────────────

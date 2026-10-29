@@ -10,7 +10,10 @@ services:
     environment:
       - TZ=Europe/Vienna
       - HOMELAB_ENERGY_FILE=/data/energy.json
-      - HOMELAB_BENCH_FILE=/data/benchmarks.json   # on-demand model scores (see OPENCODE tab)
+      - HOMELAB_BENCH_FILE=/data/benchmarks.json   # versioned AI Services benchmark snapshots (see SETUP.md)
+      # optional benchmark sources; off unless explicitly enabled in the repo .env
+      - HOMELAB_LIVEBENCH_ENABLED=${HOMELAB_LIVEBENCH_ENABLED:-false}
+      - HOMELAB_DEEPSWE_ENABLED=${HOMELAB_DEEPSWE_ENABLED:-false}
       - HOST_NAME=${SYS_HOST_NAME}   # show real host identity (container runs on a bridge net)
       - HOST_IP=${SYS_HOST_IP}
       # Exact self-signed Portainer server certificate (not a private key).

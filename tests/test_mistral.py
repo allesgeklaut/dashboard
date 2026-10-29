@@ -1,3 +1,4 @@
+"""Legacy Mistral/AI-services compatibility tests (the AA score sources are gone)."""
 import json
 import sys
 import tempfile
@@ -7,25 +8,60 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "app"))
+import benchmarks  # noqa: E402
 import homelab_core as core  # noqa: E402
 
+NOW = 1_800_000_000.0
 
-class MistralModelsTests(unittest.TestCase):
+
+def entry(metric, model, value, *, date="2026-09-01", **kwargs):
+    spec = benchmarks.METRIC_BY_KEY[metric]
+    date_kind = kwargs.pop("date_kind", None)
+    if date is not None and date_kind is None:
+        if spec.source == "livebench":
+            date_kind = benchmarks.DATE_KIND_BENCHMARK_RELEASE
+        elif spec.source in ("harbor", "epoch"):
+            date_kind = benchmarks.DATE_KIND_MODEL_RELEASE
+    return benchmarks._make_entry(
+        metric, model, value, evaluator=kwargs.pop("evaluator", "Fixture"),
+        version=kwargs.pop("version", benchmarks.SOURCES[spec.source].version),
+        date=date, date_kind=date_kind,
+        agent=kwargs.pop("agent", None), effort=kwargs.pop("effort", None),
+        configuration=kwargs.pop("configuration", None),
+        ci=kwargs.pop("ci", None), metadata=kwargs.pop("metadata", None),
+    )
+
+
+def state_with(entries_by_source):
+    state = {}
+    for name in benchmarks.SOURCE_NAMES:
+        items = entries_by_source.get(name)
+        state[name] = {
+            "data": {"entries": items, "meta": {}} if items is not None else None,
+            "last_checked": NOW if items is not None else None,
+            "last_success": NOW if items is not None else None,
+            "error": None,
+            "version": benchmarks.SOURCES[name].version,
+            "source_updated": "2026-09-01" if items is not None else None,
+            "validators": {},
+            "stale": items is None,
+        }
+    return state
+
+
+class MistralCompatibilityTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.config_path = Path(self.temp_dir.name) / "litellm.yaml"
         self.config_setting = patch.object(core, "LITELLM_CONFIG_FILE", str(self.config_path))
         self.config_setting.start()
-        self.cache = patch.object(core, "get_opencode_go_benchmarks", return_value=None)
-        self.cache.start()
         self.opencode_key = patch.object(core, "_read_opencode_go_key", return_value=None)
         self.opencode_key.start()
 
     def tearDown(self):
         self.opencode_key.stop()
-        self.cache.stop()
         self.config_setting.stop()
         self.temp_dir.cleanup()
 
@@ -35,9 +71,11 @@ class MistralModelsTests(unittest.TestCase):
     def test_features_gate_on_nonempty_path_even_when_unreadable(self):
         with patch.object(core, "LITELLM_CONFIG_FILE", ""):
             self.assertFalse(core.get_features()["mistral"])
+            self.assertFalse(core.get_features()["ai_services"])
             self.assertEqual(core.get_mistral_models(), {"error": "not configured"})
 
         self.assertTrue(core.get_features()["mistral"])
+        self.assertTrue(core.get_features()["ai_services"])
         self.assertEqual(
             core.get_mistral_models(), {"error": "configuration unavailable"}
         )
@@ -51,100 +89,57 @@ model_list:
       api_key: config-secret
   - model_name: GLM
     litellm_params:
-      model: mistral/glm-4
+      model: mistral/glm-5.3
       api_key: config-secret
   - model_name: GLM
     litellm_params:
-      model: mistral/another-model
+      model: mistral/glm-5.3
   - model_name: audio
     litellm_params:
-      model: openai/voxtral
+      model: mistral/voxtral-mini-latest
 """)
-        with patch.object(core, "get_opencode_go_benchmarks", return_value={
-            "fetched_at": 123.0,
-            "models": {"glm4": {"intelligence": 42, "api_key": "cache-secret"}},
-        }):
-            with patch.object(core.requests, "get", side_effect=AssertionError("network read")):
-                result = core.get_mistral_models()
+        state = state_with({"harbor": [entry("tb4", "GLM-5.3", 41.82)]})
+        with patch.object(benchmarks, "read_state", return_value=state), \
+                patch.object(core.requests, "get", side_effect=AssertionError("network read")):
+            result = core.get_mistral_models()
 
         self.assertEqual(
             result["models"],
-            [{"name": "GLM", "upstream_model": "mistral/glm-4",
-              "bench": {"intelligence": 42}}],
+            [
+                {"name": "GLM", "upstream_model": "mistral/glm-5.3",
+                 "bench": {"tb4": 41.82}},
+                {"name": "audio", "upstream_model": "mistral/voxtral-mini-latest",
+                 "bench": {}},
+            ],
         )
-        self.assertEqual(result["bench_fetched_at"], 123.0)
+        self.assertEqual(result["bench_fetched_at"], NOW)
         self.assertIn("bench_metrics", result)
         self.assertEqual(set(result), {"models", "bench_metrics", "bench_fetched_at"})
         self.assertEqual(set(result["models"][0]), {"name", "upstream_model", "bench"})
         self.assertNotIn("config-secret", json.dumps(result))
-        self.assertNotIn("cache-secret", json.dumps(result))
 
-    def test_verified_aliases_match_upstream_identity_not_public_alias(self):
-        self.write_config("""
-model_list:
-  - model_name: mistral-small-4
-    litellm_params:
-      model: mistral/zai-glm-5-3
-  - model_name: mistral-large-4
-    litellm_params:
-      model: mistral/zai-glm-5-3-flash
-  - model_name: glm53
-    litellm_params:
-      model: mistral/mistral-large-4
-  - model_name: glm53flash
-    litellm_params:
-      model: mistral/mistral-large-4-0
-  - model_name: zai-glm-5-3
-    litellm_params:
-      model: mistral/mistral-small-2603
-""")
-        with patch.object(core, "get_opencode_go_benchmarks", return_value={
-            "fetched_at": 456.0,
-            "models": {
-                "glm53": {"intelligence": 53},
-                "glm53flash": {"intelligence": 54},
-                "mistrallarge4preview": {"intelligence": 44},
-                "mistralsmall4": {"intelligence": 40},
-            },
-        }):
-            result = core.get_mistral_models()
-
-        self.assertEqual(
-            {row["name"]: row["bench"]["intelligence"] for row in result["models"]},
-            {
-                "mistral-small-4": 53,
-                "mistral-large-4": 54,
-                "glm53": 44,
-                "glm53flash": 44,
-                "zai-glm-5-3": 40,
-            },
-        )
-
-    def test_known_small_latest_matches_but_unknown_and_large_latest_stay_unscored(self):
+    def test_exact_upstream_identity_matches_and_unknown_aliases_stay_unscored(self):
         self.write_config("""
 model_list:
   - model_name: glm53
     litellm_params:
-      model: mistral/unverified-model
-  - model_name: mistral-small-4
+      model: mistral/glm-5.3
+  - model_name: rolling
     litellm_params:
       model: mistral/mistral-small-latest
-  - model_name: mistral-large-4
+  - model_name: unrelated
     litellm_params:
-      model: mistral/mistral-large-latest
+      model: mistral/unverified-model
 """)
-        with patch.object(core, "get_opencode_go_benchmarks", return_value={
-            "fetched_at": 456.0,
-            "models": {
-                "glm53": {"intelligence": 53},
-                "mistralsmall4": {"intelligence": 40},
-                "mistrallarge4preview": {"intelligence": 44},
-            },
-        }):
+        state = state_with({
+            "harbor": [entry("tb4", "GLM-5.3", 41.82)],
+            "epoch": [entry("eci", "GLM-5.3", 155.99)],
+        })
+        with patch.object(benchmarks, "read_state", return_value=state):
             result = core.get_mistral_models()
         self.assertEqual(
-            [row["bench"] for row in result["models"]],
-            [{}, {"intelligence": 40}, {}],
+            [model["bench"] for model in result["models"]],
+            [{"tb4": 41.82, "eci": 155.99}, {}, {}],
         )
 
     def test_non_chat_audio_and_embedding_routes_never_get_scores(self):
@@ -157,77 +152,26 @@ model_list:
     litellm_params:
       model: mistral/mistral-embed
 """)
-        with patch.object(core, "get_opencode_go_benchmarks", return_value={
-            "fetched_at": 456.0,
-            "models": {
-                "voxtralminilatest": {"intelligence": 50},
-                "mistralembed": {"intelligence": 60},
-            },
-        }):
+        state = state_with({
+            "harbor": [entry("tb4", "voxtral-mini-latest", 50.0),
+                       entry("tb4", "mistral-embed", 60.0)],
+        })
+        with patch.object(benchmarks, "read_state", return_value=state):
             result = core.get_mistral_models()
         self.assertEqual([model["bench"] for model in result["models"]], [{}, {}])
 
-    def test_mistral_aliases_do_not_change_opencode_alias_matching(self):
+    def test_legacy_response_ignores_artificial_analysis_cache_shape(self):
         self.write_config("""
 model_list:
-  - model_name: beam-free
-    litellm_params:
-      model: mistral/beam-free
-  - model_name: mistral-small-latest
-    litellm_params:
-      model: mistral/mistral-small-latest
-""")
-        cache = {"fetched_at": 123.0, "models": {
-            "beam10": {"intelligence": 10},
-            "mistralsmall4": {"intelligence": 40},
-        }}
-        with patch.object(core, "get_opencode_go_benchmarks", return_value=cache):
-            mistral = core.get_mistral_models()
-            opencode = core._attach_benchmarks({"models": [
-                {"name": "beam-free"}, {"name": "mistral-small-latest"},
-            ]})
-        self.assertEqual(mistral["models"][0]["bench"], {})
-        self.assertEqual(opencode["models"][0]["bench"], {"intelligence": 10})
-        self.assertEqual(opencode["models"][1]["bench"], {})
-
-    def test_malformed_cache_records_and_nonfinite_scores_are_safe_in_api(self):
-        self.write_config("""
-model_list:
-  - model_name: GLM
+  - model_name: glm53
     litellm_params:
       model: mistral/glm-5.3
 """)
-        with patch.object(core, "prime_counters"), \
-                patch.object(core, "start_energy_tracker"), \
-                patch.object(core, "start_desktop_monitor"):
-            import main
-
-        with TestClient(main.app) as client:
-            with patch.object(core, "get_opencode_go_benchmarks", return_value={
-                "fetched_at": float("nan"),
-                "models": {"glm53": "bad score record"},
-            }):
-                bad_record = client.get("/api/mistral-models")
-            with patch.object(core, "get_opencode_go_benchmarks", return_value={
-                "fetched_at": 123.0,
-                "models": {"glm53": {
-                    "intelligence": 54.5,
-                    "briefcase": float("nan"),
-                    "gdpval": float("inf"),
-                    "automation": float("-inf"),
-                    "tb4": True,
-                }},
-            }):
-                nonfinite_scores = client.get("/api/mistral-models")
-
-        self.assertEqual(bad_record.status_code, 200)
-        self.assertEqual(bad_record.json()["models"][0]["bench"], {})
-        self.assertIsNone(bad_record.json()["bench_fetched_at"])
-        self.assertEqual(nonfinite_scores.status_code, 200)
-        self.assertEqual(
-            nonfinite_scores.json()["models"][0]["bench"],
-            {"intelligence": 54.5},
-        )
+        with patch.object(benchmarks, "read_state", return_value=state_with({})):
+            result = core.get_mistral_models()
+        self.assertEqual(result["models"][0]["bench"], {})
+        self.assertIsNone(result["bench_fetched_at"])
+        self.assertNotIn("intelligence", json.dumps(result))
 
     def test_configuration_errors_are_simple_and_do_not_include_path(self):
         self.assertEqual(
@@ -251,37 +195,40 @@ model_list:
         self.assertEqual(core.get_mistral_models()["models"], [])
 
     def test_shared_fetch_accepts_mistral_but_legacy_wrapper_stays_opencode_only(self):
-        with patch.object(core, "_fetch_aa_benchmarks", return_value={"ok": True}) as fetch:
-            self.assertEqual(core.fetch_benchmarks(), {"ok": True})
-            fetch.assert_called_once_with()
+        expected = {"ok": True, "refreshing": True, "started": True,
+                    "sources": ["harbor", "epoch"]}
+        with patch.object(benchmarks, "request_refresh", return_value=expected) as refresh:
+            self.assertEqual(core.fetch_benchmarks(), expected)
+            refresh.assert_called_once_with()
 
-        with patch.object(core, "_fetch_aa_benchmarks") as fetch:
+        with patch.object(benchmarks, "request_refresh") as refresh:
             self.assertEqual(
                 core.fetch_opencode_go_benchmarks(),
                 {"ok": False, "error": "not configured"},
             )
-            fetch.assert_not_called()
+            refresh.assert_not_called()
 
         with patch.object(core, "_read_opencode_go_key", return_value="test-key"):
-            with patch.object(core, "_fetch_aa_benchmarks", return_value={"ok": True}) as fetch:
-                self.assertEqual(core.fetch_opencode_go_benchmarks(), {"ok": True})
-                fetch.assert_called_once_with()
+            with patch.object(benchmarks, "request_refresh", return_value=expected) as refresh:
+                self.assertEqual(core.fetch_opencode_go_benchmarks(), expected)
+                refresh.assert_called_once_with()
 
     def test_shared_fetch_requires_either_supported_configuration(self):
         with patch.object(core, "LITELLM_CONFIG_FILE", ""):
-            with patch.object(core, "_fetch_aa_benchmarks") as fetch:
+            with patch.object(benchmarks, "request_refresh") as refresh:
                 self.assertEqual(
                     core.fetch_benchmarks(), {"ok": False, "error": "not configured"}
                 )
-                fetch.assert_not_called()
+                refresh.assert_not_called()
 
         with patch.object(core, "_read_opencode_go_key", return_value="test-key"):
             with patch.object(core, "LITELLM_CONFIG_FILE", ""):
-                with patch.object(core, "_fetch_aa_benchmarks", return_value={"ok": True}) as fetch:
-                    self.assertEqual(core.fetch_benchmarks(), {"ok": True})
-                    fetch.assert_called_once_with()
+                with patch.object(benchmarks, "request_refresh",
+                                  return_value={"ok": True, "refreshing": True}) as refresh:
+                    self.assertEqual(core.fetch_benchmarks()["ok"], True)
+                    refresh.assert_called_once_with()
 
-    def test_api_exposes_mistral_read_and_shared_fetch_routes(self):
+    def test_api_exposes_legacy_and_new_read_and_fetch_routes(self):
         with patch.object(core, "prime_counters"), \
                 patch.object(core, "start_energy_tracker"), \
                 patch.object(core, "start_desktop_monitor"):
@@ -293,6 +240,7 @@ model_list:
             if hasattr(route, "methods")
         }
         self.assertIn("GET", routes["/api/mistral-models"])
+        self.assertIn("GET", routes["/api/ai-services"])
         self.assertIn("POST", routes["/api/benchmarks/fetch"])
         self.assertIn("POST", routes["/api/opencode-go-benchmarks/fetch"])
 
@@ -300,6 +248,49 @@ model_list:
             self.assertEqual(main.api_mistral_models(), {"models": []})
         with patch.object(core, "fetch_benchmarks", return_value={"ok": True}):
             self.assertEqual(main.api_benchmarks_fetch(), {"ok": True})
+
+    def test_legacy_limits_response_has_no_benchmark_attachment(self):
+        with patch.object(core, "_read_opencode_go_key", return_value="dummy"), \
+                patch.object(core, "_opencode_limits_cache",
+                             {"data": {"models": [{"name": "fixture"}]},
+                              "ts": NOW, "fail_ts": 0}), \
+                patch.object(core.time, "time", return_value=NOW):
+            result = core.get_opencode_go_limits()
+        self.assertEqual(result, {"models": [{"name": "fixture"}]})
+        self.assertNotIn("bench", json.dumps(result))
+        self.assertNotIn("bench_metrics", result)
+
+
+class AiServicesRouteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with patch.object(core, "prime_counters"), \
+                patch.object(core, "start_energy_tracker"), \
+                patch.object(core, "start_desktop_monitor"):
+            import main
+        cls.client = TestClient(main.app)
+
+    def test_ai_services_route_matches_the_shared_contract(self):
+        payload = {
+            "models": [],
+            "metrics": [spec.as_dict() for spec in benchmarks.METRICS
+                        if spec.source != "deepswe"],
+            "sources": {},
+            "refreshing": False,
+        }
+        with patch.object(core, "get_ai_services", return_value=payload):
+            response = self.client.get("/api/ai-services")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), payload)
+
+    def test_obsolete_aa_fetch_response_shape_is_gone(self):
+        with patch.object(core, "fetch_benchmarks",
+                          return_value={"ok": True, "refreshing": True,
+                                        "started": True, "sources": []}):
+            headers = {"Origin": "https://testserver", "X-Homelab-Request": "1"}
+            response = self.client.post("/api/benchmarks/fetch", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["refreshing"], True)
 
 
 if __name__ == "__main__":

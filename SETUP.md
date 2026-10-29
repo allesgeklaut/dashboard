@@ -52,45 +52,74 @@ Then open **http://127.0.0.1:7681**. (`--app-dir app` mirrors the container,
 which copies `app/` to `/app` and imports `main`.)
 
 All optional features — Portainer, AdGuard, Shelly, Ollama, LLaMA, stream
-spool, the security report — are env-gated and stay **off** unless enabled via
-`.env` in the repo root. Keep `SHELLY_PLUG_URL` unset locally unless you
-deliberately want to test the Shelly integration: it makes the energy tracker
-poll that device, and Shelly polling is kept minimal on purpose.
+spool, the security report, and the AI Services inventory — are env-gated and
+stay **off** unless their environment variable enables them (a local `.env` or
+the Compose environment). Keep `SHELLY_PLUG_URL`
+unset locally unless you deliberately want to test the Shelly integration: it
+makes the energy tracker poll that device, and Shelly polling is kept minimal
+on purpose.
 
-The **OPENCODE** tab (visible when a key is configured) shows the Go plan's
-rolling 5h / weekly / monthly usage plus the per-model limits table (est.
-requests per 5h, monthly $, and a benchmark score column — pick the benchmark
-from the dropdown). Limits come from the opencode docs source (1 h cache).
-Benchmark scores (Intelligence, Terminal-Bench, HLE, GPQA …) come from
-Artificial Analysis' public leaderboard and are fetched **only when you press
-⟳ FETCH SCORES** — nothing polls their site automatically; the result is
-stored in `HOMELAB_BENCH_FILE` (`/data/benchmarks.json` in the container) so
-restarts keep it. Attribution is shown; the fetch is an unofficial scrape of
-a public page (see their ToS). The usage card polls only while the page is
-open (nothing runs in the background). Enable it by setting
-`OPENCODE_GO_API_KEY` — use the same token the CLI uses (read it on the
-server from `~/.local/share/opencode/auth.json`, see `.env.example`). Locally
-it works with no configuration: it falls back to the auth store on the dev
-machine (`OPENCODE_AUTH_FILE` overrides the path).
+### AI Services tab
 
-The optional **MISTRAL** tab lists configured LiteLLM `mistral/` routes and
-shows their Artificial Analysis benchmark table. It includes all matching
-routes (including GLM, audio, and embedding models); non-chat or unranked
-models show a dash for scores. It offers the same benchmark metric choices as
-OPENCODE, but each tab stores its metric and sort selections independently;
-the on-demand **FETCH SCORES** action and cache are shared. It works without
-OpenCode being configured. The **OPEN MISTRAL** link opens Mistral's
-subscription page in your browser (on iOS, you may need to sign in there).
-This is not a Mistral usage integration: it does not scrape Mistral, use
-cookies or a billing API, or require a Mistral or LiteLLM admin key. The
-dashboard labels rows with LiteLLM model names (not provider names) and
-exposes upstream model IDs, never the configured credentials.
+The former OPENCODE and MISTRAL tabs are now one **AI SERVICES** tab. It has a
+single LiteLLM-backed inventory table, with the OpenCode Go usage/limits card
+and a Mistral console link preserved above it:
+
+- **OpenCode Go usage and limits** — the Go plan's rolling 5h / weekly /
+  monthly usage plus the per-model limits table (est. requests per 5h and
+  monthly $). Limits still come from the opencode docs source (1 h cache). The
+  card stays hidden when no key is available. Use the same token the CLI uses
+  (read it on the server from `~/.local/share/opencode/auth.json`, see
+  `.env.example`); locally it can fall back to the dev machine's auth store
+  (`OPENCODE_AUTH_FILE` overrides the path). Usage polls only while the page
+  is open — nothing runs in the background.
+- **Mistral console** — an **OPEN MISTRAL** link to Mistral's admin console for
+  subscription/usage. It is only a link: the dashboard does not scrape Mistral,
+  use cookies or a billing API, or require a Mistral or LiteLLM admin key.
+- **Inventory table** — rows come from the valid routes in the LiteLLM
+  `model_list`, not only `mistral/` routes. Columns include the dashboard label
+  (`model_name`), available routes, Terminal-Bench 4, LiveBench Coding, Epoch
+  ECI, and optionally DeepSWE. LiveBench Coding keeps its default column but
+  shows a source-disabled warning until an operator enables it. Rows can be
+  filtered by route/provider; audio and embedding routes stay visible but are
+  excluded from coding comparisons. There is no invented combined score or
+  rank.
+
+The dashboard exports only `model_name`, `litellm_params.model`, and
+`model_info.mode` from the LiteLLM configuration. Other route parameters and
+all credentials stay server-side and are never logged, cached, or returned to
+the browser. A prefix on `litellm_params.model` (for example `openai/`)
+identifies the LiteLLM route provider or gateway, not the model's developer; do
+not read it as "made by OpenAI".
+
+Identity matching is explicit. A row gets a benchmark only after an exact
+normalized identity match or a reviewed, source-specific mapping. There is no
+fuzzy prefix matching, version guessing, automatic `-latest` alias mapping, or
+copying a base model's score onto a modified/abliterated variant. An unmatched
+row shows a missing reason (not evaluated, unmatched identity, unsupported
+modality, or source unavailable). Missing coverage is not a fetch failure.
+
+When a source has several results or configurations for an identity, the
+summary column uses the latest published dated result, never the maximum.
+Every published date carries a `date_kind`: Harbor's `metadata.date` (Release
+Date) and Epoch's `date` are model releases (`model_release`); LiveBench's
+pinned release is a benchmark release (`benchmark_release`). DeepSWE's
+`generated_at` is source-level `source_updated`, not a per-result date, so its
+rows stay undated and have no summary. An actual evaluation or submission date,
+when the feed includes one, is labeled `evaluation`; otherwise the evaluation
+date is shown as unknown. Ties are broken by reasoning-effort priority, then
+agent/configuration lexical order — never by score. An undated or ambiguous
+configuration has no single summary; its results stay in the tab's
+**evaluations & configurations** detail with agent, harness, reasoning effort,
+evaluator, version, confidence interval, each result's own value, and its dated
+provenance. The **source status & provenance** section reports each feed's
+enabled/disabled/stale state and links to the publisher.
 
 For local development, set `LITELLM_CONFIG_FILE` to the existing LiteLLM YAML,
 for example `../litellm/config.yaml` (relative to the server process working
-directory) or an absolute path. Leave it unset to disable the tab locally.
-The main Docker Compose file enables the tab and mounts the existing config
-file read-only at `/run/litellm/config.yaml`:
+directory) or an absolute path. Leave it unset to omit the inventory locally.
+The main Docker Compose file enables the inventory and mounts the existing
+config file read-only at `/run/litellm/config.yaml`:
 
 ```bash
 docker compose up -d --build
@@ -104,9 +133,141 @@ not create a missing file or directory and does not mount the surrounding
 secrets directory. The local-development `LITELLM_CONFIG_FILE` setting is
 replaced by the Compose container path. No new `/opt/secrets` environment
 fields or extra Compose file are needed. This deployment requires the config
-file even if you do not open the MISTRAL tab. To remove the integration from a
-different Docker deployment, remove both `LITELLM_CONFIG_FILE` and its bind
-mount from the main Compose file before recreating the service.
+file even if you do not open the AI Services tab. To remove the integration
+from a different Docker deployment, remove both `LITELLM_CONFIG_FILE` and its
+bind mount from the main Compose file before recreating the service.
+
+#### Benchmark sources
+
+Harbor Terminal-Bench 4 and Epoch ECI are enabled by default. LiveBench Coding
+is opt-in and DeepSWE is optional, so neither is fetched until explicitly
+enabled. The two opt-in flags are ordinary feature flags in the repository
+`.env` (used for Compose interpolation), not `/opt/secrets` credentials. All
+benchmark fetches use fixed, allowlisted HTTPS endpoints. The server verifies
+TLS, refuses redirects, rejects user-supplied URLs, enforces
+response byte and time limits, and parses strict JSON/CSV with schema and range
+checks. No downloaded code is executed. Benchmark requests never carry LiteLLM,
+OpenCode, or provider credentials, and publisher text is rendered escaped, not
+as raw HTML; provenance links are validated HTTPS URLs. A reputable publisher
+is not a trusted input: a compromised or wrong feed can publish bad scores even
+though parsing is safe, so treat results as provenance-bearing evidence.
+
+- **Harbor Terminal-Bench 4.0** (default) — official public JSON API:
+  `POST https://api.harborframework.com/functions/v1/leaderboard-read` with
+  package `terminal-bench/terminal-bench` and leaderboard `4-0-0`. All pages
+  are fetched and validated before a snapshot replaces the last good one.
+  Accuracy and its 95% CI are 0–100 units. Rows mix native agents (for example
+  Claude Code, Codex, and mini-SWE-agent), reasoning effort, the publisher's
+  Release Date (and any explicit evaluation date), and trial counts, so the tab
+  keeps that provenance and does not claim a pure-model ranking. A model with
+  no current result is legitimate missing coverage, not a fetch failure. See the
+  [Harbor leaderboard docs](https://docs.harborframework.com/harbor-hub/leaderboards)
+  and [Terminal-Bench](https://www.tbench.ai/).
+- **LiveBench Coding** (optional, disabled by default) — no explicit terms or
+  discoverable license on the LiveBench site cover LiveBench2.0's published
+  scores, and its code license does not cover them. `HOMELAB_LIVEBENCH_ENABLED`
+  defaults to false (Compose forwards the variable), so nothing is fetched; the
+  table keeps its default Coding column as a source-disabled placeholder with a
+  warning, not a fetch failure. Enable it only after your own reuse review. The
+  source is pinned to release `20261025`, because the feed has no structured
+  "latest release" manifest and the tab never scrapes HTML/JS to discover one.
+  It reads
+  [table.csv](https://livebench.ai/data/20261025/table.csv) and
+  [categories.json](https://livebench.ai/data/20261025/categories.json) from
+  that release. Scores are 0–100. `categories.json` defines the version-specific
+  suite weights; Coding is the default column, other suites are selectable, and
+  the tab does not compute an equal-weight overall score. Coding is
+  deterministic; research and design use rubric/visual grading and can be
+  harder to compare. Recommended project policy: keep visible attribution to
+  **LiveBench 2.0, release2026-10-25** linked to <https://livebench.ai>; this
+  does not establish reuse permission. Do not copy tasks.
+- **Epoch Capabilities Index (ECI)** (default source) — reads
+  [eci_scores.csv](https://epoch.ai/data/eci_scores.csv). ECI is an abstract
+  composite index, not a percentage, and mixes independent evaluations with
+  vendor-reported results; show it with its own units and dates. Epoch AI's
+  data is [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); keep the
+  attribution and link to [epoch.ai/eci](https://epoch.ai/eci).
+- **DeepSWE** (optional, off by default) — enable with
+  `HOMELAB_DEEPSWE_ENABLED=true` (Compose forwards the variable; no new
+  service or volume). It reads Datacurve's v1.1
+  [leaderboard JSON](https://deepswe.datacurve.ai/artifacts/v1.1/leaderboard-live.json)
+  and shows each pass@1 result (0–1 in the feed) as a percentage in the
+  evaluations detail, not best-of-four. Because its rows are undated, there is
+  no single summary value. The artifact itself has no express license; the
+  project repository's Apache-2.0 license covers original contributions and
+  curation, but does not explicitly license the website leaderboard artifact.
+  Cite Datacurve 2026 (Wenqi Huang, Charley Lee, Leonard Tng, Serena Ge) and do
+  not copy tasks or training data. Epoch AI found grading defects in at least 23
+  of 113 v1.1 tasks, chiefly agent/hidden-test collisions; the column carries
+  that warning and links to the
+  [DeepSWE v1.1 review](https://epoch.ai/benchmarks/deepswe/review). No score
+  correction is invented. Datacurve's benchmark is not the Together or
+  Agentica coding agent of the same name; do not fill gaps from community
+  leaderboards.
+
+Harbor documents unauthenticated reads so you can display a public leaderboard
+on your website; this repository does not assert a broader redistribution
+license for the results. Epoch AI's data is CC BY 4.0 — attribution is shown and
+must be preserved. No explicit terms or discoverable license on the LiveBench
+site cover its published scores, and its code license does not cover them; its
+source stays disabled until an operator completes a reuse review. The DeepSWE artifact has
+no express license, and the repository's Apache-2.0 terms cover only original
+contributions/curation without explicitly licensing the website leaderboard
+artifact. These notes record current terms; they are not a verification of all
+reuse permissions or legal advice. Public availability alone
+is not display permission. Check each publisher's terms before republishing the
+data or exposing the dashboard beyond personal use, and do not copy benchmark
+tasks, test data, or training material.
+
+#### Cache and refresh
+
+Snapshots are persisted per source in a versioned cache file.
+`HOMELAB_BENCH_FILE` defaults to `~/.homelab-ctrl/benchmarks.json`; Compose sets
+`/data/benchmarks.json` on the existing `~/.homelab-ctrl:/data` volume, so the
+cache survives restarts without a new mount. The old Artificial Analysis cache
+is not read, reinterpreted, or displayed; the first run starts with empty
+per-source snapshots and uses only the sources above.
+
+Page loads read the snapshot file only and render it immediately, even when it
+is stale. A snapshot older than about 24 hours is marked stale; the server
+refreshes sources independently in the background. The **⟳ REFRESH SCORES**
+button is a manual, same-origin-guarded fallback and shares the in-flight guard,
+so concurrent page loads or button presses do not start duplicate fetches.
+
+A refresh is per source, with bounded retries and backoff (including rate-limit
+responses). One source failing, or returning invalid data, does not erase
+another source's snapshot or fail the whole refresh; the last good snapshot is
+retained and its error and age are shown. Disabled sources are not fetched or
+refreshed and never contribute cached rows: LiveBench shows its source-disabled
+warning and hides cached scores, DeepSWE shows a disabled state with no column,
+and any prior values are not treated as current. Empty, malformed,
+schema-drifted, or suspiciously short feeds are rejected before replacing a
+snapshot. Each source distinguishes when it was last checked, when it last
+succeeded, when the publisher updated it, and each result's published date plus
+`date_kind`; an evaluation date is labeled unknown when the feed does not
+provide one. A removed score stops being current; a row without an exact
+current match shows a missing reason or a separately dated historical record,
+never an undated or guessed score. Snapshots are written atomically.
+
+#### API
+
+- `GET /api/ai-services` returns the read-only AI Services payload: `models`
+  (inventory rows with `bench`, `results` carrying `date` and `date_kind`, and
+  `missing` reasons),
+  `metrics` metadata, per-source `sources` state, and a `refreshing` flag. It
+  also includes `error` when the local LiteLLM configuration is missing or
+  invalid. It reads local configuration and snapshot files only; a page load
+  never waits for an upstream feed. OpenCode usage and limits remain available
+  through their existing read endpoints and caches.
+- `POST /api/benchmarks/fetch` starts one asynchronous manual refresh and
+  returns `ok`, `refreshing`, `started`, and the enabled `sources`. The tab
+  polls `GET /api/ai-services` until `refreshing` is false and keeps the current
+  inventory visible meanwhile. It is an API mutation and keeps the same-origin
+  guard: the browser `Origin` must match the request `Host`, and the request
+  must carry `X-Homelab-Request: 1`. It accepts no source URLs.
+
+A refresh is best-effort per source: one unavailable feed does not fail the
+others, and cached data stays visible while it runs.
 
 ### Security watch report (SECURITY tab)
 
@@ -471,9 +632,10 @@ creates the spool dir, appends `DESKTOP_SPOOL_DIR` to `.env`, rebuilds):
 | `pid: host` | psutil sees real host CPU % and process list |
 | `/mnt/nas:/mnt/nas:ro` | NAS disk usage visibility |
 | `/sys/class/{drm,hwmon}:ro` | GPU and sensor readings |
-| `~/.homelab-ctrl:/data` | Writable energy and benchmark persistence |
+| `~/.homelab-ctrl:/data` | Writable energy and versioned AI Services benchmark snapshots |
 | Request spool directories | Writable fixed-action queues for host handlers |
 | Portainer certificate | Read-only exact server-certificate trust |
+| `../litellm/config.yaml:/run/litellm/config.yaml:ro` | Read-only AI Services inventory source; only safe route fields are exported |
 | `~/.local/state/security-watch:/run/security-watch:ro` | Read-only daily security report (`latest.json`) |
 
 The service uses bridge networking, not host networking, and has no Docker
@@ -501,5 +663,10 @@ docker compose up -d --build
 | Containers marked stale/unavailable | Check Portainer availability, token and pinned certificate; there is no CLI fallback |
 | NFS mount shows "not mounted" | Check the read-only bind and `NFS_MOUNTS` in the Docker application env file |
 | AdGuard section missing | Section auto-hides on error — check `ADGUARD_URL` / credentials |
+| AI Services inventory empty or missing | Check `LITELLM_CONFIG_FILE` locally or the read-only `/run/litellm/config.yaml` mount in Docker; only valid `model_list` routes are listed |
+| Benchmark columns show missing reasons | The source has no exact identity match, the model is audio/embedding, or the source is unavailable; missing coverage is not a fetch failure |
+| Benchmark data stale or a source unavailable | Last-good snapshots stay visible; use the manual refresh and check the source link. An old Artificial Analysis cache is intentionally ignored |
+| LiveBench Coding shows source-disabled | It is disabled by default pending a reuse review; enable `HOMELAB_LIVEBENCH_ENABLED=true` only after checking the terms. The table keeps the column as a warning placeholder |
+| DeepSWE column absent | It is optional and off unless `HOMELAB_DEEPSWE_ENABLED=true`; when enabled, read the linked Epoch AI grading-defect review |
 | SECURITY tab missing | Locally, `SECURITY_REPORT_DIR` is unset; in Docker, check the report directory, its uid-1000 ownership, and the read-only mount (see the SECURITY tab section) |
 | SECURITY report unavailable | Check `latest.json` exists, is valid JSON, and is under 8 MiB; "stale" reflects report age, not the watch's job status |
