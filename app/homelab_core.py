@@ -771,13 +771,19 @@ def _route_mode(explicit: str | None, upstream_model: str) -> str:
 
 
 def _read_litellm_inventory() -> tuple[list[dict] | None, str | None]:
-    """Read LiteLLM routes grouped by exact upstream model ID.
+    """Read LiteLLM routes grouped by exact upstream model ID and mode.
 
     Returns (models, error).  Each model is
     {"name", "upstream_model", "provider", "mode", "routes": [{"name", "provider"}]}.
-    ``name`` is the first configured public alias; every alias is retained in
-    ``routes``.  ``provider`` is the LiteLLM transport prefix (for example
-    openai/ may front any vendor, so it is not treated as the model developer).
+    ``name`` is the first configured public alias in that group; every alias
+    with the same upstream ID and mode is retained in ``routes``.  ``provider``
+    is the LiteLLM transport prefix (for example openai/ may front any vendor,
+    so it is not treated as the model developer).
+
+    Grouping by mode as well as upstream ID keeps a chat and an embedding route
+    that share one upstream ID in separate entries.  Otherwise the first
+    configured row's mode would leak onto the other route, and reversing the
+    configuration order would flip which route receives stock scores.
     """
     config_path = _litellm_config_path()
     if not config_path:
@@ -798,7 +804,7 @@ def _read_litellm_inventory() -> tuple[list[dict] | None, str | None]:
     if not isinstance(config, dict) or not isinstance(config.get("model_list"), list):
         return None, "invalid configuration"
 
-    grouped: dict[str, dict] = {}
+    grouped: dict[tuple[str, str], dict] = {}
     for row in config["model_list"]:
         if not isinstance(row, dict):
             return None, "invalid configuration"
@@ -829,7 +835,8 @@ def _read_litellm_inventory() -> tuple[list[dict] | None, str | None]:
             provider = "unknown"
         mode = _route_mode(explicit_mode, upstream_model)
 
-        model = grouped.get(upstream_model)
+        group_key = (upstream_model, mode)
+        model = grouped.get(group_key)
         if model is None:
             model = {
                 "name": alias,
@@ -838,7 +845,7 @@ def _read_litellm_inventory() -> tuple[list[dict] | None, str | None]:
                 "mode": mode,
                 "routes": [],
             }
-            grouped[upstream_model] = model
+            grouped[group_key] = model
         route = {"name": alias, "provider": provider}
         if route not in model["routes"]:
             model["routes"].append(route)

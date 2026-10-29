@@ -12,7 +12,8 @@ scraping:
 Security posture: only the module's fixed HTTPS URLs are ever requested, TLS
 verification is on, redirects are rejected, sessions ignore proxy/netrc
 configuration (``trust_env = False``), no credentials are attached, response
-bodies are streamed with a byte budget and a source deadline, and every
+bodies are streamed with a byte budget under one absolute wall-clock source
+deadline that also bounds connection setup and header receipt, and every
 upstream error is mapped to a fixed sanitized message.  No upstream content is
 executed and no upstream URLs are copied into API responses.
 
@@ -37,12 +38,16 @@ model-release or evaluation date.
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import csv
+import inspect
 import io
 import json
 import logging
 import math
 import os
+import queue
 import stat
 import tempfile
 import threading
@@ -52,7 +57,7 @@ from datetime import date as _date
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
-import requests
+import httpx
 
 _log = logging.getLogger(__name__)
 
@@ -345,6 +350,7 @@ _SOURCE_ERROR_SCHEMA = "invalid response schema"
 _SOURCE_ERROR_PAGINATION = "invalid pagination"
 _SOURCE_ERROR_EMPTY = "empty feed"
 _CACHE_ERROR_TOO_LARGE = "benchmark cache exceeds size limit"
+_CACHE_ERROR_STORAGE = "cache storage unavailable"
 
 
 class SourceError(Exception):
@@ -552,7 +558,9 @@ def _make_entry(metric: str, model: str, value: float, *, evaluator: str,
                 date_kind: str | None = None, agent: str | None = None,
                 effort: str | None = None, configuration: str | None = None,
                 ci: dict | None = None, metadata: dict | None = None) -> dict:
-    if metric not in METRIC_BY_KEY:
+    # Validate the type before the hash lookup: persisted entries with a list
+    # or dict "metric" must fail closed with SourceError, not TypeError.
+    if not isinstance(metric, str) or metric not in METRIC_BY_KEY:
         raise SourceError(_SOURCE_ERROR_SCHEMA)
     clean_date = _iso_date(date)
     clean_kind = _text(date_kind, maximum=32)
@@ -672,22 +680,152 @@ class Deadline:
         return remaining
 
 
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_DNS_WORKERS = 4
+
+
+class _DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
+    """Bounded resolver pool whose workers never hold up process shutdown.
+
+    ``asyncio.run`` shuts down its loop's default executor and waits for it,
+    so one blocked ``getaddrinfo`` call could otherwise keep a synchronous
+    request past its deadline.  The shared benchmark loop is never shut down;
+    this pool uses daemon workers that are intentionally not registered with
+    ``concurrent.futures``' interpreter-exit join hook.  A stalled resolver can
+    occupy at most ``max_workers`` threads, and cancelled queued work is
+    skipped by the standard ``_WorkItem`` cancellation check.
+    """
+
+    def _adjust_thread_count(self) -> None:
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+        num_threads = len(self._threads)
+        if num_threads >= self._max_workers:
+            return
+        thread = threading.Thread(
+            target=self._daemon_worker,
+            name=f"{self._thread_name_prefix}_{num_threads}",
+            daemon=True,
+        )
+        thread.start()
+        self._threads.add(thread)
+
+    def _daemon_worker(self) -> None:
+        while True:
+            try:
+                work_item = self._work_queue.get_nowait()
+            except queue.Empty:
+                self._idle_semaphore.release()
+                work_item = self._work_queue.get(block=True)
+            if work_item is not None:
+                work_item.run()
+                continue
+            if self._shutdown:
+                self._work_queue.put(None)  # wake other workers
+                return
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        # Never join: a blocked resolver must not delay shutdown.  The shared
+        # loop is process-wide, so this is only an interface-completeness path.
+        super().shutdown(wait=False, cancel_futures=cancel_futures)
+
+
+_HTTP_LOOP_LOCK = threading.Lock()
+_HTTP_LOOP: asyncio.AbstractEventLoop | None = None
+_HTTP_LOOP_THREAD: threading.Thread | None = None
+
+
+def _http_event_loop() -> asyncio.AbstractEventLoop:
+    """Return the one lazy, daemon, process-wide loop for HTTP coroutines.
+
+    A per-request ``asyncio.run`` would also create a fresh default executor
+    and wait for it during shutdown.  A stalled DNS lookup could therefore
+    delay the synchronous caller beyond the source deadline even after the
+    coroutine was cancelled.  The shared loop stays alive for the process
+    lifetime (it is a daemon thread), while every request still creates and
+    closes its own ``httpx.AsyncClient`` inside its own coroutine.
+    """
+    global _HTTP_LOOP, _HTTP_LOOP_THREAD
+    with _HTTP_LOOP_LOCK:
+        loop = _HTTP_LOOP
+        thread = _HTTP_LOOP_THREAD
+        if (loop is not None and loop.is_running()
+                and thread is not None and thread.is_alive()):
+            return loop
+        new_loop = asyncio.new_event_loop()
+        new_loop.set_default_executor(
+            _DaemonThreadPoolExecutor(
+                max_workers=_DNS_WORKERS,
+                thread_name_prefix="benchmark-dns"))
+        started = threading.Event()
+
+        def run() -> None:
+            asyncio.set_event_loop(new_loop)
+            new_loop.call_soon(started.set)
+            try:
+                new_loop.run_forever()
+            finally:
+                new_loop.close()
+
+        new_thread = threading.Thread(
+            target=run, name="benchmark-http-loop", daemon=True)
+        new_thread.start()
+        if not started.wait(5.0):
+            raise RuntimeError("benchmark HTTP loop failed to start")
+        _HTTP_LOOP = new_loop
+        _HTTP_LOOP_THREAD = new_thread
+        return new_loop
+
+
+def _consume_future(future: concurrent.futures.Future) -> None:
+    """Retrieve a completed runner future so no exception goes unobserved."""
+    if future.cancelled():
+        return
+    try:
+        future.exception()
+    except BaseException:
+        pass
+
+
+def _run_async(coro, deadline: Deadline):
+    """Run one coroutine on the shared loop, cancelling at the deadline.
+
+    ``future.result`` is a bounded blocking wait.  If it expires, the loop
+    task is cancelled and its ``async with`` cleanup closes the response and
+    client; cleanup runs on the daemon loop thread and never holds up the
+    synchronous caller.
+    """
+    try:
+        timeout = deadline.remaining()
+    except SourceError:
+        coro.close()
+        raise
+    try:
+        loop = _http_event_loop()
+    except Exception:
+        coro.close()
+        raise
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    except BaseException:
+        coro.close()
+        raise
+    future.add_done_callback(_consume_future)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        raise SourceError(_SOURCE_ERROR_DEADLINE) from None
+
+
 class HttpClient:
     """Minimal fixed-endpoint HTTPS client with strict safety properties."""
 
     def __init__(self, *, timeout: float = REQUEST_TIMEOUT,
-                 max_bytes: int = MAX_BODY_BYTES, sleep=time.sleep):
+                 max_bytes: int = MAX_BODY_BYTES, sleep=None):
         self._timeout = timeout
         self._max_bytes = max_bytes
         self._sleep = sleep
-        self._session = requests.Session()
-        # Ignore proxy/netrc settings and never pick up credentials implicitly.
-        self._session.trust_env = False
-        self._session.auth = None
-        self._session.cookies.clear()
-        self._session.headers.clear()
-        self._session.headers["User-Agent"] = USER_AGENT
-        self._session.headers["Accept"] = "application/json, text/csv;q=0.9"
 
     @staticmethod
     def _validate_url(url: str) -> None:
@@ -697,11 +835,17 @@ class HttpClient:
                 or parts.port not in (None, 443)):
             raise SourceError(_SOURCE_ERROR_SCHEMA)
 
-    def _sleep_before_retry(self, attempt: int, deadline: Deadline) -> None:
+    async def _sleep_before_retry(self, attempt: int, deadline: Deadline) -> None:
         """Back off for at most the remaining source deadline."""
         remaining = deadline.remaining()
         delay = min(RETRY_BACKOFF_MAX, RETRY_BACKOFF * 2 ** attempt)
-        self._sleep(min(delay, remaining))
+        delay = min(delay, remaining)
+        if self._sleep is None:
+            await asyncio.sleep(delay)
+            return
+        result = self._sleep(delay)
+        if inspect.isawaitable(result):
+            await result
 
     def request(self, method: str, url: str, *, json_body=None,
                 headers: dict | None = None, deadline: Deadline) -> Response:
@@ -709,65 +853,87 @@ class HttpClient:
             raise SourceError(_SOURCE_ERROR_SCHEMA)
         self._validate_url(url)
         request_headers = dict(headers or {})
+        return _run_async(
+            self._request_async(
+                method, url, json_body=json_body, headers=request_headers,
+                deadline=deadline),
+            deadline,
+        )
 
-        last_error = _SOURCE_ERROR_NETWORK
-        for attempt in range(HTTP_ATTEMPTS):
-            timeout = min(self._timeout, deadline.remaining())
-            try:
-                response = self._session.request(
-                    method, url, json=json_body, headers=request_headers,
-                    timeout=(timeout, timeout), stream=True,
-                    allow_redirects=False, verify=True,
-                )
-            except requests.Timeout:
-                last_error = _SOURCE_ERROR_TIMEOUT
-                if attempt + 1 < HTTP_ATTEMPTS:
-                    self._sleep_before_retry(attempt, deadline)
-                    continue
-                raise SourceError(last_error)
-            except requests.RequestException:
-                last_error = _SOURCE_ERROR_NETWORK
-                if attempt + 1 < HTTP_ATTEMPTS:
-                    self._sleep_before_retry(attempt, deadline)
-                    continue
-                raise SourceError(last_error)
-            except OSError:
-                last_error = _SOURCE_ERROR_NETWORK
-                if attempt + 1 < HTTP_ATTEMPTS:
-                    self._sleep_before_retry(attempt, deadline)
-                    continue
-                raise SourceError(last_error)
+    async def _request_async(self, method: str, url: str, *, json_body,
+                             headers: dict, deadline: Deadline) -> Response:
+        # One absolute timeout owns the whole coroutine: retries, backoff,
+        # connection/headers/body reads and closing the client/response below.
+        try:
+            async with asyncio.timeout(deadline.remaining()):
+                return await self._request_in_client(
+                    method, url, json_body=json_body, headers=headers,
+                    deadline=deadline)
+        except TimeoutError:
+            raise SourceError(_SOURCE_ERROR_DEADLINE) from None
 
-            try:
-                status = response.status_code
-                if status == 304:
-                    return Response(304, _headers_dict(response.headers), b"")
-                if 300 <= status < 400:
-                    # Never follow redirects: a redirect could target an
-                    # internal address or another origin.
-                    raise SourceError(_SOURCE_ERROR_REDIRECT)
-                if status in (429, 500, 502, 503, 504) and attempt + 1 < HTTP_ATTEMPTS:
-                    self._sleep_before_retry(attempt, deadline)
-                    continue
-                if status != 200:
-                    raise SourceError(f"HTTP {status}")
+    async def _request_in_client(self, method: str, url: str, *, json_body,
+                                 headers: dict, deadline: Deadline) -> Response:
+        # trust_env=False ignores proxies/netrc; follow_redirects=False never
+        # follows a Location; verify=True keeps certificate validation on.
+        # The client is scoped to this one synchronous request and is closed
+        # by the context manager even when the source deadline cancels it.
+        async with httpx.AsyncClient(
+                trust_env=False, follow_redirects=False, verify=True,
+                timeout=None,
+                headers={"User-Agent": USER_AGENT,
+                         "Accept": "application/json, text/csv;q=0.9"}) as client:
+            for attempt in range(HTTP_ATTEMPTS):
+                last_attempt = attempt + 1 >= HTTP_ATTEMPTS
                 try:
-                    body = self._read_body(response, deadline)
+                    # The per-attempt timeout still wraps connection
+                    # establishment, header receipt, every body read and the
+                    # stream context cleanup; the outer timeout owns the total.
+                    async with asyncio.timeout(
+                            min(self._timeout, deadline.remaining())):
+                        async with client.stream(
+                                method, url, json=json_body,
+                                headers=headers) as response:
+                            status = response.status_code
+                            response_headers = _headers_dict(response.headers)
+                            if status == 304:
+                                return Response(304, response_headers, b"")
+                            if 300 <= status < 400:
+                                # Never follow redirects: a redirect could
+                                # target an internal address or another origin.
+                                raise SourceError(_SOURCE_ERROR_REDIRECT)
+                            if status == 200:
+                                body = await self._read_body(response, deadline)
+                                return Response(200, response_headers, body)
+                            if status not in _RETRY_STATUSES or last_attempt:
+                                raise SourceError(f"HTTP {status}")
                 except SourceError:
                     raise
-                except requests.Timeout as exc:
-                    raise SourceError(_SOURCE_ERROR_TIMEOUT) from exc
-                except (requests.RequestException, OSError) as exc:
-                    raise SourceError(_SOURCE_ERROR_NETWORK) from exc
-                return Response(200, _headers_dict(response.headers), body)
-            finally:
-                try:
-                    response.close()
-                except Exception:
-                    pass
-        raise SourceError(last_error)
+                except TimeoutError:
+                    # Distinguish the absolute source deadline from a single
+                    # request's timeout.  The former must never be retried.
+                    try:
+                        deadline.remaining()
+                    except SourceError:
+                        raise SourceError(_SOURCE_ERROR_DEADLINE) from None
+                    if last_attempt:
+                        raise SourceError(_SOURCE_ERROR_TIMEOUT) from None
+                except httpx.TimeoutException:
+                    try:
+                        deadline.remaining()
+                    except SourceError:
+                        raise SourceError(_SOURCE_ERROR_DEADLINE) from None
+                    if last_attempt:
+                        raise SourceError(_SOURCE_ERROR_TIMEOUT) from None
+                except (httpx.HTTPError, OSError):
+                    if last_attempt:
+                        raise SourceError(_SOURCE_ERROR_NETWORK) from None
+                # A retryable status or a transport/timeout failure with
+                # attempts left: bounded backoff, then another request.
+                await self._sleep_before_retry(attempt, deadline)
+        raise SourceError(_SOURCE_ERROR_NETWORK)
 
-    def _read_body(self, response, deadline: Deadline) -> bytes:
+    async def _read_body(self, response, deadline: Deadline) -> bytes:
         length = response.headers.get("content-length")
         if length is not None:
             try:
@@ -777,7 +943,7 @@ class HttpClient:
                 pass
         chunks = []
         total = 0
-        for chunk in response.iter_content(chunk_size=8192):
+        async for chunk in response.aiter_bytes():
             # Check even for empty chunks: a stalled stream must still hit the
             # source deadline, and sleeps/reads are bounded by it.
             deadline.remaining()
@@ -1441,7 +1607,10 @@ class BenchmarkStore:
 
     def _persist(self) -> bool:
         if not self._persist_enabled:
-            return False
+            # Persistence is deliberately disabled (for example an in-memory
+            # test store): refresh completion must not look like a storage
+            # failure.
+            return True
         # Capture, write and replace under one lock.  If the snapshot were
         # captured before the lock, an older writer could replace a newer file.
         with self._persist_lock:
@@ -1552,18 +1721,20 @@ class BenchmarkStore:
                 if not isinstance(snapshot, dict):
                     raise SourceError(_SOURCE_ERROR_SCHEMA)
                 if snapshot.get("not_modified"):
+                    completed = self._clock()
                     with self._state_lock:
                         state = self._state[name]
                         if state["data"] is None:
                             # A 304 without any cached body cannot be used.
                             raise SourceError(_SOURCE_ERROR_SCHEMA)
-                        completed = self._clock()
                         state["last_checked"] = completed
                         state["last_success"] = completed
                         state["error"] = None
+                    if not self._persist():
+                        self._record_storage_failure(name, completed)
+                        return False
                     self._failures[name] = 0
                     self._next_attempt.pop(name, None)
-                    self._persist()
                     return True
                 entries = _validated_entries(snapshot.get("entries"), source=name)
                 version = _text(snapshot.get("version"), maximum=64)
@@ -1585,9 +1756,15 @@ class BenchmarkStore:
                         "validators": validators,
                         "meta": meta,
                     }
+                if not self._persist():
+                    # The newly validated snapshot stays usable in memory, but
+                    # the disk still holds the previous readable bytes.  Report
+                    # a fixed storage error so callers/UI cannot claim a
+                    # complete fresh success.
+                    self._record_storage_failure(name, completed)
+                    return False
                 self._failures[name] = 0
                 self._next_attempt.pop(name, None)
-                self._persist()
                 return True
             except SourceError as exc:
                 self._record_failure(name, self._clock(), str(exc))
@@ -1602,6 +1779,12 @@ class BenchmarkStore:
                 self._inflight.discard(name)
             source_lock.release()
 
+    def _schedule_retry(self, name: str, now: float) -> None:
+        failures = self._failures.get(name, 0) + 1
+        self._failures[name] = failures
+        delay = min(AUTO_RETRY_MAX, AUTO_RETRY_BASE * (2 ** min(failures - 1, 8)))
+        self._next_attempt[name] = now + delay
+
     def _record_failure(self, name: str, now: float, message: str) -> None:
         safe = message if message in {
             _SOURCE_ERROR_NETWORK, _SOURCE_ERROR_TIMEOUT, _SOURCE_ERROR_DEADLINE,
@@ -1614,10 +1797,24 @@ class BenchmarkStore:
             state = self._state[name]
             state["last_checked"] = now
             state["error"] = safe
-        failures = self._failures.get(name, 0) + 1
-        self._failures[name] = failures
-        delay = min(AUTO_RETRY_MAX, AUTO_RETRY_BASE * (2 ** min(failures - 1, 8)))
-        self._next_attempt[name] = now + delay
+        self._schedule_retry(name, now)
+
+    def _record_storage_failure(self, name: str, now: float) -> None:
+        """Persistence failed after a valid network refresh.
+
+        The freshly validated snapshot is intentionally retained in memory and
+        the previous disk bytes are untouched by ``_persist``.  ``last_success``
+        still describes the successful upstream validation, while the fixed
+        error and the stale flag prevent this from being reported as a complete
+        fresh success.  Retry backoff prevents an active poll from turning a
+        broken cache path into a fetch/write storm.
+        """
+        with self._state_lock:
+            state = self._state[name]
+            state["last_checked"] = now
+            state["error"] = _CACHE_ERROR_STORAGE
+        _log.warning("benchmark cache storage unavailable")
+        self._schedule_retry(name, now)
 
     def refresh_now(self, *, names=None, force: bool = True) -> dict:
         """Synchronous refresh (tests and the coordinator worker)."""

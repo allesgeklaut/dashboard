@@ -10,7 +10,8 @@ responsive browser UI, and optional integrations controlled by environment setti
 - Optional AdGuard, Shelly energy/power, llama.cpp, and Ollama monitoring.
 - Optional host-side streaming and desktop wake/power controls.
 - AI Services tab: OpenCode Go usage/limits, a Mistral console link, and one
-  LiteLLM-backed inventory table with benchmark columns.
+  LiteLLM-backed inventory table grouped by upstream model and mode, with
+  benchmark columns.
 - Versioned benchmark snapshots from Harbor Terminal-Bench 4 and Epoch ECI by
   default; LiveBench Coding is opt-in pending a reuse review, and DeepSWE is
   optional (`HOMELAB_DEEPSWE_ENABLED=false` default) with a grading-defect
@@ -37,11 +38,16 @@ policy for the entire hostname before publishing a tunnel route. The app does
 not provide its own login. API mutations require a same-host browser Origin
 and the UI's custom request header; this is CSRF protection, not authentication.
 
-Benchmark refreshes use fixed, allowlisted HTTPS feeds with certificate
-verification, redirects disabled, response and time limits, and strict JSON/CSV
-validation. They never send LiteLLM, OpenCode, or provider credentials, and the
-manual refresh keeps the same-origin mutation guard. The AI Services tab reads
-`GET /api/ai-services`; `POST /api/benchmarks/fetch` starts a guarded refresh.
+Benchmark refreshes use fixed, allowlisted HTTPS feeds fetched with `httpx` as
+streamed responses inside one absolute per-source deadline that bounds the HTTP
+connect, response headers, and body transfer, with a fixed response byte
+budget. TLS verification stays on, redirects and user-supplied URLs are
+refused, proxy/netrc environment settings and ambient credentials are ignored,
+and responses pass strict JSON/CSV validation. They never send LiteLLM,
+OpenCode, or provider credentials, and the manual refresh keeps the same-origin
+mutation guard. The AI Services tab reads `GET /api/ai-services` (a 60-second
+poll only while that tab is visible and active); `POST /api/benchmarks/fetch`
+starts a guarded refresh.
 
 Docker loads credentials from `/opt/secrets/dashboard.env` and
 `/opt/secrets/portainer.env`, not the repository's local-development `.env`.
@@ -129,7 +135,7 @@ Snapshot and refresh details are in
 ## Tests
 
 ```bash
-PYTHON_DOTENV_DISABLED=1 uv run --with httpx python -m unittest discover -s tests -v
+PYTHON_DOTENV_DISABLED=1 uv run python -m unittest discover -s tests -v
 node --test tests/*.test.js
 ```
 

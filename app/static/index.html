@@ -4168,6 +4168,18 @@ function aiServicesOnEnter() {
   if (document.hidden) return;
   aiFetchServices();
 }
+function aiServicesTick() {
+  // Long-lived active tabs must notice the 24h source TTL, backend backoff and
+  // a source turning stale without a manual refresh. The GET is enough: the
+  // backend schedules one guarded stale-source fetch itself, and accepting a
+  // `refreshing` payload starts the existing bounded monitor. Never POST here.
+  if (!aiServicesEnabled()) return;
+  if (_activeTab !== 'ai-services') return;
+  if (document.hidden) return;
+  // A manual refresh (or the monitor it started) owns its own poll loop.
+  if (_aiRefreshActive) return;
+  aiFetchServices(); // single-flight: an in-flight GET is reused, never doubled
+}
 function aiHandleVisibility() {
   if (document.hidden) return;
   if (!aiServicesEnabled()) return;
@@ -4711,6 +4723,9 @@ setInterval(() => {
 // Security report: polls only while its tab is active and the page is visible.
 // Entering the tab / regaining visibility also triggers a fresh check.
 setInterval(securityTick, 60000);
+// AI inventory: same gating. A visible tab on screen at least once a minute is
+// enough to surface a 24h source TTL expiry, backoff or stale-source state.
+setInterval(aiServicesTick, 60000);
 syncTabBarAfterFonts();
 if (typeof window !== 'undefined' && window && typeof window.addEventListener === 'function') {
   window.addEventListener('resize', syncTabBarAfterFonts, { passive: true });

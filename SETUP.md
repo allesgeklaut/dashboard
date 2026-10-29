@@ -34,11 +34,12 @@ uv pip install -r requirements.txt
 uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
 ```
 
-After installing requirements, run the regression tests with test-only `httpx`
-for this invocation (it is not a production dependency):
+After installing requirements, run the regression tests (`httpx` is a runtime
+dependency for benchmark fetches; the OpenCode usage calls keep using
+`requests`):
 
 ```bash
-PYTHON_DOTENV_DISABLED=1 uv run --with httpx python -m unittest discover -s tests -v
+PYTHON_DOTENV_DISABLED=1 uv run python -m unittest discover -s tests -v
 ```
 
 This skips local `.env` loading; the tests mock device polling and upstream
@@ -77,13 +78,22 @@ and a Mistral console link preserved above it:
   subscription/usage. It is only a link: the dashboard does not scrape Mistral,
   use cookies or a billing API, or require a Mistral or LiteLLM admin key.
 - **Inventory table** — rows come from the valid routes in the LiteLLM
-  `model_list`, not only `mistral/` routes. Columns include the dashboard label
-  (`model_name`), available routes, Terminal-Bench 4, LiveBench Coding, Epoch
-  ECI, and optionally DeepSWE. LiveBench Coding keeps its default column but
-  shows a source-disabled warning until an operator enables it. Rows can be
-  filtered by route/provider; audio and embedding routes stay visible but are
-  excluded from coding comparisons. There is no invented combined score or
-  rank.
+  `model_list`, not only `mistral/` routes. Routes are grouped by exact upstream
+  model ID and mode, so a chat route and an embedding route that share one
+  upstream model are separate rows; aliases with the same upstream model and
+  mode stay together on one row and list their routes. Columns include the
+  dashboard label (`model_name`), available routes, Terminal-Bench 4, LiveBench
+  Coding, Epoch ECI, and optionally DeepSWE. LiveBench Coding keeps its default
+  column but shows a source-disabled warning until an operator enables it. Rows
+  can be filtered by route/provider; audio and embedding routes stay visible
+  but are excluded from coding comparisons. There is no invented combined score
+  or rank.
+
+When any AI Services feature is enabled, the tab button is visible. The browser
+loads `GET /api/ai-services` on tab entry and then every 60 seconds, but only
+while that tab is active and the page is visible; hidden pages and other tabs do
+not poll. That polling is a read-only GET and never sends the refresh POST;
+only **⟳ REFRESH SCORES** sends the guarded `POST /api/benchmarks/fetch`.
 
 The dashboard exports only `model_name`, `litellm_params.model`, and
 `model_info.mode` from the LiteLLM configuration. Other route parameters and
@@ -143,14 +153,19 @@ Harbor Terminal-Bench 4 and Epoch ECI are enabled by default. LiveBench Coding
 is opt-in and DeepSWE is optional, so neither is fetched until explicitly
 enabled. The two opt-in flags are ordinary feature flags in the repository
 `.env` (used for Compose interpolation), not `/opt/secrets` credentials. All
-benchmark fetches use fixed, allowlisted HTTPS endpoints. The server verifies
-TLS, refuses redirects, rejects user-supplied URLs, enforces
-response byte and time limits, and parses strict JSON/CSV with schema and range
-checks. No downloaded code is executed. Benchmark requests never carry LiteLLM,
-OpenCode, or provider credentials, and publisher text is rendered escaped, not
-as raw HTML; provenance links are validated HTTPS URLs. A reputable publisher
-is not a trusted input: a compromised or wrong feed can publish bad scores even
-though parsing is safe, so treat results as provenance-bearing evidence.
+benchmark fetches use `httpx` (a runtime dependency) against fixed, allowlisted
+HTTPS endpoints. Each response is streamed inside one absolute per-source
+deadline that bounds the HTTP connect, response-header, and body-read phases,
+with per-request timeouts capped by the remaining deadline and a fixed response
+byte budget. The client verifies TLS, refuses redirects, rejects user-supplied
+URLs, ignores proxy/netrc configuration and ambient credentials, and parses
+strict JSON/CSV with schema
+and range checks. No downloaded code is executed. Benchmark requests never carry
+LiteLLM, OpenCode, or provider credentials, and publisher text is rendered
+escaped, not as raw HTML; provenance links are validated HTTPS URLs. A reputable
+publisher is not a trusted input: a compromised or wrong feed can publish bad
+scores even though parsing is safe, so treat results as provenance-bearing
+evidence.
 
 - **Harbor Terminal-Bench 4.0** (default) — official public JSON API:
   `POST https://api.harborframework.com/functions/v1/leaderboard-read` with
@@ -235,10 +250,11 @@ button is a manual, same-origin-guarded fallback and shares the in-flight guard,
 so concurrent page loads or button presses do not start duplicate fetches.
 
 A refresh is per source, with bounded retries and backoff (including rate-limit
-responses). One source failing, or returning invalid data, does not erase
-another source's snapshot or fail the whole refresh; the last good snapshot is
-retained and its error and age are shown. Disabled sources are not fetched or
-refreshed and never contribute cached rows: LiveBench shows its source-disabled
+responses); a failed source retries after five minutes, doubling up to one hour.
+One source failing, or returning invalid data, does not erase another source's
+snapshot or fail the whole refresh; the last good snapshot is retained and its
+error and age are shown. Disabled sources are not fetched or refreshed and never
+contribute cached rows: LiveBench shows its source-disabled
 warning and hides cached scores, DeepSWE shows a disabled state with no column,
 and any prior values are not treated as current. Empty, malformed,
 schema-drifted, or suspiciously short feeds are rejected before replacing a
@@ -248,6 +264,13 @@ succeeded, when the publisher updated it, and each result's published date plus
 provide one. A removed score stops being current; a row without an exact
 current match shows a missing reason or a separately dated historical record,
 never an undated or guessed score. Snapshots are written atomically.
+
+With persistence enabled, a cache write failure is a refresh failure, not a
+silent success. A refresh that validates data but cannot persist it reports the
+fixed `cache storage unavailable` error (never a path or OS exception), is
+marked stale, and follows the retry backoff. The last good in-memory snapshot
+stays readable, and the previous cache file is left untouched because snapshots
+replace it atomically.
 
 #### API
 
@@ -261,10 +284,12 @@ never an undated or guessed score. Snapshots are written atomically.
   through their existing read endpoints and caches.
 - `POST /api/benchmarks/fetch` starts one asynchronous manual refresh and
   returns `ok`, `refreshing`, `started`, and the enabled `sources`. The tab
-  polls `GET /api/ai-services` until `refreshing` is false and keeps the current
-  inventory visible meanwhile. It is an API mutation and keeps the same-origin
-  guard: the browser `Origin` must match the request `Host`, and the request
-  must carry `X-Homelab-Request: 1`. It accepts no source URLs.
+  polls `GET /api/ai-services` every 2 seconds, up to 40 attempts, until
+  `refreshing` is false, and keeps the current inventory visible meanwhile;
+  reaching that bound reports an unknown refresh status, never success. It is an
+  API mutation and keeps the same-origin guard: the browser `Origin` must match
+  the request `Host`, and the request must carry `X-Homelab-Request: 1`. It
+  accepts no source URLs.
 
 A refresh is best-effort per source: one unavailable feed does not fail the
 others, and cached data stays visible while it runs.
@@ -666,6 +691,7 @@ docker compose up -d --build
 | AI Services inventory empty or missing | Check `LITELLM_CONFIG_FILE` locally or the read-only `/run/litellm/config.yaml` mount in Docker; only valid `model_list` routes are listed |
 | Benchmark columns show missing reasons | The source has no exact identity match, the model is audio/embedding, or the source is unavailable; missing coverage is not a fetch failure |
 | Benchmark data stale or a source unavailable | Last-good snapshots stay visible; use the manual refresh and check the source link. An old Artificial Analysis cache is intentionally ignored |
+| Benchmark cache cannot be written | Sources report a storage error and stay stale with retry backoff; check `HOMELAB_BENCH_FILE` and `/data` volume permissions. The last good in-memory snapshot and previous cache file are retained |
 | LiveBench Coding shows source-disabled | It is disabled by default pending a reuse review; enable `HOMELAB_LIVEBENCH_ENABLED=true` only after checking the terms. The table keeps the column as a warning placeholder |
 | DeepSWE column absent | It is optional and off unless `HOMELAB_DEEPSWE_ENABLED=true`; when enabled, read the linked Epoch AI grading-defect review |
 | SECURITY tab missing | Locally, `SECURITY_REPORT_DIR` is unset; in Docker, check the report directory, its uid-1000 ownership, and the read-only mount (see the SECURITY tab section) |

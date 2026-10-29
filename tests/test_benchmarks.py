@@ -1,8 +1,11 @@
 """Offline tests for benchmark adapters, snapshots, identities and the API contract."""
+import asyncio
+import http.server
 import json
 import math
 import os
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -12,7 +15,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 
-import requests
+import httpx
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -585,19 +588,138 @@ class DeepSweAdapterTests(unittest.TestCase):
 
 
 # ── HTTP and provenance security ────────────────────────────────────────────
-class _FakeResponse:
-    def __init__(self, status=200, body=b"{}", headers=None, chunks=None):
-        self.status_code = status
-        self.headers = headers or {}
-        self._chunks = chunks if chunks is not None else [body]
-        self.closed = False
+class _LocalHttpClient(benchmarks.HttpClient):
+    """Test seam: allow the loopback URL used by the transport tests only.
 
-    def iter_content(self, chunk_size=8192):
-        for chunk in self._chunks:
-            yield chunk
+    ``benchmarks.HttpClient._validate_url`` (the production fixed HTTPS
+    allowlist) is deliberately not modified or weakened by this subclass.
+    """
 
-    def close(self):
-        self.closed = True
+    @staticmethod
+    def _validate_url(url: str) -> None:  # noqa: ARG004 - intentional override
+        return None
+
+
+def _write_response(handler, body=b"{}", *, status=200, headers=()):
+    handler.send_response(status)
+    for key, value in headers:
+        handler.send_header(key, value)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+    handler.wfile.flush()
+
+
+def _transport_responder(handler, server):
+    """Loopback-only responder for one transport behaviour per path."""
+    if handler.path == "/ok":
+        _write_response(handler, b'{"ok":true}')
+    elif handler.path == "/big":
+        _write_response(handler, b"x" * 11)
+    elif handler.path == "/redirect":
+        handler.send_response(302)
+        handler.send_header("Location", "https://evil.invalid/")
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+    elif handler.path == "/flaky":
+        server.state["flaky"] = server.state.get("flaky", 0) + 1
+        if server.state["flaky"] < 3:
+            _write_response(handler, b"", status=503)
+        else:
+            _write_response(handler, b'{"ok":true}')
+    elif handler.path == "/always-503":
+        _write_response(handler, b"", status=503)
+    elif handler.path == "/slowheaders":
+        # The absolute deadline must include waiting for response headers.
+        time.sleep(0.6)
+        _write_response(handler, b"{}")
+    elif handler.path == "/slowbody":
+        # A true slow drip: 1 byte every 60 ms (the reported regression) for a
+        # total that would take 2.4 s.  A transport that buffers to a fixed
+        # chunk size before checking the clock cannot return near 120 ms.
+        handler.send_response(200)
+        handler.send_header("Content-Length", "40")
+        handler.end_headers()
+        try:
+            for _ in range(40):
+                handler.wfile.write(b"x")
+                handler.wfile.flush()
+                time.sleep(0.06)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+    elif handler.path == "/partial":
+        # Declares more body than it sends, then half-closes: httpx must map
+        # this to a sanitized network error, never an exception with the URL.
+        handler.send_response(200)
+        handler.send_header("Content-Length", "100")
+        handler.end_headers()
+        handler.wfile.write(b"12345")
+        handler.wfile.flush()
+        handler.close_connection = True
+        try:
+            handler.connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+    else:
+        _write_response(handler, b"", status=404)
+
+
+class _LocalFeedServer:
+    """Daemon-only loopback HTTP server used only by these transport tests."""
+
+    def __init__(self, responder):
+        self.responder = responder
+        self.seen = []
+        self.state = {}
+        self._httpd = None
+        self._thread = None
+
+    def __enter__(self):
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):  # silence test output
+                pass
+
+            def do_GET(self):
+                outer._handle(self)
+
+            def do_POST(self):
+                outer._handle(self)
+
+        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._httpd.daemon_threads = True
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+    @property
+    def base_url(self):
+        return f"http://127.0.0.1:{self._httpd.server_address[1]}"
+
+    def _handle(self, handler):
+        length = int(handler.headers.get("content-length") or 0)
+        body = handler.rfile.read(length) if length else b""
+        self.seen.append({
+            "method": handler.command,
+            "path": handler.path,
+            "body": body,
+            "headers": {key.lower(): value
+                        for key, value in handler.headers.items()},
+        })
+        try:
+            self.responder(handler, self)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+    def __exit__(self, *exc_info):
+        self._httpd.shutdown()
+        self._httpd.server_close()
+        self._thread.join(2)
+        return False
 
 
 class HttpSecurityTests(unittest.TestCase):
@@ -619,60 +741,183 @@ class HttpSecurityTests(unittest.TestCase):
                 with self.assertRaises(benchmarks.SourceError):
                     benchmarks.HttpClient._validate_url(url)
 
-    def test_client_ignores_environment_auth_and_never_follows_redirects(self):
-        client = benchmarks.HttpClient(sleep=lambda _seconds: None)
-        self.assertFalse(client._session.trust_env)
-        self.assertIsNone(client._session.auth)
-        self.assertNotIn("Authorization", client._session.headers)
-        fake = _FakeResponse(status=302, headers={"location": "https://evil.invalid/"})
-        with patch.object(client._session, "request", return_value=fake) as request:
-            with self.assertRaises(benchmarks.SourceError):
-                client.request("GET", benchmarks.EPOCH_CSV_URL, deadline=deadline())
-        kwargs = request.call_args.kwargs
-        self.assertFalse(kwargs["allow_redirects"])
-        self.assertTrue(kwargs["verify"])
-        self.assertTrue(kwargs["stream"])
-        self.assertNotIn("auth", kwargs)
+    def test_httpx_client_is_hardened_scoped_and_closed_per_request(self):
+        created = []
+        closed = []
+        real_client = httpx.AsyncClient
+
+        class SpyClient(real_client):
+            def __init__(self, *args, **kwargs):
+                created.append(kwargs)
+                super().__init__(*args, **kwargs)
+
+            async def __aexit__(self, *exc_info):
+                try:
+                    return await super().__aexit__(*exc_info)
+                finally:
+                    closed.append(True)
+
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(_transport_responder) as server, \
+                patch.object(benchmarks.httpx, "AsyncClient", SpyClient):
+            first = client.request("GET", server.base_url + "/ok",
+                                   deadline=deadline())
+            second = client.request("GET", server.base_url + "/ok",
+                                    deadline=deadline())
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+        self.assertEqual(len(created), 2)  # one client per synchronous request
+        self.assertEqual(closed, [True, True])
+        for kwargs in created:
+            self.assertIs(kwargs["trust_env"], False)
+            self.assertIs(kwargs["follow_redirects"], False)
+            self.assertIs(kwargs["verify"], True)
+            self.assertIsNone(kwargs["timeout"])
+            self.assertNotIn("auth", kwargs)
+        for request in server.seen:
+            self.assertEqual(request["headers"]["user-agent"], benchmarks.USER_AGENT)
+            self.assertEqual(request["headers"]["accept"],
+                             "application/json, text/csv;q=0.9")
+            self.assertNotIn("authorization", request["headers"])
+            self.assertNotIn("cookie", request["headers"])
+
+    def test_post_json_body_reaches_the_fixed_endpoint(self):
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(_transport_responder) as server:
+            result = client.request(
+                "POST", server.base_url + "/ok",
+                json_body={"package": "terminal-bench/terminal-bench", "page": 2},
+                deadline=deadline())
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(server.seen[0]["method"], "POST")
+        self.assertEqual(json.loads(server.seen[0]["body"]),
+                         {"package": "terminal-bench/terminal-bench", "page": 2})
+
+    def test_redirects_are_rejected_without_being_followed(self):
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(_transport_responder) as server:
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                client.request("GET", server.base_url + "/redirect",
+                               deadline=deadline())
+        self.assertEqual(str(caught.exception), "upstream redirect rejected")
+        self.assertEqual(len(server.seen), 1)  # Location was never requested
 
     def test_retries_use_bounded_backoff_and_sanitized_errors(self):
-        client = benchmarks.HttpClient(sleep=lambda _seconds: None)
-        ok = _FakeResponse(body=b'{"ok":true}')
-        with patch.object(client._session, "request",
-                          side_effect=[requests.ConnectionError("https://secret.invalid/?token=x"),
-                                       requests.ConnectionError("https://secret.invalid/?token=x"),
-                                       ok]) as request:
-            result = client.request("GET", benchmarks.EPOCH_CSV_URL, deadline=deadline())
-        self.assertEqual(result.status_code, 200)
-        self.assertEqual(request.call_count, 3)
-        with patch.object(client._session, "request",
-                          side_effect=requests.ConnectionError("https://secret.invalid/?token=x")):
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(_transport_responder) as server:
+            result = client.request("GET", server.base_url + "/flaky",
+                                    deadline=deadline())
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual([item["path"] for item in server.seen],
+                             ["/flaky", "/flaky", "/flaky"])
             with self.assertRaises(benchmarks.SourceError) as caught:
-                client.request("GET", benchmarks.EPOCH_CSV_URL, deadline=deadline())
-        self.assertNotIn("secret", str(caught.exception))
-        self.assertNotIn("http", str(caught.exception).lower())
+                client.request("GET", server.base_url + "/always-503",
+                               deadline=deadline())
+            self.assertEqual(str(caught.exception), "HTTP 503")
+        self.assertNotIn("127.0.0.1", str(caught.exception))
+        self.assertNotIn("http://", str(caught.exception))
 
-    def test_body_budget_and_deadline_are_enforced(self):
-        client = benchmarks.HttpClient(max_bytes=10, sleep=lambda _seconds: None)
-        with patch.object(client._session, "request",
-                          return_value=_FakeResponse(body=b"x" * 11)):
-            with self.assertRaises(benchmarks.SourceError):
-                client.request("GET", benchmarks.EPOCH_CSV_URL, deadline=deadline())
-        with self.assertRaises(benchmarks.SourceError):
-            client.request("GET", benchmarks.EPOCH_CSV_URL, deadline=deadline(0))
+        # A refused loopback connection must become a fixed network error.
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            refused_port = probe.getsockname()[1]
+        with self.assertRaises(benchmarks.SourceError) as network:
+            client.request("GET", f"http://127.0.0.1:{refused_port}/feed",
+                           deadline=deadline())
+        self.assertEqual(str(network.exception), "network error")
+        self.assertNotIn("127.0.0.1", str(network.exception))
 
-    def test_empty_stream_chunks_still_honor_the_source_deadline(self):
-        class Clock:
-            now = 0.0
+    def test_body_budget_and_zero_deadline_are_enforced(self):
+        client = _LocalHttpClient(max_bytes=10, sleep=lambda _seconds: None)
+        with _LocalFeedServer(_transport_responder) as server:
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                client.request("GET", server.base_url + "/big",
+                               deadline=deadline())
+        self.assertEqual(str(caught.exception), "response too large")
+        self.assertEqual(benchmarks.MAX_BODY_BYTES, 4 * 1024 * 1024)
+        with self.assertRaises(benchmarks.SourceError) as expired:
+            client.request("GET", "http://127.0.0.1:1/feed", deadline=deadline(0))
+        self.assertEqual(str(expired.exception), "deadline exceeded")
 
-            def __call__(self):
-                return self.now
+    def test_slow_drip_body_respects_the_absolute_deadline_and_cleans_up(self):
+        closed = threading.Event()
+        real_client = httpx.AsyncClient
 
-        clock = Clock()
-        client = benchmarks.HttpClient(sleep=lambda _seconds: None)
-        source_deadline = benchmarks.Deadline(1.0, clock=clock)
-        clock.now = 2.0
-        with self.assertRaises(benchmarks.SourceError):
-            client._read_body(_FakeResponse(chunks=[b""]), source_deadline)
+        class SpyClient(real_client):
+            async def __aexit__(self, *exc_info):
+                try:
+                    return await super().__aexit__(*exc_info)
+                finally:
+                    closed.set()
+
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(_transport_responder) as server, \
+                patch.object(benchmarks.httpx, "AsyncClient", SpyClient):
+            started = time.monotonic()
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                client.request("GET", server.base_url + "/slowbody",
+                               deadline=deadline(0.12))
+            elapsed = time.monotonic() - started
+        self.assertEqual(str(caught.exception), "deadline exceeded")
+        # The body would take 2.4 s to finish; a bounded tolerance proves the
+        # absolute clock, not an inactivity timeout or a larger chunk size,
+        # stopped it.
+        self.assertLess(elapsed, 0.6)
+        self.assertTrue(closed.wait(2), "cancelled response/client was not closed")
+
+    def test_slow_headers_respect_the_absolute_deadline(self):
+        closed = threading.Event()
+        real_client = httpx.AsyncClient
+
+        class SpyClient(real_client):
+            async def __aexit__(self, *exc_info):
+                try:
+                    return await super().__aexit__(*exc_info)
+                finally:
+                    closed.set()
+
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(_transport_responder) as server, \
+                patch.object(benchmarks.httpx, "AsyncClient", SpyClient):
+            started = time.monotonic()
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                client.request("GET", server.base_url + "/slowheaders",
+                               deadline=deadline(0.12))
+            elapsed = time.monotonic() - started
+        self.assertEqual(str(caught.exception), "deadline exceeded")
+        self.assertLess(elapsed, 0.6)
+        self.assertTrue(closed.wait(2), "cancelled response/client was not closed")
+
+    def test_blocked_dns_lookup_cannot_extend_the_synchronous_deadline(self):
+        release = threading.Event()
+        entered = threading.Event()
+        real_getaddrinfo = socket.getaddrinfo
+
+        def blocked_getaddrinfo(*args, **kwargs):
+            entered.set()
+            release.wait(5)
+            return real_getaddrinfo(*args, **kwargs)
+
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        try:
+            with patch("socket.getaddrinfo", side_effect=blocked_getaddrinfo):
+                started = time.monotonic()
+                with self.assertRaises(benchmarks.SourceError) as caught:
+                    client.request("GET", "http://resolver.invalid/feed",
+                                   deadline=deadline(0.15))
+                elapsed = time.monotonic() - started
+            self.assertTrue(entered.is_set(), "the resolver was never called")
+            self.assertEqual(str(caught.exception), "deadline exceeded")
+            # asyncio.run would wait for the blocked resolver during loop
+            # shutdown; the shared daemon bridge must return at the deadline.
+            self.assertLess(elapsed, 0.8)
+        finally:
+            release.set()
+        loop_threads = [thread for thread in threading.enumerate()
+                        if thread.name == "benchmark-http-loop"]
+        self.assertEqual(len(loop_threads), 1)
+        resolver_threads = [thread for thread in threading.enumerate()
+                            if thread.name.startswith("benchmark-dns")]
+        self.assertLessEqual(len(resolver_threads), benchmarks._DNS_WORKERS)
 
     def test_retry_backoff_is_capped_by_the_remaining_deadline(self):
         class Clock:
@@ -689,29 +934,25 @@ class HttpSecurityTests(unittest.TestCase):
             clock.now += seconds
 
         client = benchmarks.HttpClient(sleep=sleep)
-        with patch.object(client._session, "request",
-                          side_effect=requests.ConnectionError("fixture")):
-            with self.assertRaises(benchmarks.SourceError):
-                client.request("GET", benchmarks.EPOCH_CSV_URL,
-                               deadline=benchmarks.Deadline(0.75, clock=clock))
-        self.assertTrue(delays)
-        self.assertLessEqual(sum(delays), 0.750001)
-        self.assertTrue(all(delay >= 0 for delay in delays))
+        asyncio.run(client._sleep_before_retry(
+            4, benchmarks.Deadline(0.75, clock=clock)))
+        self.assertEqual(len(delays), 1)
+        self.assertLessEqual(delays[0], 0.750001)
+        self.assertGreaterEqual(delays[0], 0)
+        with self.assertRaises(benchmarks.SourceError) as expired:
+            asyncio.run(client._sleep_before_retry(
+                0, benchmarks.Deadline(0, clock=clock)))
+        self.assertEqual(str(expired.exception), "deadline exceeded")
 
     def test_streaming_body_transport_error_is_sanitized(self):
-        class BrokenStream(_FakeResponse):
-            def iter_content(self, chunk_size=8192):
-                raise requests.ConnectionError(
-                    "https://user:fixture-secret@internal.invalid/")
-                yield b""  # pragma: no cover
-
-        client = benchmarks.HttpClient(sleep=lambda _seconds: None)
-        with patch.object(client._session, "request",
-                          return_value=BrokenStream()):
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(_transport_responder) as server:
             with self.assertRaises(benchmarks.SourceError) as caught:
-                client.request("GET", benchmarks.EPOCH_CSV_URL, deadline=deadline())
-        self.assertNotIn("fixture-secret", str(caught.exception))
+                client.request("GET", server.base_url + "/partial",
+                               deadline=deadline())
         self.assertEqual(str(caught.exception), "network error")
+        self.assertNotIn("127.0.0.1", str(caught.exception))
+        self.assertNotIn("http://", str(caught.exception))
 
     def test_json_and_csv_parsers_reject_non_finite_and_duplicate_headers(self):
         with self.assertRaises(benchmarks.SourceError):
@@ -881,7 +1122,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         finally:
             directory.cleanup()
 
-    def test_atomic_replace_failure_preserves_previous_file(self):
+    def test_atomic_replace_permission_failure_reports_storage_error(self):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
@@ -889,11 +1130,159 @@ class SnapshotPersistenceTests(unittest.TestCase):
         })
         try:
             Path(path).write_text("old-cache")
-            with patch.object(benchmarks.os, "replace", side_effect=OSError("fixture")):
-                self.assertTrue(store.refresh_source("harbor"))
+            with patch.object(benchmarks.os, "replace",
+                              side_effect=PermissionError("fixture")):
+                with self.assertLogs(benchmarks._log, level="WARNING") as logs:
+                    self.assertFalse(store.refresh_source("harbor"))
             self.assertEqual(Path(path).read_text(), "old-cache")
             self.assertEqual([item.name for item in Path(path).parent.iterdir()],
                              ["benchmarks.json"])
+            state = store.read_state(now=NOW)
+            self.assertEqual(state["harbor"]["error"], "cache storage unavailable")
+            self.assertTrue(state["harbor"]["stale"])
+            # The fetched last-good snapshot is still available in memory.
+            self.assertEqual(state["harbor"]["data"]["entries"][0]["model"], "Model")
+            self.assertGreater(store._next_attempt["harbor"], NOW)
+            self.assertFalse(store._auto_due("harbor", NOW + 1))
+            self.assertIn("cache storage unavailable", "\n".join(logs.output))
+        finally:
+            directory.cleanup()
+
+    def test_storage_failure_retains_new_data_in_memory_and_recovers(self):
+        old = snapshot([entry("tb4", "Old Model", 10.0)])
+        new = snapshot([entry("tb4", "New Model", 20.0)])
+        responses = {"value": old}
+        clock = {"now": NOW}
+
+        def fetcher(_client, _previous, _deadline):
+            return responses["value"]
+
+        directory, store, path = temp_store(fetchers={
+            "harbor": fetcher,
+            **{name: static_fetcher(benchmarks.SourceError("empty feed"))
+               for name in ("epoch", "livebench", "deepswe")},
+        })
+        store._clock = lambda: clock["now"]
+        try:
+            self.assertTrue(store.refresh_source("harbor"))
+            old_bytes = Path(path).read_bytes()
+            responses["value"] = new
+            clock["now"] = NOW + 10
+            with patch.object(benchmarks.os, "replace",
+                              side_effect=PermissionError("fixture")):
+                with self.assertLogs(benchmarks._log, level="WARNING"):
+                    self.assertFalse(store.refresh_source("harbor"))
+            state = store.read_state(now=NOW + 10)
+            self.assertEqual(state["harbor"]["error"], "cache storage unavailable")
+            self.assertTrue(state["harbor"]["stale"])
+            # Newly fetched data lives in memory; the previous disk bytes and
+            # its restart view are untouched.
+            self.assertEqual(state["harbor"]["data"]["entries"][0]["model"],
+                             "New Model")
+            # last_success still means the upstream validation succeeded, but
+            # the error/stale pair prevents a complete-fresh-success claim.
+            self.assertEqual(state["harbor"]["last_success"], NOW + 10)
+            self.assertEqual(Path(path).read_bytes(), old_bytes)
+            reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW + 10)
+            self.assertEqual(
+                reloaded.read_state(now=NOW + 10)["harbor"]["data"]["entries"][0]["model"],
+                "Old Model")
+
+            # Storage recovery clears the error and restores freshness.
+            responses["value"] = snapshot([entry("tb4", "Recovered Model", 30.0)])
+            self.assertTrue(store.refresh_source("harbor"))
+            state = store.read_state(now=NOW + 10)
+            self.assertIsNone(state["harbor"]["error"])
+            self.assertFalse(state["harbor"]["stale"])
+            self.assertEqual(state["harbor"]["data"]["entries"][0]["model"],
+                             "Recovered Model")
+            reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW + 10)
+            self.assertEqual(
+                reloaded.read_state(now=NOW + 10)["harbor"]["data"]["entries"][0]["model"],
+                "Recovered Model")
+        finally:
+            directory.cleanup()
+
+    def test_304_persist_failure_reports_storage_and_recovers(self):
+        directory, store, path = temp_store(fetchers={
+            "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
+            **{name: static_fetcher(benchmarks.SourceError("empty feed"))
+               for name in ("epoch", "livebench", "deepswe")},
+        })
+        try:
+            self.assertTrue(store.refresh_source("harbor"))
+            stable = Path(path).read_bytes()
+            store._fetchers["harbor"] = static_fetcher({"not_modified": True})
+            store._clock = lambda: NOW + 20
+            with patch.object(benchmarks.os, "replace",
+                              side_effect=PermissionError("fixture")):
+                with self.assertLogs(benchmarks._log, level="WARNING"):
+                    self.assertFalse(store.refresh_source("harbor"))
+            state = store.read_state(now=NOW + 20)
+            self.assertEqual(state["harbor"]["error"], "cache storage unavailable")
+            self.assertTrue(state["harbor"]["stale"])
+            self.assertEqual(len(state["harbor"]["data"]["entries"]), 1)
+            self.assertEqual(Path(path).read_bytes(), stable)
+            self.assertFalse(store._auto_due("harbor", NOW + 20))
+
+            # The cache is writable again: the same 304 becomes a fresh success.
+            self.assertTrue(store.refresh_source("harbor"))
+            state = store.read_state(now=NOW + 20)
+            self.assertIsNone(state["harbor"]["error"])
+            self.assertFalse(state["harbor"]["stale"])
+        finally:
+            directory.cleanup()
+
+    def test_serialization_failure_is_reported_as_storage_error(self):
+        directory, store, _ = temp_store(fetchers={
+            "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
+            **{name: static_fetcher(benchmarks.SourceError("empty feed"))
+               for name in ("epoch", "livebench", "deepswe")},
+        })
+        try:
+            with patch.object(benchmarks.json, "dumps",
+                              side_effect=TypeError("fixture")):
+                with self.assertLogs(benchmarks._log, level="WARNING"):
+                    self.assertFalse(store.refresh_source("harbor"))
+            state = store.read_state(now=NOW)
+            self.assertEqual(state["harbor"]["error"], "cache storage unavailable")
+            self.assertTrue(state["harbor"]["stale"])
+            self.assertEqual(state["harbor"]["data"]["entries"][0]["model"], "Model")
+        finally:
+            directory.cleanup()
+
+    def test_byte_budget_persist_failure_is_reported_as_storage_error(self):
+        directory, store, path = temp_store(fetchers={
+            "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
+            **{name: static_fetcher(benchmarks.SourceError("empty feed"))
+               for name in ("epoch", "livebench", "deepswe")},
+        })
+        try:
+            Path(path).write_text("previous-cache")
+            with patch.object(benchmarks, "MAX_CACHE_BYTES", 128):
+                with self.assertLogs(benchmarks._log, level="WARNING"):
+                    self.assertFalse(store.refresh_source("harbor"))
+            self.assertEqual(Path(path).read_text(), "previous-cache")
+            state = store.read_state(now=NOW)
+            self.assertEqual(state["harbor"]["error"], "cache storage unavailable")
+            self.assertTrue(state["harbor"]["stale"])
+            self.assertEqual(state["harbor"]["data"]["entries"][0]["model"], "Model")
+        finally:
+            directory.cleanup()
+
+    def test_disabled_persistence_refreshes_without_storage_error(self):
+        directory, store, path = temp_store(persist=False, fetchers={
+            "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
+            **{name: static_fetcher(benchmarks.SourceError("empty feed"))
+               for name in ("epoch", "livebench", "deepswe")},
+        })
+        try:
+            self.assertTrue(store.refresh_source("harbor"))
+            state = store.read_state(now=NOW)
+            self.assertIsNone(state["harbor"]["error"])
+            self.assertFalse(state["harbor"]["stale"])
+            self.assertTrue(store._persist())  # persistence disabled is a no-op
+            self.assertFalse(Path(path).exists())
         finally:
             directory.cleanup()
 
@@ -988,6 +1377,49 @@ class SnapshotPersistenceTests(unittest.TestCase):
             self.assertIsNone(state["epoch"]["data"])
         finally:
             directory.cleanup()
+
+    def test_malformed_metric_types_fail_closed_per_source(self):
+        directory = tempfile.TemporaryDirectory()
+        path = Path(directory.name) / "benchmarks.json"
+
+        def record(name, item):
+            return {
+                "schema_version": benchmarks.SOURCE_SCHEMA_VERSION,
+                "version": benchmarks.SOURCES[name].version,
+                "last_success": NOW,
+                "last_checked": NOW,
+                "data": {"entries": [item]},
+            }
+
+        valid_epoch = entry("eci", "Valid Model", 100.0)
+        harbor_entry = entry("tb4", "Harbor Model", 10.0)
+        for bad_metric in ([], {}, 3, None, True):
+            with self.subTest(metric=bad_metric):
+                path.write_text(json.dumps({
+                    "schema_version": benchmarks.FILE_SCHEMA_VERSION,
+                    "sources": {
+                        "harbor": record(
+                            "harbor", dict(harbor_entry, metric=bad_metric)),
+                        "epoch": record("epoch", valid_epoch),
+                    },
+                }))
+                # A malformed entry must not raise TypeError during _load.
+                store = benchmarks.BenchmarkStore(path=str(path), clock=lambda: NOW)
+                state = store.read_state(now=NOW)
+                self.assertIsNone(state["harbor"]["data"])
+                self.assertIsNone(state["harbor"]["last_success"])
+                # The valid other source is preserved.
+                self.assertEqual(state["epoch"]["data"]["entries"][0]["value"], 100.0)
+        directory.cleanup()
+
+    def test_make_entry_rejects_unhashable_metric_types(self):
+        base = dict(evaluator="Fixture", version=benchmarks.SOURCES["harbor"].version)
+        for bad_metric in ([], {}, 3, None, True):
+            with self.subTest(metric=bad_metric):
+                with self.assertRaises(benchmarks.SourceError):
+                    benchmarks._make_entry(
+                        bad_metric, "Model", 1.0, date=None, date_kind=None,
+                        **base)
 
     def test_overflowing_cache_numbers_are_rejected_without_raising(self):
         directory = tempfile.TemporaryDirectory()
@@ -2020,6 +2452,43 @@ class ApiContractTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIsNone(response.json()["sources"]["epoch"]["last_success"])
             self.assertEqual(response.json()["error"], "not configured")
+        finally:
+            benchmarks._reset_store_for_tests(None)
+            directory.cleanup()
+
+    def test_unhashable_metric_cache_never_turns_ai_services_into_a_500(self):
+        directory = tempfile.TemporaryDirectory()
+        path = Path(directory.name) / "benchmarks.json"
+        valid_epoch = entry("eci", "Valid Model", 100.0)
+        malformed_harbor = dict(entry("tb4", "Harbor Model", 10.0), metric=[])
+        path.write_text(json.dumps({
+            "schema_version": benchmarks.FILE_SCHEMA_VERSION,
+            "sources": {
+                "harbor": {
+                    "schema_version": benchmarks.SOURCE_SCHEMA_VERSION,
+                    "version": benchmarks.SOURCES["harbor"].version,
+                    "last_success": NOW,
+                    "data": {"entries": [malformed_harbor]},
+                },
+                "epoch": {
+                    "schema_version": benchmarks.SOURCE_SCHEMA_VERSION,
+                    "version": benchmarks.SOURCES["epoch"].version,
+                    "last_success": NOW,
+                    "data": {"entries": [valid_epoch]},
+                },
+            },
+        }))
+        store = benchmarks.BenchmarkStore(path=str(path), clock=lambda: NOW)
+        benchmarks._reset_store_for_tests(store)
+        try:
+            with patch.object(core, "LITELLM_CONFIG_FILE", ""), \
+                    patch.object(benchmarks, "ensure_refresh_scheduled",
+                                 return_value=False):
+                response = self.client.get("/api/ai-services")
+            self.assertEqual(response.status_code, 200)
+            sources = response.json()["sources"]
+            self.assertIsNone(sources["harbor"]["last_success"])
+            self.assertEqual(sources["epoch"]["last_success"], NOW)
         finally:
             benchmarks._reset_store_for_tests(None)
             directory.cleanup()

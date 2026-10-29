@@ -1140,6 +1140,7 @@ test('an unchanged report keeps DOM, search, filter and open cards untouched', (
 test('boot wiring keeps the 60s poll, feature sync and resize re-sync', () => {
   const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
   assert.match(html, /setInterval\(securityTick, 60000\)/);
+  assert.match(html, /setInterval\(aiServicesTick, 60000\)/);
   assert.match(html, /visibilitychange[\s\S]{0,120}securityTick\(\)/);
   assert.match(html, /async function fetchFeatures\(\)[\s\S]{0,6000}?securitySyncFeature\(\);/);
   assert.match(html, /window\.addEventListener\('resize', syncTabBarAfterFonts/);
@@ -2028,4 +2029,198 @@ test('open configuration details survive refresh redraws', async () => {
   assert.match(d.element('ai-configs').innerHTML, /id="ai-config-0" open/);
   d.run("aiRememberConfigOpen('ai-config-0', false); aiRenderConfigs();");
   assert.doesNotMatch(d.element('ai-configs').innerHTML, /id="ai-config-0" open/);
+});
+
+// ── AI inventory periodic tick (24h TTL / backoff / stale discovery) ─────────
+test('the AI inventory tick only fetches on an enabled, active, visible tab', async () => {
+  const d = dashboard();
+  const requests = [];
+  d.context.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return response(aiServicesReport());
+  };
+  d.run('document.hidden=false; _activeTab="server"; aiServicesTick()');
+  await settle();
+  assert.equal(requests.length, 0, 'another tab never polls the inventory');
+
+  d.run('_features.ai_services=true; _activeTab="ai-services"; document.hidden=true; aiServicesTick()');
+  await settle();
+  assert.equal(requests.length, 0, 'a hidden document never polls');
+
+  d.run('document.hidden=false; aiServicesTick()');
+  await settle();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/ai-services');
+  assert.equal(requests[0].options.method, undefined, 'the tick is a plain GET');
+  assert.equal(requests[0].options.headers.has('X-Homelab-Request'), false);
+
+  // One GET per interval: three more ticks are three request cycles, not six.
+  for (let i = 0; i < 3; i++) {
+    d.run('aiServicesTick()');
+    await settle();
+  }
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every(item => item.url === '/api/ai-services'));
+
+  // Feature off means zero inventory requests even on the active, visible tab.
+  const off = dashboard();
+  let offRequests = 0;
+  off.context.fetch = async () => { offRequests++; return response(aiServicesReport()); };
+  off.run('_features.ai_services=false; _features.opencode_go=false; _features.mistral=false;' +
+          '_activeTab="ai-services"; document.hidden=false; aiServicesTick()');
+  await settle();
+  assert.equal(offRequests, 0);
+});
+
+test('the AI inventory tick honours legacy provider flags and dedupes an in-flight GET', async () => {
+  const d = dashboard();
+  d.run("_features.opencode_go=true; _activeTab='ai-services';");
+  const urls = [];
+  let gets = 0, complete;
+  d.context.fetch = url => {
+    urls.push(url);
+    gets++;
+    return new Promise(resolve => { complete = resolve; });
+  };
+  d.run('aiServicesTick(); aiServicesTick()');
+  assert.equal(gets, 1, 'both ticks share the single-flight request');
+  complete(response(aiServicesReport()));
+  await settle();
+  assert.equal(d.run('_aiInFlight'), null);
+
+  d.context.fetch = async url => {
+    urls.push(url);
+    gets++;
+    return response(aiServicesReport());
+  };
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(gets, 2, 'the next interval issues exactly one fresh GET');
+  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
+  assert.ok(urls.every(url => url === '/api/ai-services'),
+    'the tick never touches the usage or limits endpoints');
+
+  d.run('_aiRefreshActive = true; aiServicesTick()');
+  await settle();
+  assert.equal(gets, 2, 'a manual refresh monitor owns its own poll loop');
+  d.run('_aiRefreshActive = false');
+});
+
+test('a tick that finds a running refresh finishes it through the bounded monitor', async () => {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  const requests = [];
+  let gets = 0;
+  d.context.fetch = async (url, options) => {
+    requests.push({ url, method: options.method || 'GET' });
+    gets++;
+    return response(aiServicesReport({ refreshing: true }));
+  };
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(gets, 1);
+  assert.equal(d.run('_aiRefreshActive'), true, 'accepting a refreshing payload starts the monitor');
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.match(d.element('ai-status').textContent, /polling/);
+
+  const timer = d.timers.find(item => item.ms === 2000);
+  assert.ok(timer, 'the bounded monitor schedules its poll');
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(gets, 1, 'the tick never adds a second loop while the monitor runs');
+
+  // The monitor stops as soon as the backend reports the refresh finished.
+  d.context.fetch = async (url, options) => {
+    requests.push({ url, method: options.method || 'GET' });
+    gets++;
+    return response(aiServicesReport({ refreshing: false }));
+  };
+  timer.fn();
+  await settle();
+  assert.equal(gets, 2);
+  assert.equal(d.run('_aiRefreshActive'), false);
+  assert.equal(d.element('btn-ai-refresh').disabled, false);
+  assert.ok(requests.every(item => item.url === '/api/ai-services' && item.method === 'GET'),
+    'the tick and its monitor never POST a refresh');
+  assert.match(d.element('toast').textContent, /benchmark scores updated/);
+});
+
+test('the tick surfaces stale/error sources and keeps last-good data on failure', async () => {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  d.context.fetch = async () => response(aiServicesReport());
+  d.run('aiServicesTick()');
+  await settle();
+  assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
+
+  const stale = aiServicesReport();
+  stale.sources.harbor = { ...stale.sources.harbor, stale: true, error: 'source fetch timed out' };
+  stale.models[0].bench = { tb4: 78.9, eci: 42.0 };
+  d.context.fetch = async () => response(stale);
+  d.run('aiServicesTick()');
+  await settle();
+  const sources = d.element('ai-sources').innerHTML;
+  assert.match(sources, /ai-badge stale">STALE/);
+  assert.match(sources, /ai-badge error">ERROR/);
+  assert.match(sources, /source fetch timed out/);
+  assert.match(d.element('ai-tbody').innerHTML, /78\.9%/);
+
+  // Recovery: the next successful tick clears the stale/error state again.
+  d.context.fetch = async () => response(aiServicesReport());
+  d.run('aiServicesTick()');
+  await settle();
+  const recovered = d.element('ai-sources').innerHTML;
+  assert.doesNotMatch(recovered, /STALE/);
+  assert.doesNotMatch(recovered, /ai-badge error/);
+  assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
+
+  const lastGood = d.element('ai-tbody').innerHTML;
+  d.context.fetch = async () => { throw new Error('offline'); };
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(d.element('ai-tbody').innerHTML, lastGood, 'transient errors keep the last good table');
+  assert.match(d.element('ai-error').textContent, /last loaded inventory: offline/);
+  assert.match(d.element('ai-status').textContent, /inventory loaded/);
+});
+
+test('a tick redraw preserves provider/route filters, columns, sort and open configs', async () => {
+  const d = await loadAI();
+  const posts = [];
+  d.context.fetch = async (url, options) => {
+    if ((options.method || 'GET') === 'POST') posts.push(url);
+    return response(aiServicesReport());
+  };
+  d.run(`aiSetProvider('openai'); aiSetRoute('alpha-route');
+         aiToggleColumn('livebench_reasoning', true);
+         aiSort('livebench_reasoning');
+         aiRememberConfigOpen('ai-config-0', true);`);
+  const sortBefore = JSON.stringify(d.run('_aiSort'));
+
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(posts.length, 0, 'a tick never POSTs');
+  assert.equal(d.run('_aiProvider'), 'openai');
+  assert.equal(d.run('_aiRoute'), 'alpha-route');
+  assert.equal(d.element('ai-provider-filter').value, 'openai');
+  assert.equal(d.element('ai-route-filter').value, 'alpha-route');
+  assert.equal(JSON.stringify(d.run('_aiSort')), sortBefore);
+  assert.ok(d.run('_aiColumns').includes('livebench_reasoning'));
+  const header = d.element('ai-thead').innerHTML;
+  assert.match(header, /data-ai-key="livebench_reasoning"/);
+  assert.match(header, /data-ai-key="livebench_reasoning"[^>]*aria-sort="descending"/);
+  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
+  assert.doesNotMatch(d.element('ai-tbody').innerHTML, /beta/);
+  assert.match(d.element('ai-configs').innerHTML, /id="ai-config-0" open/);
+});
+
+test('tick wiring keeps the 60s interval without touching the usage pollers', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
+  assert.match(html, /setInterval\(securityTick, 60000\);[\s\S]{0,300}?setInterval\(aiServicesTick, 60000\);/);
+  const tick = html.match(/function aiServicesTick\(\) \{[\s\S]*?\n\}/);
+  assert.ok(tick, 'aiServicesTick is defined');
+  assert.match(tick[0], /aiFetchServices\(\)/);
+  assert.doesNotMatch(tick[0], /api\/benchmarks\/fetch|apiPost|fetchOpenCodeGo/);
+  assert.equal((html.match(/setInterval\(fetchOpenCodeGo, 60000\)/g) || []).length, 1,
+    'the usage poller keeps its own single 60s interval');
+  assert.match(html, /setInterval\(fetchOpenCodeGoLimits, 3600000\)/);
 });
