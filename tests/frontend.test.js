@@ -74,7 +74,10 @@ function dashboard(options = {}) {
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   // Suppress only boot polling; run the real definitions and initialization.
   vm.runInContext(script.slice(0, script.indexOf('// ── polling')), context);
-  return { context, element, timers, clearedTimers, run: code => vm.runInContext(code, context) };
+  return {
+    context, element, timers, clearedTimers, storage,
+    run: code => vm.runInContext(code, context),
+  };
 }
 
 const response = data => ({ ok: true, status: 200, json: async () => data });
@@ -343,10 +346,12 @@ const acceptReport = (d, report) => d.run(`securityAcceptReport(${JSON.stringify
 test('mobile tab row keeps one swipeable row with 44px targets and edge cues', () => {
   const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
   assert.match(html, /role="tablist"[^>]*aria-label="Dashboard sections"[^>]*onkeydown="tabKeydown\(event\)"/);
-  for (const name of ['server', 'opencode', 'mistral', 'containers', 'processes', 'security']) {
+  for (const name of ['server', 'ai-services', 'containers', 'processes', 'security']) {
     assert.match(html, new RegExp(`id="tab-${name}" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-${name}"`));
     assert.match(html, new RegExp(`id="tab-btn-${name}"[^>]*aria-controls="tab-${name}"`));
   }
+  assert.doesNotMatch(html, /id="tab-(opencode|mistral)"/);
+  assert.doesNotMatch(html, /id="tab-btn-(opencode|mistral)"/);
   assert.match(html, /\.tab-bar\s*\{[^}]*flex-wrap:nowrap[^}]*overflow-x:auto/s);
   assert.match(html, /\.tab-btn\s*\{[^}]*flex:0 0 auto[^}]*min-width:44px[^}]*min-height:44px/s);
   assert.match(html, /\.tab-bar-wrap\.can-left::before/);
@@ -360,13 +365,13 @@ test('mobile tab row keeps one swipeable row with 44px targets and edge cues', (
 
 test('tablist arrows/Home/End move among visible tabs, activate and focus them', () => {
   const d = dashboard();
-  const names = ['server', 'opencode', 'mistral', 'containers', 'processes', 'security'];
+  const names = ['server', 'ai-services', 'containers', 'processes', 'security'];
   const tabs = {};
   for (const name of names) {
     tabs[name] = d.context.document.querySelector(`.tab-btn[data-tab="${name}"]`);
     tabs[name].tabIndex = name === 'server' ? 0 : -1;
   }
-  for (const name of ['opencode', 'mistral', 'security']) tabs[name].style.display = 'none';
+  for (const name of ['ai-services', 'security']) tabs[name].style.display = 'none';
 
   d.run(`switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'))`);
   assert.equal(tabs.server.tabIndex, 0);
@@ -1135,6 +1140,7 @@ test('an unchanged report keeps DOM, search, filter and open cards untouched', (
 test('boot wiring keeps the 60s poll, feature sync and resize re-sync', () => {
   const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
   assert.match(html, /setInterval\(securityTick, 60000\)/);
+  assert.match(html, /setInterval\(aiServicesTick, 60000\)/);
   assert.match(html, /visibilitychange[\s\S]{0,120}securityTick\(\)/);
   assert.match(html, /async function fetchFeatures\(\)[\s\S]{0,6000}?securitySyncFeature\(\);/);
   assert.match(html, /window\.addEventListener\('resize', syncTabBarAfterFonts/);
@@ -1175,4 +1181,1058 @@ test('summary, coverage, dependabot, details and provenance escape report string
   assert.match(d.element('sec-details').innerHTML, /&lt;script/);
   assert.match(d.element('sec-dependabot').innerHTML, /dependabot\/npm\/&lt;img/);
   assert.match(d.element('sec-provenance').innerHTML, /unsafe link withheld/);
+});
+
+// ── AI SERVICES (unified inventory comparison) ──────────────────────────────
+function aiMetric(key, label, name, unit, source) {
+  return { key, label, name, unit, source };
+}
+
+function aiServicesReport(overrides = {}) {
+  // Match the backend contract: check timestamps are epoch seconds, source and
+  // evaluation dates are YYYY-MM-DD strings, and disabled metrics are absent.
+  const checked = Math.floor(Date.now() / 1000) - 3 * 60;
+  const success = Math.floor(Date.now() / 1000) - 4 * 60;
+  const updated = '2026-09-25';
+  return {
+    refreshing: false,
+    metrics: [
+      aiMetric('tb4', 'TB4', 'Terminal-Bench 4.0', 'pct', 'harbor'),
+      aiMetric('livebench_coding', 'LBC', 'LiveBench Coding', 'pct', 'livebench'),
+      aiMetric('eci', 'ECI', 'Epoch Capabilities Index', 'index', 'epoch'),
+      aiMetric('livebench_reasoning', 'LB-R', 'LiveBench Reasoning', 'pct', 'livebench'),
+    ],
+    sources: {
+      harbor: {
+        last_checked: checked, last_success: success, source_updated: updated,
+        stale: false, error: null, version: 'tb4-2026-09',
+        url: 'https://harbor.example.org/benchmarks/tb4', warning: null,
+      },
+      epoch: {
+        last_checked: checked, last_success: success, source_updated: updated,
+        stale: false, error: null, version: 'eci-2026-09',
+        url: 'https://epoch.ai/benchmarks', warning: null,
+      },
+      livebench: {
+        last_checked: checked, last_success: success, source_updated: '2026-10-25',
+        stale: false, error: null, version: '20261025',
+        url: 'https://livebench.ai/data/20261025/table.csv', disabled: true,
+        warning: 'LiveBench2.0 reuse terms unverified; opt-in after review',
+      },
+      deepswe: {
+        last_checked: checked, last_success: null, source_updated: null,
+        stale: false, error: null, version: null,
+        url: 'https://epoch.ai/benchmarks/deepswe/review', disabled: true,
+        warning: 'DeepSWE opt-in after review',
+      },
+    },
+    models: [
+      {
+        name: 'alpha', upstream_model: 'openai/alpha-2026', provider: 'openai', mode: 'chat',
+        routes: [
+          { name: 'alpha-route', provider: 'openai' },
+          { name: 'alpha-backup', provider: 'openrouter' },
+        ],
+        bench: { tb4: 72.4, eci: 41.2 },
+        results: {
+          tb4: [{
+            source: 'harbor', metric: 'tb4', model: 'alpha-2026', agent: 'native',
+            effort: 'high', evaluator: 'Terminal-Bench 4.0', version: 'harbor/2026-09',
+            value: 72.4, date: '2026-09-30', date_kind: 'evaluation', ci: { low: 68, high: 76 },
+            configuration: 'native agent / high', selected: true,
+            metadata: { n_trials: 5, ci_method: 'bootstrap' },
+          }],
+          eci: [{
+            source: 'epoch', metric: 'eci', model: 'alpha-2026', evaluator: 'Epoch AI ECI',
+            version: 'eci_scores', value: 41.2, date: '2026-09-12', date_kind: 'model_release',
+            ci: { half_width: 1.5 },
+            configuration: 'ECI composite', selected: true, metadata: {},
+          }],
+        },
+        missing: { livebench_coding: 'source unavailable' },
+      },
+      {
+        name: 'beta', upstream_model: 'anthropic/beta', provider: 'anthropic', mode: 'chat',
+        routes: [{ name: 'beta-route', provider: 'anthropic' }],
+        bench: {},
+        results: {
+          tb4: [
+            {
+              agent: 'harness-a', value: 54.2, date: '2026-08-15', date_kind: 'benchmark_release',
+              configuration: 'harness-a / medium', metadata: {},
+            },
+            { agent: 'harness-b', value: 51.8, date: null, configuration: 'harness-b / low', metadata: {} },
+          ],
+        },
+        missing: {
+          tb4: 'not evaluated',
+          eci: 'unmatched identity',
+          livebench_coding: 'source unavailable',
+        },
+      },
+      {
+        name: 'gamma', upstream_model: 'google/gamma', provider: 'google', mode: 'chat',
+        routes: [{ name: 'gamma-route', provider: 'google' }],
+        bench: { tb4: 50.0 },
+        results: {},
+        missing: { eci: 'not evaluated', livebench_coding: 'source unavailable' },
+      },
+      {
+        name: 'embed-one', upstream_model: 'mistral/embed', provider: 'mistral', mode: 'embedding',
+        routes: [{ name: 'embed-route', provider: 'mistral' }],
+        bench: {},
+        results: {},
+        missing: {
+          tb4: 'unsupported modality', eci: 'unsupported modality', livebench_coding: 'unsupported modality',
+        },
+      },
+    ],
+    ...overrides,
+  };
+}
+
+async function loadAI(report = aiServicesReport(), options = {}) {
+  const d = dashboard(options);
+  d.run("_features.ai_services=true; _features.opencode_go=false; _features.mistral=false; _activeTab='ai-services';");
+  d.context.fetch = async url => {
+    assert.equal(url, '/api/ai-services');
+    return response(report);
+  };
+  await d.run('aiFetchServices()');
+  return d;
+}
+
+test('AI services merges tabs into one dropdown table without AA or explanation chrome', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
+  assert.match(html, /id="tab-btn-ai-services"[^>]*aria-controls="tab-ai-services"[^>]*>AI SERVICES</);
+  assert.match(html, /id="tab-ai-services" class="tab-pane"/);
+  assert.match(html, /OPEN MISTRAL ↗/);
+  assert.match(html, /id="ocgl-table"/);
+  assert.match(html, /id="ai-table"/);
+  assert.match(html, /\/api\/ai-services/);
+  assert.match(html, /\/api\/benchmarks\/fetch/);
+  assert.doesNotMatch(html, /artificialanalysis/i);
+  assert.doesNotMatch(html, /Artificial Analysis/i);
+  assert.doesNotMatch(html, /id="mistral-(table|controls|metric-btn|metric-menu|wrap|attrib|error|updated|bench-th)"/);
+  assert.doesNotMatch(html, /id="ocgl-(metric-btn|metric-menu|controls|attrib|updated|bench-th)"/);
+  assert.doesNotMatch(html, /fetchMistralModels|renderMistralModels|sortMistralModels|mistralMetric/);
+  assert.doesNotMatch(html, /ocglMetric|setMetric\(|toggleMistralMetricMenu/);
+
+  const limits = html.match(/id="ocgl-table"[\s\S]*?<\/table>/)[0];
+  assert.doesNotMatch(limits, /TB4|bench|score/i);
+
+  // The benchmark dropdown is the only selector; one score column follows it.
+  assert.match(html, /id="ai-metric-select"/);
+  assert.match(html, /aiSetMetric\(this\.value\)/);
+  assert.match(html, /aria-label="Select benchmark"/);
+  assert.match(html, /aiServicesMetric/);
+  assert.doesNotMatch(html, /aiServicesColumns/);
+
+  // Every piece of removed explanation chrome must stay removed.
+  for (const gone of [
+    'id="ai-caveats"', 'id="ai-warnings"', 'id="ai-filters"', 'id="ai-provider-filter"',
+    'id="ai-route-filter"', 'id="ai-col-picker"', 'id="ai-column-options"', 'id="ai-sources"',
+    'id="ai-configs"', 'ai-group-row', 'ai-th-src', 'ai-source-card', 'ai-warning"',
+    'Latest published dated result', 'reputable, not trusted', 'No overall rank is computed',
+    'evaluations &amp; configurations', 'source status &amp; provenance',
+  ]) {
+    assert.doesNotMatch(html, new RegExp(gone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), gone);
+  }
+
+  // The only remaining prose is the tiny CC BY licence line for Epoch data.
+  assert.match(html, /id="ai-attribution"[^>]*>Epoch AI ECI data/);
+  assert.match(html, /https:\/\/epoch\.ai\/eci/);
+  assert.match(html, /https:\/\/creativecommons\.org\/licenses\/by\/4\.0\//);
+  assert.match(html, /CC BY 4\.0/);
+  assert.match(html, /\.ai-attrib-mini \{ font-size:9px; color:var\(--g-dim\); margin-top:6px; \}/);
+
+  // Every removed render function must stay removed.
+  for (const gone of [
+    'aiRenderConfigs', 'aiRenderSources', 'aiRenderWarnings', 'aiRenderAttribution',
+    'aiToggleColumn', 'aiSetProvider', 'aiSetRoute', 'aiIsNonCoding', 'aiRememberConfigOpen',
+    'aiRenderFilters', 'aiRenderColumnPicker', 'aiAvailableOptionalMetrics',
+    'aiVisibleColumnKeys', 'aiResetHiddenSort', 'aiRestoreColumns', 'aiSaveColumns',
+    'aiAttributionGroups', 'aiConfigEntries', 'aiResultCard', 'aiDateFields', 'aiResultValue',
+    'aiSafeLink', 'aiTimestampMs', 'aiDeepSwePresent', 'aiLiveBenchPresent',
+  ]) {
+    assert.doesNotMatch(html, new RegExp(`\\b${gone}\\b`), gone);
+  }
+});
+
+test('one dropdown selects the benchmark; the table shows routes and one score column', async () => {
+  const d = await loadAI();
+  const select = d.element('ai-metric-select');
+  // Enabled sources only: LiveBench and DeepSWE never appear as options.
+  assert.match(select.innerHTML, /Terminal-Bench 4\.0/);
+  assert.match(select.innerHTML, /Epoch Capabilities Index/);
+  assert.doesNotMatch(select.innerHTML, /LiveBench|DeepSWE/);
+  assert.equal(select.value, 'tb4');
+
+  const thead = d.element('ai-thead').innerHTML;
+  assert.match(thead, /MODEL/);
+  assert.match(thead, /AVAILABLE ROUTES/);
+  // The score column comes second and uses the short label; the full name hovers.
+  assert.ok(thead.indexOf('MODEL') < thead.indexOf('TB4'), 'score column is second');
+  assert.ok(thead.indexOf('TB4') < thead.indexOf('AVAILABLE ROUTES'), 'routes column is last');
+  assert.match(thead, /title="Terminal-Bench 4\.0"/);
+  assert.doesNotMatch(thead, /OVERALL|RANK/i);
+  // Exactly one score column: no second benchmark, no source label under the header.
+  assert.doesNotMatch(thead, /Epoch Capabilities Index|Harbor|Epoch AI/);
+
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /alpha/);
+  assert.match(tbody, /openai\/alpha-2026/);
+  assert.match(tbody, /alpha-route/);
+  assert.match(tbody, /alpha-backup/);
+  assert.match(tbody, /72\.4%/);
+  assert.match(tbody, /50\.0%/);
+  assert.doesNotMatch(tbody, /41\.2/);
+  // Every model renders as a flat row; missing scores are dashes with hover reasons.
+  assert.match(tbody, /embed-one/);
+  assert.match(tbody, /title="not evaluated"/);
+  assert.match(tbody, /title="unsupported modality"/);
+  assert.doesNotMatch(tbody, /excluded/);
+  assert.doesNotMatch(tbody, /non-coding/i);
+  assert.match(d.element('ai-count').textContent, /4 models/);
+  // pct values are already 0–100 percentage points in the contract.
+  assert.equal(d.run("aiFormatValue(50,{unit:'pct'})"), '50.0%');
+  assert.equal(d.run("aiFormatValue(0.5,{unit:'pct'})"), '0.5%');
+  assert.equal(d.run("aiFormatValue(41.2,{unit:'index'})"), '41.2');
+});
+
+test('score details are hover-only and keep provenance honest', async () => {
+  const d = await loadAI();
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /title="native · high · CI 68 – 76 · evaluation date 2026-09-30 · 5 trials · benchmark model alpha-2026"/);
+  // A score without result details gets no invented hover text.
+  assert.equal(d.run("aiScoreDetail({}, 'tb4')"), '');
+  assert.equal(d.run("aiScoreDetail({results:{tb4:[]}}, 'tb4')"), '');
+  assert.equal(
+    d.run("aiScoreDetail({results:{tb4:[{agent:'a', value:1, date:null, metadata:{}}]}}, 'tb4')"),
+    'a'
+  );
+});
+
+test('last-good scores disclose stale sources on hover without extra UI', async () => {
+  for (const state of [{ stale: true, error: null }, { stale: false, error: 'HTTP 503' }]) {
+    const report = aiServicesReport();
+    Object.assign(report.sources.harbor, state);
+    const d = await loadAI(report);
+    const rows = d.element('ai-tbody').innerHTML;
+    const modelRows = rows.match(/<tr>[\s\S]*?<\/tr>/g);
+    const alpha = modelRows.find(row => row.includes('<b>alpha</b>'));
+    const gamma = modelRows.find(row => row.includes('<b>gamma</b>'));
+    assert.match(alpha, /title="[^"]*cached score — source stale"[^>]*>72\.4%/);
+    assert.match(gamma, /title="cached score — source stale"[^>]*>50\.0%/);
+    assert.doesNotMatch(rows.replace(/title="[^"]*"/g, ''), /cached score|source stale/);
+    d.run('_aiData.sources.harbor.stale=false; _aiData.sources.harbor.error=null; aiRenderTable();');
+    assert.doesNotMatch(d.element('ai-tbody').innerHTML, /cached score — source stale/);
+  }
+});
+
+test('switching benchmarks swaps the score column, formats and stored selection', async () => {
+  const d = await loadAI();
+  d.run("aiSetMetric('eci')");
+  assert.equal(d.run('_aiMetric'), 'eci');
+  assert.equal(d.element('ai-metric-select').value, 'eci');
+  assert.match(d.element('ai-thead').innerHTML, /ECI/);
+  assert.match(d.element('ai-thead').innerHTML, /title="Epoch Capabilities Index"/);
+  const tbody = d.element('ai-tbody').innerHTML;
+  // ECI is an abstract index, not a percentage.
+  assert.match(tbody, />41\.2</);
+  assert.doesNotMatch(tbody, /41\.2%/);
+  assert.match(tbody, /title="unmatched identity"/);
+  assert.match(tbody, /title="CI ± 1\.5 · model release date 2026-09-12 · benchmark model alpha-2026"/);
+  assert.equal(d.storage.get('aiServicesMetric'), '"eci"');
+  // A disabled benchmark can never be selected.
+  d.run("aiSetMetric('livebench_coding')");
+  assert.equal(d.run('_aiMetric'), 'eci');
+  d.run("aiSetMetric('tb4')");
+  assert.equal(d.run('_aiMetric'), 'tb4');
+  assert.equal(d.storage.get('aiServicesMetric'), '"tb4"');
+});
+
+test('a disabled stored benchmark falls back to the first available metric', async () => {
+  const d = await loadAI(aiServicesReport(), { localStorage: { aiServicesMetric: '"livebench_coding"' } });
+  assert.equal(d.run('_aiMetric'), 'tb4');
+  assert.equal(d.element('ai-metric-select').value, 'tb4');
+  assert.equal(d.storage.get('aiServicesMetric'), '"tb4"');
+  // A stored valid selection is honoured on load.
+  const eci = await loadAI(aiServicesReport(), { localStorage: { aiServicesMetric: '"eci"' } });
+  assert.equal(eci.run('_aiMetric'), 'eci');
+  assert.match(eci.element('ai-thead').innerHTML, /title="Epoch Capabilities Index"/);
+});
+
+test('the benchmark dropdown offers every enabled source metric', async () => {
+  const base = aiServicesReport();
+  const d = await loadAI();
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /LiveBench|DeepSWE/);
+
+  const enabled = await loadAI(aiServicesReport({
+    sources: { ...base.sources, livebench: { ...base.sources.livebench, disabled: false, warning: null } },
+  }));
+  const options = enabled.element('ai-metric-select').innerHTML;
+  assert.match(options, /LiveBench Coding/);
+  assert.match(options, /LiveBench Reasoning/);
+  assert.doesNotMatch(options, /DeepSWE/);
+  enabled.run("aiSetMetric('livebench_coding')");
+  assert.equal(enabled.run('_aiMetric'), 'livebench_coding');
+  assert.match(enabled.element('ai-thead').innerHTML, /LBC/);
+  assert.match(enabled.element('ai-thead').innerHTML, /title="LiveBench Coding"/);
+  assert.equal(enabled.storage.get('aiServicesMetric'), '"livebench_coding"');
+});
+
+test('metric source aliases resolve to the backend source key', async () => {
+  const base = aiServicesReport();
+  const report = aiServicesReport({
+    metrics: base.metrics.map(metric => metric.key === 'tb4'
+      ? { ...metric, source: 'tb4' } : metric),
+    sources: { ...base.sources, harbor: { ...base.sources.harbor, disabled: true } },
+  });
+  const d = await loadAI(report);
+  // 'tb4' resolves to the harbor source, so its disabled state hides the metric.
+  assert.equal(d.run("aiMetricDisabled('tb4')"), true);
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /Terminal-Bench 4\.0/);
+  assert.equal(d.run('_aiMetric'), 'eci');
+});
+
+test('hover dates keep the source meaning; unknown kinds never claim an evaluation date', async () => {
+  const values = [
+    { agent: 'sub', value: 61.2, date: '2026-07-01', date_kind: 'submission' },
+    { agent: 'unknown-kind', value: 59.9, date: '2026-06-01' },
+    { agent: 'no-date', value: 58.4, date: null },
+    { agent: 'no-score', value: null, date: null },
+  ];
+  const report = aiServicesReport({
+    models: [{
+      name: 'date-kinds', upstream_model: 'openai/date-kinds', provider: 'openai', mode: 'chat',
+      routes: [{ name: 'date-kinds', provider: 'openai' }],
+      bench: { tb4: 61.2 },
+      results: { tb4: values.map(entry => ({ ...entry, metadata: {} })) },
+      missing: {},
+    }],
+  });
+  const d = await loadAI(report);
+  assert.match(d.element('ai-tbody').innerHTML, /submission date 2026-07-01/);
+  assert.doesNotMatch(d.element('ai-tbody').innerHTML, /evaluation date/);
+  assert.equal(d.run("aiDateKindLabel('submission')"), 'submission date');
+  assert.equal(d.run("aiDateKindLabel('model_release')"), 'model release date');
+  assert.equal(d.run("aiDateKindLabel('benchmark_release')"), 'benchmark release date');
+  assert.equal(d.run("aiDateKindLabel('odd-kind')"), 'date (odd kind)');
+  assert.equal(d.run("aiDateKindLabel('')"), 'date (kind not reported)');
+});
+
+test('AI inventory text is escaped in the table and hover details', async () => {
+  const hostile = '<img src=x onerror="boom()">';
+  const report = aiServicesReport({
+    models: [
+      {
+        name: hostile, upstream_model: '<script>upstream()</script>', provider: hostile, mode: 'chat',
+        routes: [{ name: '<svg onload="route()">', provider: '<b>provider</b>' }],
+        bench: { tb4: 0.5 },
+        results: {
+          tb4: [{
+            agent: '<iframe>agent</iframe>', effort: '<b>high</b>',
+            date: '<d>', date_kind: '<kind>', ci: '<c>',
+            metadata: { n_trials: 5, ci_method: '<script>ci()</script>' },
+          }],
+        },
+        missing: {},
+      },
+      {
+        name: 'missing-reason', upstream_model: 'openai/missing', provider: 'openai', mode: 'chat',
+        routes: [{ name: 'missing-route', provider: 'openai' }],
+        bench: {},
+        results: {},
+        missing: { tb4: '<svg onload="missing()">' },
+      },
+    ],
+  });
+  const d = await loadAI(report);
+  for (const id of ['ai-thead', 'ai-tbody', 'ai-metric-select']) {
+    const html = d.element(id).innerHTML;
+    assert.doesNotMatch(html, /<(img|script|svg|iframe)\b/, id);
+  }
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /&lt;img/);
+  assert.match(tbody, /&lt;iframe&gt;agent/);
+  assert.match(tbody, /&lt;svg onload=/);
+  assert.match(tbody, /&lt;d&gt;/);
+  assert.match(tbody, /0\.5%/);
+});
+
+test('an inventory error keeps the dropdown and table shell usable', async () => {
+  const d = await loadAI(aiServicesReport({ models: [], error: 'configuration unavailable' }));
+  assert.match(d.element('ai-error').textContent, /inventory unavailable: configuration unavailable/);
+  assert.doesNotMatch(d.element('ai-error').textContent, /AI services unavailable/);
+  assert.match(d.element('ai-tbody').innerHTML, /no models reported by the inventory/);
+  assert.match(d.element('ai-metric-select').innerHTML, /Terminal-Bench 4\.0/);
+  assert.match(d.element('ai-count').textContent, /0 models/);
+});
+
+test('undated results with no backend reason are ambiguous, not not-evaluated', async () => {
+  const report = aiServicesReport({
+    models: [{
+      name: 'ambiguous', upstream_model: 'openai/ambiguous', provider: 'openai', mode: 'chat',
+      routes: [{ name: 'ambiguous', provider: 'openai' }],
+      bench: {},
+      results: {
+        tb4: [
+          { agent: 'a', value: 60, date: '2026-01-01', metadata: {} },
+          { agent: 'b', value: 61, date: '2026-01-01', metadata: {} },
+        ],
+      },
+      missing: {},
+    }],
+  });
+  const d = await loadAI(report);
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /no single summary — undated or ambiguous configurations/);
+  assert.doesNotMatch(tbody, /not evaluated/);
+  // No single value is invented for ambiguous configurations.
+  assert.doesNotMatch(tbody, /60\.0%|61\.0%/);
+});
+
+test('an explicit missing reason wins over present results', async () => {
+  const d = await loadAI();
+  const tbody = d.element('ai-tbody').innerHTML;
+  assert.match(tbody, /title="not evaluated"/);
+  assert.doesNotMatch(tbody, /no single summary/);
+  // The stored configuration values are not painted into the summary column.
+  assert.doesNotMatch(tbody, /54\.2%|51\.8%/);
+});
+
+test('the score column sorts; switching benchmarks resets the sort', async () => {
+  const d = await loadAI();
+  d.run("aiSort('tb4')");
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'tb4', dir: -1 }));
+  assert.match(d.element('ai-thead').innerHTML, /data-ai-key="tb4"[^>]*aria-sort="descending"/);
+  let rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('alpha') < rows.indexOf('gamma'), 'highest score sorts first');
+  d.run("aiSort('tb4')");
+  assert.equal(d.run('_aiSort.dir'), 1);
+  rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('gamma') < rows.indexOf('alpha'), 'ascending puts the lowest score first');
+  d.run("aiSort('model')");
+  assert.equal(d.run('_aiSort.key'), 'model');
+  assert.match(d.element('ai-thead').innerHTML, /data-ai-key="model"[^>]*aria-sort="ascending"/);
+  // Switching benchmarks restarts the sort; the old column is gone.
+  d.run("aiSort('tb4')");
+  d.run("aiSetMetric('eci')");
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
+  // The routes column is not sortable.
+  d.run("aiSort('routes')");
+  assert.equal(d.run('_aiSort.key'), 'model');
+});
+
+test('a payload that drops the sorted benchmark restores the model sort', async () => {
+  const d = await loadAI();
+  d.run("aiSetMetric('eci'); aiSort('eci');");
+  assert.equal(d.run('_aiSort.key'), 'eci');
+
+  // A payload that drops the selected metric falls back and resets the sort.
+  const dropped = aiServicesReport();
+  dropped.metrics = dropped.metrics.filter(metric => metric.key !== 'eci');
+  await d.run(`aiAcceptServices(${JSON.stringify(dropped)})`);
+  assert.equal(d.run('_aiMetric'), 'tb4');
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
+
+  // A source that turns disabled must not keep its benchmark selected or sorted.
+  await d.run(`aiAcceptServices(${JSON.stringify(aiServicesReport())})`);
+  d.run("aiSetMetric('eci'); aiSort('eci');");
+  const disabled = aiServicesReport();
+  disabled.sources.epoch = { ...disabled.sources.epoch, disabled: true };
+  await d.run(`aiAcceptServices(${JSON.stringify(disabled)})`);
+  assert.equal(d.run('_aiMetric'), 'tb4');
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
+
+  // The sort survives a redraw that keeps the selected benchmark.
+  await d.run(`aiAcceptServices(${JSON.stringify(aiServicesReport())})`);
+  d.run("aiSetMetric('eci'); aiSort('eci');");
+  await d.run(`aiAcceptServices(${JSON.stringify(aiServicesReport())})`);
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'eci', dir: -1 }));
+});
+
+test('manual refresh posts once and polls the same GET until refreshing clears', async () => {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  let posts = 0, gets = 0;
+  d.context.fetch = async (url, options) => {
+    if ((options.method || 'GET') === 'POST') {
+      assert.equal(url, '/api/benchmarks/fetch');
+      posts++;
+      return response({ ok: true, refreshing: true });
+    }
+    gets++;
+    return response(aiServicesReport({ refreshing: gets === 1 }));
+  };
+  const first = d.run('aiRefreshBenchmarks()');
+  const second = d.run('aiRefreshBenchmarks()');
+  assert.equal(first, second);
+  await first;
+  assert.equal(posts, 1);
+  assert.equal(gets, 0);
+  assert.match(d.element('ai-status').textContent, /refreshing/);
+
+  const poll1 = d.timers.filter(timer => timer.ms === 2000)[0];
+  assert.ok(poll1, 'first bounded poll is scheduled');
+  poll1.fn();
+  await settle();
+  assert.equal(gets, 1);
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
+
+  const poll2 = d.timers.filter(timer => timer.ms === 2000)[1];
+  assert.ok(poll2, 'second bounded poll is scheduled');
+  poll2.fn();
+  await settle();
+  assert.equal(gets, 2);
+  assert.equal(d.element('btn-ai-refresh').disabled, false);
+  assert.match(d.element('toast').textContent, /benchmark scores updated/);
+  assert.match(d.element('ai-status').textContent, /inventory loaded/);
+});
+
+test('the daily policy disables refresh without fetching and unlocks at its deadline', async () => {
+  const report = aiServicesReport();
+  report.refresh_policy = {
+    manual_only: true, can_refresh: false, error: null,
+    next_allowed_at: Date.now() / 1000 + 86400,
+  };
+  const d = await loadAI(report);
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.match(d.element('btn-ai-refresh').textContent, /REFRESH IN 24H 0M/);
+  assert.match(d.element('btn-ai-refresh').title, /Next manual refresh/);
+  d.context.fetch = () => { throw new Error('cooldown must not send a POST'); };
+  await d.run('aiRefreshBenchmarks()');
+  assert.equal(d.run('_aiRefreshActive'), false);
+  d.run('_aiRefreshPolicy.next_allowed_at=Date.now()/1000; aiRenderStatus();');
+  assert.equal(d.element('btn-ai-refresh').disabled, false);
+  assert.equal(d.element('btn-ai-refresh').textContent, '⟳ REFRESH SCORES');
+});
+
+test('a daily-limit race response adopts the server policy without claiming success', async () => {
+  const d = await loadAI();
+  let posts = 0;
+  const rows = d.element('ai-tbody').innerHTML;
+  d.context.fetch = async () => {
+    posts++;
+    return response({ok:false, rate_limited:true, refreshing:false, refresh_policy:{
+      can_refresh:false, next_allowed_at:Date.now()/1000+3600, error:null,
+    }});
+  };
+  await d.run('aiRefreshBenchmarks()');
+  assert.equal(posts, 1);
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.equal(d.element('ai-tbody').innerHTML, rows);
+  assert.match(d.element('toast').textContent, /daily refresh limit/);
+  assert.doesNotMatch(d.element('toast').textContent, /scores updated/);
+  await d.run('aiRefreshBenchmarks()');
+  assert.equal(posts, 1);
+  assert.equal(d.timers.filter(timer => timer.ms === 2000).length, 0);
+});
+
+test('a failed refresh still leaves the daily button locked and cached scores visible', async () => {
+  const d = await loadAI();
+  const report = aiServicesReport();
+  report.sources.harbor.error = 'HTTP 503';
+  report.refresh_policy = {can_refresh:false, next_allowed_at:Date.now()/1000+86400, error:null};
+  d.context.fetch = async (url, options) => response(options.method === 'POST'
+    ? {ok:true, refreshing:false, refresh_policy:report.refresh_policy} : report);
+  await d.run('aiRefreshBenchmarks()');
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
+  assert.match(d.element('toast').textContent, /source errors/);
+});
+
+test('unavailable persistent refresh history disables the action', async () => {
+  const report = aiServicesReport({refresh_policy:{can_refresh:false, error:'refresh history unavailable'}});
+  const d = await loadAI(report);
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.equal(d.element('btn-ai-refresh').textContent, 'REFRESH UNAVAILABLE');
+  d.context.fetch = () => { throw new Error('must not fetch with unavailable history'); };
+  await d.run('aiRefreshBenchmarks()');
+});
+
+test('refresh polling is bounded and transient failures preserve the last data', async () => {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  let gets = 0;
+  d.context.fetch = async (url, options) => {
+    if (options.method === 'POST') return response({ ok: true, refreshing: true });
+    gets++;
+    if (gets === 1) return response(aiServicesReport({ refreshing: true }));
+    throw new Error('offline');
+  };
+  await d.run('aiRefreshBenchmarks()');
+  let timerIndex = 0;
+  while (d.run('_aiRefreshActive')) {
+    const timer = d.timers.filter(item => item.ms === 2000)[timerIndex++];
+    assert.ok(timer, 'poll timer exists while a refresh is active');
+    timer.fn();
+    await settle();
+    assert.ok(timerIndex <= 40, 'poll loop must stop at the configured bound');
+  }
+  assert.equal(timerIndex, 40);
+  assert.equal(gets, 40);
+  assert.equal(d.element('btn-ai-refresh').disabled, false);
+  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
+  assert.match(d.element('ai-error').textContent, /refresh status unknown|last loaded inventory/);
+  assert.match(d.element('toast').textContent, /previous data retained/);
+});
+
+test('concurrent inventory loads share one GET request', async () => {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  let requests = 0, complete;
+  d.context.fetch = () => {
+    requests++;
+    return new Promise(resolve => { complete = resolve; });
+  };
+  const first = d.run('aiFetchServices()');
+  const second = d.run('aiFetchServices()');
+  assert.equal(first, second);
+  assert.equal(requests, 1);
+  complete(response(aiServicesReport()));
+  await first;
+  assert.equal(d.run('_aiInFlight'), null);
+  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
+});
+
+test('legacy OPENCODE and MISTRAL saved tabs migrate to AI SERVICES', () => {
+  for (const old of ['opencode', 'mistral']) {
+    const d = dashboard({ savedTab: old });
+    assert.equal(d.run('_activeTab'), 'ai-services');
+    assert.equal(d.storage.get('activeTab'), 'ai-services');
+    const tab = d.context.document.querySelector('.tab-btn[data-tab="ai-services"]');
+    assert.equal(tab.classList.contains('active'), true);
+    assert.equal(d.element('tab-ai-services').style.display, 'block');
+    d.run('aiServicesSyncFeature()');
+    assert.equal(d.run('_activeTab'), 'server');
+  }
+});
+
+test('AI services enables on ai_services or either legacy provider flag', async () => {
+  for (const flags of [
+    { ai_services: true, opencode_go: false, mistral: false },
+    { ai_services: false, opencode_go: true, mistral: false },
+    { ai_services: false, opencode_go: false, mistral: true },
+  ]) {
+    const d = dashboard();
+    d.context.fetch = async () => response(aiServicesReport());
+    d.run(`_features.ai_services=${flags.ai_services}; _features.opencode_go=${flags.opencode_go}; _features.mistral=${flags.mistral}; aiServicesSyncFeature();`);
+    const tab = d.context.document.querySelector('.tab-btn[data-tab="ai-services"]');
+    assert.equal(tab.style.display, 'inline-block');
+  }
+  const off = dashboard();
+  off.run('aiServicesSyncFeature()');
+  assert.equal(off.context.document.querySelector('.tab-btn[data-tab="ai-services"]').style.display, 'none');
+});
+
+test('usage and allowance sections stay above the comparison and keep no score column', async () => {
+  const d = dashboard();
+  d.context.fetch = async url => {
+    if (url === '/api/opencode-go') {
+      return response({ rolling: { percent: 23, status: 'ok', resets_at: null } });
+    }
+    if (url === '/api/opencode-go-limits') {
+      return response({ models: [{ name: 'fixture-model', req_5h: 100, monthly: 12 }] });
+    }
+    return response(aiServicesReport());
+  };
+  d.run("_features.opencode_go=true; _activeTab='ai-services'; aiServicesSyncFeature();");
+  await d.run('aiFetchServices()');
+  await d.run('fetchOpenCodeGo()');
+  await d.run('fetchOpenCodeGoLimits()');
+  assert.match(d.element('ocg-list').innerHTML, /23%/);
+  const limits = d.element('ocgl-tbody').innerHTML;
+  assert.match(limits, /fixture-model/);
+  assert.match(limits, /100/);
+  assert.match(limits, /\$12/);
+  assert.doesNotMatch(limits, /TB4|bench|score/i);
+  assert.equal(d.element('ocgl-wrap').style.display, 'block');
+});
+
+function refreshDashboard(report) {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  let gets = 0;
+  d.context.fetch = async (url, options) => {
+    if (options.method === 'POST') return response({ ok: true, refreshing: true });
+    gets++;
+    return response({ ...report, refreshing: gets === 1 });
+  };
+  return { d, gets: () => gets };
+}
+
+async function finishRefresh(d) {
+  const first = d.timers.filter(timer => timer.ms === 2000)[0];
+  assert.ok(first, 'first poll is scheduled');
+  first.fn();
+  await settle();
+  const second = d.timers.filter(timer => timer.ms === 2000)[1];
+  assert.ok(second, 'second poll is scheduled');
+  second.fn();
+  await settle();
+  assert.equal(d.run('_aiRefreshActive'), false);
+}
+
+test('a refresh completion with a source error is partial, never success', async () => {
+  const base = aiServicesReport();
+  const report = aiServicesReport({
+    sources: {
+      ...base.sources,
+      harbor: { ...base.sources.harbor, error: 'harbor unavailable' },
+    },
+  });
+  const { d } = refreshDashboard(report);
+  await d.run('aiRefreshBenchmarks()');
+  await finishRefresh(d);
+  const toastText = d.element('toast').textContent;
+  assert.match(toastText, /refresh completed with source errors — last-good scores retained/);
+  assert.doesNotMatch(toastText, /benchmark scores updated/);
+  assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
+  assert.equal(d.element('btn-ai-refresh').disabled, false);
+});
+
+test('a refresh completion with every enabled source failed reports failure', async () => {
+  const base = aiServicesReport();
+  const report = aiServicesReport({
+    sources: {
+      ...base.sources,
+      harbor: { ...base.sources.harbor, error: 'harbor down' },
+      epoch: { ...base.sources.epoch, error: 'epoch down' },
+    },
+  });
+  const { d } = refreshDashboard(report);
+  await d.run('aiRefreshBenchmarks()');
+  await finishRefresh(d);
+  const toastText = d.element('toast').textContent;
+  assert.match(toastText, /benchmark refresh failed — last-good scores retained/);
+  assert.doesNotMatch(toastText, /benchmark scores updated/);
+  assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
+});
+
+test('disabled source errors never count as refresh failures', async () => {
+  const base = aiServicesReport();
+  const report = aiServicesReport({
+    sources: {
+      ...base.sources,
+      livebench: { ...base.sources.livebench, error: 'artifact not fetched' },
+      deepswe: { ...base.sources.deepswe, error: 'artifact not fetched' },
+    },
+  });
+  const { d } = refreshDashboard(report);
+  await d.run('aiRefreshBenchmarks()');
+  await finishRefresh(d);
+  assert.match(d.element('toast').textContent, /benchmark scores updated/);
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /LiveBench/);
+});
+
+test('an immediate completion from POST also reports source errors', async () => {
+  const base = aiServicesReport();
+  const report = aiServicesReport({
+    sources: {
+      ...base.sources,
+      harbor: { ...base.sources.harbor, error: 'harbor down' },
+      epoch: { ...base.sources.epoch, error: 'epoch down' },
+    },
+  });
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  d.context.fetch = async (url, options) => {
+    if (options.method === 'POST') return response({ ok: true, refreshing: false });
+    return response(report);
+  };
+  await d.run('aiRefreshBenchmarks()');
+  assert.match(d.element('toast').textContent, /benchmark refresh failed — last-good scores retained/);
+  assert.equal(d.run('_aiRefreshActive'), false);
+  assert.equal(d.element('btn-ai-refresh').disabled, false);
+});
+
+// ── reviewer regression fixes ────────────────────────────────────────────────
+test('the AI table wrapper still scrolls horizontally inside the shared table shell', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
+  assert.match(html, /#ai-table-wrap \{ overflow-x:auto; overflow-y:hidden; \}/);
+  assert.match(html, /class="proc-table-wrap ai-table-wrap"/);
+});
+
+test('a hidden restored AI tab loads when the document becomes visible, deduped', async () => {
+  const d = dashboard({ hidden: true, savedTab: 'ai-services' });
+  let fetches = 0;
+  d.context.fetch = async url => {
+    assert.equal(url, '/api/ai-services');
+    fetches++;
+    return response(aiServicesReport());
+  };
+  d.run('_features.ai_services=true; aiServicesSyncFeature();');
+  await settle();
+  assert.equal(fetches, 0, 'no fetch while the document is hidden');
+
+  d.run('document.hidden = false; _aiLastEnterAt = 0; aiHandleVisibility(); aiHandleVisibility();');
+  await settle();
+  assert.equal(fetches, 1, 'visibilitychange and pageshow coalesce into one load');
+  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
+
+  d.run('_aiLastEnterAt = 0; aiHandleVisibility();');
+  await settle();
+  assert.equal(fetches, 2, 'a later visibility change can load again');
+});
+
+test('initial load failure and refresh timeout never leave a fake loading or polling status', async () => {
+  const failed = dashboard();
+  failed.run("_features.ai_services=true; _activeTab='ai-services';");
+  failed.context.fetch = async () => { throw new Error('offline'); };
+  await failed.run('aiFetchServices()');
+  assert.match(failed.element('ai-status').textContent, /ai services unavailable/);
+  assert.doesNotMatch(failed.element('ai-status').textContent, /loading/);
+
+  const timed = dashboard();
+  timed.run("_features.ai_services=true; _activeTab='ai-services';");
+  let gets = 0;
+  timed.context.fetch = async (url, options) => {
+    if (options.method === 'POST') return response({ ok: true, refreshing: true });
+    gets++;
+    const report = aiServicesReport({ refreshing: true });
+    return response(report);
+  };
+  await timed.run('aiRefreshBenchmarks()');
+  let polls = 0;
+  while (timed.run('_aiRefreshActive')) {
+    const timer = timed.timers.filter(item => item.ms === 2000)[polls++];
+    assert.ok(timer, 'poll timer exists while refresh is active');
+    timer.fn();
+    await settle();
+  }
+  assert.equal(polls, 40);
+  assert.equal(gets, 40);
+  assert.equal(timed.element('btn-ai-refresh').disabled, false);
+  const status = timed.element('ai-status').textContent;
+  assert.doesNotMatch(status, /polling/);
+  assert.match(status, /refresh status unknown/);
+});
+
+test('loaded status shows an absolute time and an aging relative label', async () => {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  d.run('_aiLoadedAt = Date.now() - 10 * 60 * 1000; _aiLoadFailed = false; aiRenderStatus();');
+  const status = d.element('ai-status').textContent;
+  assert.match(status, /inventory loaded \d{1,2}:\d{2}:\d{2}/);
+  assert.match(status, /\(10m ago\)/);
+  d.run('_aiLoadedAt = Date.now() - 20 * 60 * 1000; aiRenderStatus();');
+  assert.match(d.element('ai-status').textContent, /\(20m ago\)/);
+});
+
+test('the Mistral console link only shows when the Mistral feature is enabled', () => {
+  const d = dashboard();
+  d.run('_features.ai_services=true; _features.opencode_go=true; _features.mistral=false; aiServicesSyncFeature();');
+  assert.equal(d.element('ai-mistral-console').style.display, 'none');
+  d.run('_features.mistral=true; aiServicesSyncFeature();');
+  assert.equal(d.element('ai-mistral-console').style.display, 'inline-flex');
+});
+
+test('usage stays outside the collapsed allowances below the Mistral link', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
+  const mistral = html.indexOf('id="ai-mistral-console"');
+  const usage = html.indexOf('id="ocg-list"');
+  const allowances = html.indexOf('id="ocg-details"');
+  const comparison = html.indexOf('id="ai-count"');
+  assert.ok(mistral !== -1 && usage !== -1 && allowances !== -1 && comparison !== -1);
+  assert.ok(mistral < usage, 'the Mistral console link sits above the usage block');
+  assert.ok(usage < allowances && allowances < comparison);
+  const details = html.match(/<details[^>]*id="ocg-details"[^>]*>([\s\S]*?)<\/details>/);
+  assert.ok(details, 'allowances are wrapped in details');
+  assert.doesNotMatch(details[0].split('>')[0], /\bopen\b/, 'allowances default to collapsed');
+  assert.match(details[1], /<summary>allowances · go plan<\/summary>/);
+  assert.match(details[1], /id="ocgl-table"/);
+  assert.doesNotMatch(details[1], /id="ocg-(?:label|list)"/);
+  assert.match(html, /\.ai-col-picker summary::before \{ content:'▸'/);
+  assert.match(html, /\.ai-col-picker\[open\] summary::before \{ content:'▾'/);
+  assert.match(html, /\.ai-col-picker summary:focus-visible/);
+});
+
+test('usage and the entire allowances disclosure follow the OpenCode feature', () => {
+  const d = dashboard();
+  d.run('_features.ai_services=true; _features.opencode_go=false; aiServicesSyncFeature();');
+  for (const id of ['ocg-label', 'ocg-list', 'ocg-details']) {
+    assert.equal(d.element(id).style.display, 'none', id);
+  }
+  d.run('_aiUsageStarted=true; _features.opencode_go=true; aiServicesSyncFeature();');
+  assert.equal(d.element('ocg-label').style.display, 'flex');
+  assert.equal(d.element('ocg-list').style.display, 'flex');
+  assert.equal(d.element('ocg-details').style.display, 'block');
+  assert.equal(d.element('ocg-details').open, false);
+  d.element('ocg-details').open = true;
+  d.run('aiServicesSyncFeature();');
+  assert.equal(d.element('ocg-details').open, true, 'sync preserves the user toggle');
+});
+
+// ── AI inventory periodic tick (local cache / shared cooldown) ──────────────
+test('the AI inventory tick only fetches on an enabled, active, visible tab', async () => {
+  const d = dashboard();
+  const requests = [];
+  d.context.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return response(aiServicesReport());
+  };
+  d.run('document.hidden=false; _activeTab="server"; aiServicesTick()');
+  await settle();
+  assert.equal(requests.length, 0, 'another tab never polls the inventory');
+
+  d.run('_features.ai_services=true; _activeTab="ai-services"; document.hidden=true; aiServicesTick()');
+  await settle();
+  assert.equal(requests.length, 0, 'a hidden document never polls');
+
+  d.run('document.hidden=false; aiServicesTick()');
+  await settle();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/ai-services');
+  assert.equal(requests[0].options.method, undefined, 'the tick is a plain GET');
+  assert.equal(requests[0].options.headers.has('X-Homelab-Request'), false);
+
+  // One GET per interval: three more ticks are three request cycles, not six.
+  for (let i = 0; i < 3; i++) {
+    d.run('aiServicesTick()');
+    await settle();
+  }
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every(item => item.url === '/api/ai-services'));
+
+  // Feature off means zero inventory requests even on the active, visible tab.
+  const off = dashboard();
+  let offRequests = 0;
+  off.context.fetch = async () => { offRequests++; return response(aiServicesReport()); };
+  off.run('_features.ai_services=false; _features.opencode_go=false; _features.mistral=false;' +
+          '_activeTab="ai-services"; document.hidden=false; aiServicesTick()');
+  await settle();
+  assert.equal(offRequests, 0);
+});
+
+test('the AI inventory tick honours legacy provider flags and dedupes an in-flight GET', async () => {
+  const d = dashboard();
+  d.run("_features.opencode_go=true; _activeTab='ai-services';");
+  const urls = [];
+  let gets = 0, complete;
+  d.context.fetch = url => {
+    urls.push(url);
+    gets++;
+    return new Promise(resolve => { complete = resolve; });
+  };
+  d.run('aiServicesTick(); aiServicesTick()');
+  assert.equal(gets, 1, 'both ticks share the single-flight request');
+  complete(response(aiServicesReport()));
+  await settle();
+  assert.equal(d.run('_aiInFlight'), null);
+
+  d.context.fetch = async url => {
+    urls.push(url);
+    gets++;
+    return response(aiServicesReport());
+  };
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(gets, 2, 'the next interval issues exactly one fresh GET');
+  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
+  assert.ok(urls.every(url => url === '/api/ai-services'),
+    'the tick never touches the usage or limits endpoints');
+
+  d.run('_aiRefreshActive = true; aiServicesTick()');
+  await settle();
+  assert.equal(gets, 2, 'a manual refresh monitor owns its own poll loop');
+  d.run('_aiRefreshActive = false');
+});
+
+test('a tick that finds a running refresh finishes it through the bounded monitor', async () => {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  const requests = [];
+  let gets = 0;
+  d.context.fetch = async (url, options) => {
+    requests.push({ url, method: options.method || 'GET' });
+    gets++;
+    return response(aiServicesReport({ refreshing: true }));
+  };
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(gets, 1);
+  assert.equal(d.run('_aiRefreshActive'), true, 'accepting a refreshing payload starts the monitor');
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.match(d.element('ai-status').textContent, /polling/);
+
+  const timer = d.timers.find(item => item.ms === 2000);
+  assert.ok(timer, 'the bounded monitor schedules its poll');
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(gets, 1, 'the tick never adds a second loop while the monitor runs');
+
+  // The monitor stops as soon as the backend reports the refresh finished.
+  d.context.fetch = async (url, options) => {
+    requests.push({ url, method: options.method || 'GET' });
+    gets++;
+    return response(aiServicesReport({ refreshing: false }));
+  };
+  timer.fn();
+  await settle();
+  assert.equal(gets, 2);
+  assert.equal(d.run('_aiRefreshActive'), false);
+  assert.equal(d.element('btn-ai-refresh').disabled, false);
+  assert.ok(requests.every(item => item.url === '/api/ai-services' && item.method === 'GET'),
+    'the tick and its monitor never POST a refresh');
+  assert.match(d.element('toast').textContent, /benchmark scores updated/);
+});
+
+test('a tick adopts fresher scores and keeps last-good data on failure', async () => {
+  const d = dashboard();
+  d.run("_features.ai_services=true; _activeTab='ai-services';");
+  d.context.fetch = async () => response(aiServicesReport());
+  d.run('aiServicesTick()');
+  await settle();
+  assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
+
+  const fresh = aiServicesReport();
+  fresh.models[0].bench = { tb4: 78.9, eci: 42.0 };
+  d.context.fetch = async () => response(fresh);
+  d.run('aiServicesTick()');
+  await settle();
+  assert.match(d.element('ai-tbody').innerHTML, /78\.9%/);
+
+  const lastGood = d.element('ai-tbody').innerHTML;
+  d.context.fetch = async () => { throw new Error('offline'); };
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(d.element('ai-tbody').innerHTML, lastGood, 'transient errors keep the last good table');
+  assert.match(d.element('ai-error').textContent, /last loaded inventory: offline/);
+  assert.match(d.element('ai-status').textContent, /inventory loaded/);
+});
+
+test('a tick redraw preserves the selected benchmark and its sort', async () => {
+  const d = await loadAI();
+  const posts = [];
+  d.context.fetch = async (url, options) => {
+    if ((options.method || 'GET') === 'POST') posts.push(url);
+    return response(aiServicesReport());
+  };
+  d.run("aiSetMetric('eci'); aiSort('eci');");
+  const sortBefore = JSON.stringify(d.run('_aiSort'));
+
+  d.run('aiServicesTick()');
+  await settle();
+  assert.equal(posts.length, 0, 'a tick never POSTs');
+  assert.equal(d.run('_aiMetric'), 'eci');
+  assert.equal(d.element('ai-metric-select').value, 'eci');
+  assert.equal(JSON.stringify(d.run('_aiSort')), sortBefore);
+  const header = d.element('ai-thead').innerHTML;
+  assert.match(header, /data-ai-key="eci"[^>]*aria-sort="descending"/);
+  assert.match(d.element('ai-tbody').innerHTML, /alpha/);
+});
+
+test('tick wiring keeps the 60s interval without touching the usage pollers', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
+  assert.match(html, /setInterval\(securityTick, 60000\);[\s\S]{0,300}?setInterval\(aiServicesTick, 60000\);/);
+  const tick = html.match(/function aiServicesTick\(\) \{[\s\S]*?\n\}/);
+  assert.ok(tick, 'aiServicesTick is defined');
+  assert.match(tick[0], /aiFetchServices\(\)/);
+  assert.doesNotMatch(tick[0], /api\/benchmarks\/fetch|apiPost|fetchOpenCodeGo/);
+  assert.equal((html.match(/setInterval\(fetchOpenCodeGo, 60000\)/g) || []).length, 1,
+    'the usage poller keeps its own single 60s interval');
+  assert.match(html, /setInterval\(fetchOpenCodeGoLimits, 3600000\)/);
 });

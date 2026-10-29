@@ -13,9 +13,13 @@ import psutil, requests
 from dotenv import load_dotenv
 import yaml
 
+# Source opt-ins are initialized when benchmarks is imported, so local .env
+# settings must be available first (Compose already supplies process env).
+load_dotenv()
+
+import benchmarks
 import security_report
 
-load_dotenv()
 _log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -55,18 +59,6 @@ OPENCODE_LIMITS_URLS = (
 OPENCODE_LIMITS_TTL  = 3600  # seconds between docs refetches
 OPENCODE_LIMITS_RETRY = 300  # seconds to back off after a failed refetch
 LITELLM_CONFIG_FILE = os.getenv("LITELLM_CONFIG_FILE", "")
-# Model benchmark scores for the limits table (Artificial Analysis' public
-# pages — the official API's per-benchmark scores are Pro-only).  The
-# leaderboard page holds the shared metrics for all ~700 models; the
-# Briefcase evaluation page additionally carries the benchmark-specific
-# scores (AA-Briefcase / AutomationBench-AA / GDP.pdf / raw GDPval Elo) for
-# its model set.  Nothing is fetched automatically: the dashboard's "fetch
-# scores" button pulls + parses both pages into HOMELAB_BENCH_FILE.
-OPENCODE_BENCH_URL       = "https://artificialanalysis.ai/leaderboards/models"
-OPENCODE_BENCH_EXTRA_URL = "https://artificialanalysis.ai/evaluations/aa-briefcase"
-HOMELAB_BENCH_FILE = os.getenv(
-    "HOMELAB_BENCH_FILE", os.path.expanduser("~/.homelab-ctrl/benchmarks.json")
-)
 # ── Desktop control (Wake-on-LAN + remote power off) — see SETUP.md § 6 ──────
 # Request files are action selectors only; the WoL magic packet itself is
 # broadcast on the LAN by the host-side handler (host/desktop-power-handler.sh),
@@ -720,11 +712,11 @@ def _get_opencode_go_limits() -> dict:
     with _opencode_limits_lock:
         cached = _opencode_limits_cache["data"]
         if cached is not None and now - _opencode_limits_cache["ts"] < OPENCODE_LIMITS_TTL:
-            return _attach_benchmarks(dict(cached))
+            return dict(cached)
         if now - _opencode_limits_cache["fail_ts"] < OPENCODE_LIMITS_RETRY:
             # the last refetch failed — back off instead of retrying every request
             if cached is not None:
-                return _attach_benchmarks({**cached, "stale": True})
+                return {**cached, "stale": True}
             return {"error": "unavailable"}
 
     models: list[dict] = []
@@ -744,262 +736,17 @@ def _get_opencode_go_limits() -> dict:
             _opencode_limits_cache["ts"]   = now
             _opencode_limits_cache["data"] = {"models": models}
     if models:
-        return _attach_benchmarks({"models": models})
+        return {"models": models}
     if cached is not None:
-        return _attach_benchmarks({**cached, "stale": True})
+        return {**cached, "stale": True}
     return {"error": "unavailable"}
 
 
-# ── Benchmark scores (Artificial Analysis, on-demand fetch) ──────────────────
-# The public leaderboard page embeds per-model scores in its payload as
-#  \"shortName\":\"...\" ... \"intelligenceIndex\":56.0 ... pairs.  Parsing is
-# deliberately *not* automated on a schedule (AA's terms prohibit automated
-# scraping): the dashboard's explicit "fetch scores" action calls
-# fetch_benchmarks(), which parses and stores the scores to
-# HOMELAB_BENCH_FILE.  Reads never touch the network.
-
-_BENCH_METRICS = (
-    # payload key,                  our key,       label,     friendly name,           unit
-    ("intelligenceIndex",          "intelligence", "INTEL",   "Intelligence Index",    "index"),
-    ("briefcaseElo",               "briefcase",    "BRIEF",   "AA-Briefcase v1.1",     "elo"),
-    ("gdpval",                     "gdpval",       "GDPVAL",  "GDPval-AA v2.1",        "elo"),
-    ("automationBenchPartialScore", "automation",  "AUTOM",   "AutomationBench-AA",    "pct"),
-    ("terminalBench40",            "tb4",          "TB4",     "Terminal-Bench 4.0",    "pct"),
-    ("scicode",                    "scicode",      "SCICODE", "SciCode",               "pct"),
-    ("hle",                        "hle",          "HLE",     "Humanity's Last Exam",  "pct"),
-    ("gdpPdfAllPass",              "gdppdf",       "GDP.PDF", "GDP.pdf",               "pct"),
-    ("critpt",                     "critpt",       "CRITPT",  "CritPt",                "pct"),
-    ("omniscience",                "omniscience",  "OMNI",    "AA-Omniscience",        "index"),
-    ("lcr",                        "lcr",          "LCR",     "AA-LCR v1.1",           "pct"),
-    # not part of Intelligence Index v4.3.2, but AA still maintains it (τ³)
-    ("tauBanking",                 "taub",         "τ-BANK",  "τ³-Banking",            "pct"),
-)
-_BENCH_ALIASES = {                      # opencode name → AA name (both normalized)
-    "gemini4argoncontributor": "gemini4argon",
-    "musespark13contributor": "musespark13",
-    # AA deprecated Muse Spark 1.2, so this is a no-op until it is re-listed.
-    "musespark12contributor": "musespark12",
-    "step5previewfree":       "step5preview",
-    # AA renamed these after release but still ranks them — identity confirmed by
-    # matching AA's price + release date against opencode-go's catalogue.
-    "beamfree":               "beam10",           # Beam Free → Beam 1.0
-    "minimaxm31flashfree":    "minimaxm31flash",  # MiniMax M3.1 Flash Free → MiniMax-M3.1-Flash
-    "qwen38flash":            "qwen38flashnext",  # Qwen3.8 Flash → Qwen3.8-Flash-Next
-    # Deliberately absent:
-    #   gpt56luna     — AA deprecated it; "GPT-5.6 Terra" is a different model (10× price).
-    #   deepseekv4pro — AA's active entry is "V4 Pro 0813", but opencode-go's registry
-    #                   date (2026-04-24) matches AA's deprecated "V4 Pro 0424" instead.
-}
-
-# Exact Mistral API IDs whose AA leaderboard names are confirmed in the shared
-# cache. These are Mistral-only aliases; do not apply them to OpenCode rows or
-# infer aliases for other Mistral IDs.
-# Z.ai's GLM models are served without Mistral modifications:
-# https://docs.mistral.ai/models/zai-glm-5-3
-# https://docs.mistral.ai/models/zai-glm-5-3-flash
-# Large 4 is a public preview (v26.10); this mapping is preview-specific and
-# should be revalidated if/when Mistral publishes a replacement model ID:
-# https://docs.mistral.ai/models/mistral-large-4-0
-# https://mistral.ai/news/mistral-large-4/
-# Small 4's pinned API ID is mistral-small-2603; Mistral's docs also list
-# mistral-small-latest as an alias for Small 4 (verified 2026-10-23). Recheck
-# this mapping if the upstream rolling alias changes:
-# https://docs.mistral.ai/models/mistral-small-4-0-26-03.md
-_MISTRAL_BENCH_ALIASES = {
-    "zaiglm53":          "glm53",
-    "zaiglm53flash":     "glm53flash",
-    "mistrallarge4":     "mistrallarge4preview",
-    "mistrallarge40":    "mistrallarge4preview",
-    "mistralsmall2603":  "mistralsmall4",
-    "mistralsmalllatest": "mistralsmall4",
-}
-
-
-def _norm_model_name(s: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", s.lower())
-
-
-def _bench_records(text: str):
-    marks = list(re.finditer(r'\\"shortName\\":\\"([^"\\]+)\\"', text))
-    for i, mark in enumerate(marks):
-        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
-        base = _norm_model_name(re.sub(r"\s*\(.*\)$", "", mark.group(1)))
-        yield base, text[mark.end():end]
-
-
-def _parse_bench_page(text: str) -> dict[str, dict[str, float]]:
-    """{normalized base model name: {our metric key: best raw value}}"""
-    out: dict[str, dict[str, float]] = {}
-    for base, segment in _bench_records(text):
-        slot = out.setdefault(base, {})
-        for payload_key, key, _label, _name, _unit in _BENCH_METRICS:
-            pat = '\\"' + payload_key + '\\":'
-            nxt = segment.find(pat)
-            if nxt < 0:
-                continue
-            vm = re.match(re.escape(pat) + r'(null|-?[0-9.]+)', segment[nxt:])
-            if not vm or vm.group(1) == "null":
-                continue
-            val = float(vm.group(1))
-            if val > slot.get(key, -1e9):
-                slot[key] = val
-    return {k: v for k, v in out.items() if v}
-
-
-# Benchmark-specific score keys that exist only on the AA *evaluation* pages
-# (the leaderboard page covers the shared metrics for the full model set).
-_BENCH_EXTRA_KEYS = (
-    # payload key,                  our key
-    ("briefcaseElo",                "briefcase"),
-    ("gdpval",                      "gdpval"),
-    ("automationBenchPartialScore", "automation"),
-    ("gdpPdfAllPass",               "gdppdf"),
-)
-
-
-def _parse_bench_extra_page(text: str) -> dict[str, dict[str, float]]:
-    """{norm name: {our key: raw value}} from an AA evaluation page.
-
-    Those pages embed the same model objects as the leaderboard, but the
-    benchmark keys sit anywhere within a (sometimes >7k char) object, so slice
-    per model: from each shortName up to the next one, then take the first
-    numeric hit per key there."""
-    out: dict[str, dict[str, float]] = {}
-    for base, seg in _bench_records(text):
-        slot = out.setdefault(base, {})
-        for payload_key, key in _BENCH_EXTRA_KEYS:
-            pat = re.escape('\\"' + payload_key + '\\":')
-            for vm in re.finditer(pat + r'(null|-?[0-9.]+)', seg):
-                if vm.group(1) == "null":
-                    continue
-                val = float(vm.group(1))
-                if val > slot.get(key, -1e9):
-                    slot[key] = val
-                break
-    return out
-
-
-def _attach_gdpval_elo(scores: dict, text: str) -> None:
-    """GDPval: the leaderboard page carries only the normalized score for its
-    full model set — convert it to the raw Elo AA displays (norm * 2000 + 500,
-    per the published sublabel) for models the evaluation page doesn't cover.
-    Never overwrites a real raw value."""
-    for base, segment in _bench_records(text):
-        nxt = segment.find('\\"gdpvalNormalized\\":')
-        if nxt < 0:
-            continue
-        vm = re.match(re.escape('\\"gdpvalNormalized\\":') + r'(null|-?[0-9.]+)', segment[nxt:])
-        if vm and vm.group(1) != "null":
-            scores.setdefault(base, {}).setdefault("gdpval", float(vm.group(1)) * 2000 + 500)
-
-
-_bench_fetch_lock = threading.Lock()   # one fetch at a time (button spam / two clients)
-
-
-def _fetch_aa_benchmarks() -> dict:
-    """Fetch and cache AA scores after an explicitly requested UI action."""
-    if not _bench_fetch_lock.acquire(blocking=False):
-        return {"ok": False, "error": "fetch already running"}
-    try:
-        try:
-            r = requests.get(OPENCODE_BENCH_URL, timeout=25)
-            if r.status_code != 200:
-                return {"ok": False, "error": f"upstream HTTP {r.status_code}"}
-            models = _parse_bench_page(r.text)
-            _attach_gdpval_elo(models, r.text)
-        except Exception as exc:
-            _log.warning("Benchmark fetch failed (%s)", type(exc).__name__)
-            return {"ok": False, "error": "benchmark source unavailable"}
-        try:
-            r2 = requests.get(OPENCODE_BENCH_EXTRA_URL, timeout=25)
-            if r2.status_code == 200:
-                # benchmark-specific extras for the evaluation-page model set
-                for nm, kv in _parse_bench_extra_page(r2.text).items():
-                    models.setdefault(nm, {}).update(kv)
-        except Exception:
-            pass                                     # base metrics still refresh
-        if not models:
-            return {"ok": False, "error": "no scores found (page layout changed?)"}
-        data = {"fetched_at": time.time(), "source": OPENCODE_BENCH_URL, "models": models}
-        try:
-            os.makedirs(os.path.dirname(HOMELAB_BENCH_FILE) or ".", exist_ok=True)
-            tmp = HOMELAB_BENCH_FILE + ".tmp"
-            with open(tmp, "w") as fh:
-                json.dump(data, fh)
-            os.replace(tmp, HOMELAB_BENCH_FILE)
-        except OSError as exc:
-            _log.warning("Benchmark storage failed (%s)", type(exc).__name__)
-            return {"ok": False, "error": "cannot store benchmarks"}
-        return {"ok": True, "fetched_at": data["fetched_at"], "models": len(models)}
-    finally:
-        _bench_fetch_lock.release()
-
-
-def fetch_opencode_go_benchmarks() -> dict:
-    """Compatibility wrapper for the legacy OpenCode-only fetch action."""
-    if not _read_opencode_go_key():
-        return {"ok": False, "error": "not configured"}
-    return _fetch_aa_benchmarks()
-
-
-def fetch_benchmarks() -> dict:
-    """Shared explicit AA fetch for OpenCode Go or configured LiteLLM models."""
-    if not _read_opencode_go_key() and not _litellm_config_path():
-        return {"ok": False, "error": "not configured"}
-    return _fetch_aa_benchmarks()
-
-
-def get_opencode_go_benchmarks() -> dict | None:
-    """Read the stored benchmark scores; None when never fetched."""
-    try:
-        with open(HOMELAB_BENCH_FILE) as fh:
-            data = json.load(fh)
-        if isinstance(data, dict) and isinstance(data.get("models"), dict):
-            return data
-    except (OSError, ValueError):
-        pass
-    return None
-
-
-def _benchmark_for_model(name: str, scores: dict, *, aliases: bool = True) -> dict:
-    """Match an exact normalized model identity, with optional legacy aliases."""
-    key = _norm_model_name(name)
-    if aliases:
-        key = _BENCH_ALIASES.get(key, key)
-    return scores.get(key) or {}
-
-
-def _mistral_benchmark_for_model(name: str, scores: dict) -> dict:
-    """Match a provider-stripped Mistral ID, using only verified exact aliases."""
-    key = _norm_model_name(name)
-    key = _MISTRAL_BENCH_ALIASES.get(key, key)
-    record = scores.get(key)
-    return record if isinstance(record, dict) else {}
-
-
-def _bench_metadata(data: dict | None) -> dict:
-    return {
-        "bench_metrics": [{"key": k, "label": lbl, "name": nm, "unit": u}
-                          for _pk, k, lbl, nm, u in _BENCH_METRICS],
-        "bench_fetched_at": (data or {}).get("fetched_at"),
-    }
-
-
-def _attach_benchmarks(payload: dict) -> dict:
-    """Copy the limits rows, adding {"bench": {metric: raw value}} + metadata."""
-    data = get_opencode_go_benchmarks()
-    scores = (data or {}).get("models") or {}
-    models = []
-    for m in payload.get("models", []):
-        mm = dict(m)
-        mm["bench"] = _benchmark_for_model(mm["name"], scores)
-        models.append(mm)
-    return {
-        **payload,
-        "models": models,
-        **_bench_metadata(data),
-    }
-
+# ── AI services: LiteLLM inventory + independent benchmark sources ─────────
+# Inventory is local-only and deliberately narrow: public route alias, the
+# upstream model ID, and model_info.mode.  No provider credentials or arbitrary
+# litellm_params are ever read into a response.  Benchmark fetching lives in
+# benchmarks.py (fixed public sources, per-source snapshots, no AA scraping).
 
 def _litellm_config_path() -> str | None:
     """Return a configured nonblank LiteLLM path without checking readability."""
@@ -1007,75 +754,156 @@ def _litellm_config_path() -> str | None:
     return path or None
 
 
-def get_mistral_models() -> dict:
-    """Return LiteLLM routes backed by mistral/ and exact AA benchmark matches.
+_MODE_INFERENCE = (
+    ("embedding", ("embed",)),
+    ("audio_transcription",
+     ("audio", "voxtral", "transcribe", "speech", "tts", "whisper")),
+    ("image_generation",
+     ("image", "dall-e", "dalle", "flux", "diffusion", "imagen")),
+)
+def _route_mode(explicit: str | None, upstream_model: str) -> str:
+    """model_info.mode when configured, else a conservative identifier inference."""
+    if explicit:
+        return explicit
+    identity = upstream_model.split("/", 1)[1] if "/" in upstream_model else upstream_model
+    lowered = identity.lower()
+    for mode, tokens in _MODE_INFERENCE:
+        if any(token in lowered for token in tokens):
+            return mode
+    return "chat"
 
-    Configuration reads and benchmark cache reads are local-only. Route
-    parameters are never included in the public response.
+
+def _read_litellm_inventory() -> tuple[list[dict] | None, str | None]:
+    """Read LiteLLM routes grouped by exact upstream model ID and mode.
+
+    Returns (models, error).  Each model is
+    {"name", "upstream_model", "provider", "mode", "routes": [{"name", "provider"}]}.
+    ``name`` is the first configured public alias in that group; every alias
+    with the same upstream ID and mode is retained in ``routes``.  ``provider``
+    is the LiteLLM transport prefix (for example openai/ may front any vendor,
+    so it is not treated as the model developer).
+
+    Grouping by mode as well as upstream ID keeps a chat and an embedding route
+    that share one upstream ID in separate entries.  Otherwise the first
+    configured row's mode would leak onto the other route, and reversing the
+    configuration order would flip which route receives stock scores.
     """
     config_path = _litellm_config_path()
     if not config_path:
-        return {"error": "not configured"}
+        return None, "not configured"
     try:
         with open(config_path, encoding="utf-8") as config_file:
             config_text = config_file.read()
     except OSError:
-        return {"error": "configuration unavailable"}
+        return None, "configuration unavailable"
     except UnicodeError:
-        return {"error": "invalid configuration"}
+        return None, "invalid configuration"
 
     try:
         config = yaml.safe_load(config_text)
     except yaml.YAMLError:
-        return {"error": "invalid configuration"}
+        return None, "invalid configuration"
 
     if not isinstance(config, dict) or not isinstance(config.get("model_list"), list):
-        return {"error": "invalid configuration"}
+        return None, "invalid configuration"
 
-    routes = []
-    seen_aliases: set[str] = set()
+    grouped: dict[tuple[str, str], dict] = {}
     for row in config["model_list"]:
         if not isinstance(row, dict):
-            return {"error": "invalid configuration"}
+            return None, "invalid configuration"
         alias = row.get("model_name")
         params = row.get("litellm_params")
-        if (not isinstance(alias, str) or not alias.strip()
+        if (not isinstance(alias, str) or not alias.strip() or len(alias.strip()) > 200
                 or not isinstance(params, dict)
                 or not isinstance(params.get("model"), str)
-                or not params["model"].strip()):
-            return {"error": "invalid configuration"}
+                or not params["model"].strip() or len(params["model"].strip()) > 300):
+            return None, "invalid configuration"
         alias = alias.strip()
         upstream_model = params["model"].strip()
-        if not upstream_model.startswith("mistral/") or alias in seen_aliases:
-            continue
-        seen_aliases.add(alias)
-        routes.append({"name": alias, "upstream_model": upstream_model})
 
-    data = get_opencode_go_benchmarks()
-    scores = (data or {}).get("models") or {}
-    models = []
-    for route in routes:
-        # Remove only the provider prefix. Do not substitute the public alias,
-        # infer a model family, or map a rolling alias to a dated AA entry.
-        identity = route["upstream_model"][len("mistral/"):]
-        normalized_identity = _norm_model_name(identity)
-        non_chat = any(token in normalized_identity for token in (
-            "audio", "embed", "voxtral", "transcribe", "speech",
-        ))
-        matched = {} if non_chat else _mistral_benchmark_for_model(identity, scores)
-        bench = {}
-        for _payload_key, key, _label, _name, _unit in _BENCH_METRICS:
-            value = matched.get(key)
-            if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and (not isinstance(value, float) or math.isfinite(value))):
-                bench[key] = value
-        models.append({**route, "bench": bench})
+        model_info = row.get("model_info")
+        explicit_mode = None
+        if model_info is not None:
+            if not isinstance(model_info, dict):
+                return None, "invalid configuration"
+            raw_mode = model_info.get("mode")
+            if raw_mode is not None:
+                if not isinstance(raw_mode, str) or len(raw_mode.strip()) > 64:
+                    return None, "invalid configuration"
+                explicit_mode = raw_mode.strip().lower() or None
 
-    metadata = _bench_metadata(data)
-    fetched_at = metadata["bench_fetched_at"]
-    if isinstance(fetched_at, float) and not math.isfinite(fetched_at):
-        metadata["bench_fetched_at"] = None
-    return {"models": models, **metadata}
+        if "/" in upstream_model and upstream_model.split("/", 1)[0]:
+            provider = upstream_model.split("/", 1)[0]
+        else:
+            provider = "unknown"
+        mode = _route_mode(explicit_mode, upstream_model)
+
+        group_key = (upstream_model, mode)
+        model = grouped.get(group_key)
+        if model is None:
+            model = {
+                "name": alias,
+                "upstream_model": upstream_model,
+                "provider": provider,
+                "mode": mode,
+                "routes": [],
+            }
+            grouped[group_key] = model
+        route = {"name": alias, "provider": provider}
+        if route not in model["routes"]:
+            model["routes"].append(route)
+
+    return list(grouped.values()), None
+
+
+def get_ai_services() -> dict:
+    """Read the AI Services contract immediately from local state.
+
+    No read, including a missing or stale snapshot, schedules upstream work.
+    Only the guarded manual refresh action can reserve a daily refresh run.
+    """
+    inventory, error = _read_litellm_inventory()
+    state = benchmarks.read_state()
+    payload = benchmarks.build_payload(inventory or [], state)
+    payload["refreshing"] = benchmarks.is_refreshing()
+    payload["refresh_policy"] = benchmarks.refresh_policy()
+    if error is not None:
+        payload["error"] = error
+    return payload
+
+
+def get_mistral_models() -> dict:
+    """Legacy Mistral-only wrapper over the unified inventory (local reads only)."""
+    inventory, error = _read_litellm_inventory()
+    if error is not None:
+        return {"error": error}
+    rows = [row for row in (inventory or []) if row["provider"] == "mistral"]
+    state = benchmarks.read_state()
+    payload = benchmarks.build_payload(rows, state, include_sources=False)
+    models = [
+        {"name": model["name"], "upstream_model": model["upstream_model"],
+         "bench": model["bench"]}
+        for model in payload["models"]
+    ]
+    return {
+        "models": models,
+        "bench_metrics": benchmarks.metrics_metadata(),
+        "bench_fetched_at": benchmarks.last_success(state),
+    }
+
+
+def fetch_benchmarks() -> dict:
+    """Compatibility wrapper: request one guarded background benchmark refresh."""
+    if not (_litellm_config_path() or _read_opencode_go_key()):
+        return {"ok": False, "error": "not configured"}
+    return benchmarks.request_refresh()
+
+
+def fetch_opencode_go_benchmarks() -> dict:
+    """Legacy OpenCode-only fetch action; same guarded refresh under the hood."""
+    if not _read_opencode_go_key():
+        return {"ok": False, "error": "not configured"}
+    return fetch_benchmarks()
 
 
 # ── Shelly Plus Plug ──────────────────────────────────────────────────────────
@@ -2008,4 +1836,5 @@ def get_features() -> dict:
         "desktop_status": bool(WOL_DESKTOP_IP),
         "opencode_go":    _read_opencode_go_key() is not None,
         "mistral":        bool(_litellm_config_path()),
+        "ai_services":    bool(_litellm_config_path()) or _read_opencode_go_key() is not None,
     }

@@ -13,22 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 import homelab_core as core
 
 
-class BenchmarkIngestionTests(unittest.TestCase):
-    def test_scores_never_cross_model_boundaries(self):
-        text = r'{\"shortName\":\"A\",\"intelligenceIndex\":1},{\"shortName\":\"B\",\"intelligenceIndex\":2,\"hle\":0.9,\"gdpvalNormalized\":0.4}'
-        scores = core._parse_bench_page(text)
-        core._attach_gdpval_elo(scores, text)
-        self.assertEqual(scores["a"], {"intelligence": 1})
-        self.assertEqual(scores["b"]["hle"], 0.9)
-        self.assertEqual(scores["b"]["gdpval"], 1300)
-
-    def test_null_scores_and_long_records_are_handled_without_borrowing(self):
-        text = r'{\"shortName\":\"A\",\"hle\":null,' + " " * 4000 + r'\"briefcaseElo\":100},{\"shortName\":\"B\",\"hle\":0.5,\"briefcaseElo\":200}'
-        self.assertNotIn("hle", core._parse_bench_page(text)["a"])
-        self.assertEqual(core._parse_bench_page(text)["a"]["briefcase"], 100)
-        self.assertEqual(core._parse_bench_extra_page(text)["a"]["briefcase"], 100)
-
-
 class PersistenceAndLlamaTests(unittest.TestCase):
     def test_failed_serialization_preserves_previous_energy_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,7 +112,6 @@ class CacheConcurrencyTests(unittest.TestCase):
         with patch.object(core, "_read_opencode_go_key", return_value="dummy"), \
                 patch.object(core, "_opencode_limits_cache", {"data": None, "ts": 0, "fail_ts": 0}), \
                 patch.object(core, "_parse_go_limits_mdx", return_value=[{"name": "fixture"}]), \
-                patch.object(core, "get_opencode_go_benchmarks", return_value=None), \
                 patch.object(core.requests, "get", side_effect=upstream) as get:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 results = list(pool.map(lambda _: caller(), range(2)))

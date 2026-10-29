@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir \
     PyYAML \
     requests \
     urllib3 \
+    "httpx>=0.28,<1" \
     python-dotenv
 
 COPY app/ .
