@@ -19,14 +19,17 @@ executed and no upstream URLs are copied into API responses.
 
 Nothing here is a database or a job queue: per-source state is held in memory
 and persisted as one versioned, atomically replaced JSON document at
-``HOMELAB_BENCH_FILE``.  A failed source keeps its last good snapshot.
+``HOMELAB_BENCH_FILE``. A failed source keeps its last good snapshot. Only an
+explicit manual action starts a refresh run, at most once per rolling 24 hours
+across all enabled sources. The reservation is persisted before outbound work;
+failed runs count and reads never schedule a refresh.
 
 Default source availability: Harbor and Epoch are enabled.  LiveBench and
 DeepSWE are opt-in (``HOMELAB_LIVEBENCH_ENABLED`` / ``HOMELAB_DEEPSWE_ENABLED``,
 both false by default) because their scores' reuse terms could not be verified
 here; disabled sources are never fetched and their cached rows are never
-exposed, although the metric/source definitions stay visible so the UI can
-explain the missing column.
+exposed. API definitions remain available, while disabled suites are omitted
+from the UI dropdown.
 
 Dates are semantic, never inferred: every dated entry carries ``date_kind``
 (``model_release`` for Harbor/Epoch, ``benchmark_release`` for LiveBench, or
@@ -108,8 +111,7 @@ MAX_CACHE_BYTES = 16 * 1024 * 1024
 FILE_SCHEMA_VERSION = 2         # deliberately different from the old AA cache
 SOURCE_SCHEMA_VERSION = 2
 CACHE_TTL = 24 * 60 * 60        # per-source freshness target
-AUTO_RETRY_BASE = 300
-AUTO_RETRY_MAX = 3600
+REFRESH_INTERVAL = 24 * 60 * 60 # hard limit between manual refresh runs
 
 # Opt-in flags.  LiveBench 2.0 score reuse terms and DeepSWE artifact terms
 # could not be verified; both sources stay disabled (no fetching, no scores
@@ -387,6 +389,7 @@ _SOURCE_ERROR_CSV = "invalid CSV response"
 _SOURCE_ERROR_SCHEMA = "invalid response schema"
 _SOURCE_ERROR_PAGINATION = "invalid pagination"
 _SOURCE_ERROR_EMPTY = "empty feed"
+_SOURCE_ERROR_START = "unable to start refresh"
 _CACHE_ERROR_TOO_LARGE = "benchmark cache exceeds size limit"
 _CACHE_ERROR_STORAGE = "cache storage unavailable"
 
@@ -1597,8 +1600,9 @@ class BenchmarkStore:
         self._state = {name: _empty_state(name) for name in SOURCE_NAMES}
         self._inflight: set[str] = set()
         self._coordinator = False
-        self._next_attempt: dict[str, float] = {}
-        self._failures = {name: 0 for name in SOURCE_NAMES}
+        self._last_refresh_attempt: float | None = None
+        self._refresh_history_error: str | None = (
+            None if self._persist_enabled else "refresh history unavailable")
         self._load()
 
     # ── loading / persistence ──
@@ -1607,18 +1611,43 @@ class BenchmarkStore:
             return
         raw = _read_cache_bytes(self.path)
         if not raw:
+            try:
+                os.lstat(self.path)
+            except FileNotFoundError:
+                return  # a genuinely new cache has no refresh history yet
+            except OSError:
+                pass  # an inaccessible path is not proof of a missing cache
+            self._refresh_history_error = "refresh history unavailable"
             return
         try:
             document = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
         except (UnicodeDecodeError, ValueError, TypeError, RecursionError):
+            self._refresh_history_error = "refresh history unavailable"
             return
         # Reject the legacy Artificial Analysis cache and any unknown format.
         if not isinstance(document, dict) or document.get("schema_version") != FILE_SCHEMA_VERSION:
+            self._refresh_history_error = "refresh history unavailable"
             return
         sources = document.get("sources")
         if not isinstance(sources, dict):
+            self._refresh_history_error = "refresh history unavailable"
             return
         with self._state_lock:
+            try:
+                if "last_refresh_attempt" in document:
+                    self._last_refresh_attempt = _sanitize_timestamp(document["last_refresh_attempt"])
+                else:
+                    # Migration: count the most recent pre-policy check, even
+                    # if it failed or its source version is no longer current.
+                    if any(not isinstance(record, dict) for record in sources.values()):
+                        raise SourceError(_SOURCE_ERROR_SCHEMA)
+                    checks = [_sanitize_timestamp(record.get(field))
+                              for record in sources.values()
+                              for field in ("last_checked", "last_success")]
+                    self._last_refresh_attempt = max(
+                        (value for value in checks if value is not None), default=None)
+            except SourceError:
+                self._refresh_history_error = "refresh history unavailable"
             for name in SOURCE_NAMES:
                 if name not in sources:
                     continue
@@ -1641,7 +1670,9 @@ class BenchmarkStore:
                     "source_updated": state["source_updated"],
                     "validators": state["validators"],
                 }
-        return {"schema_version": FILE_SCHEMA_VERSION, "sources": sources}
+            last_attempt = self._last_refresh_attempt
+        return {"schema_version": FILE_SCHEMA_VERSION, "sources": sources,
+                "last_refresh_attempt": last_attempt}
 
     def _persist(self) -> bool:
         if not self._persist_enabled:
@@ -1722,6 +1753,22 @@ class BenchmarkStore:
                 }
             return result
 
+    def refresh_policy(self) -> dict:
+        """Local-only view of the persistent, global manual-refresh limit."""
+        with self._state_lock:
+            last = self._last_refresh_attempt
+            error = self._refresh_history_error
+        next_allowed = last + REFRESH_INTERVAL if last is not None else None
+        return {
+            "manual_only": True,
+            "interval_seconds": REFRESH_INTERVAL,
+            "last_attempt": last,
+            "next_allowed_at": next_allowed,
+            "can_refresh": error is None and (
+                next_allowed is None or self._clock() >= next_allowed),
+            "error": error,
+        }
+
     @property
     def refreshing(self) -> bool:
         with self._coord_lock:
@@ -1733,11 +1780,6 @@ class BenchmarkStore:
     # ── refresh ──
     def _enabled_sources(self) -> tuple[str, ...]:
         return tuple(name for name in SOURCE_NAMES if _source_enabled(name))
-
-    def _auto_due(self, name: str, now: float) -> bool:
-        with self._state_lock:
-            stale = not self._is_fresh(self._state[name], now)
-        return stale and now >= self._next_attempt.get(name, 0.0)
 
     def refresh_source(self, name: str) -> bool:
         """Refresh one source, retaining its last good data on any failure."""
@@ -1771,8 +1813,6 @@ class BenchmarkStore:
                     if not self._persist():
                         self._record_storage_failure(name, completed)
                         return False
-                    self._failures[name] = 0
-                    self._next_attempt.pop(name, None)
                     return True
                 entries = _validated_entries(snapshot.get("entries"), source=name)
                 version = _text(snapshot.get("version"), maximum=64)
@@ -1801,8 +1841,6 @@ class BenchmarkStore:
                     # complete fresh success.
                     self._record_storage_failure(name, completed)
                     return False
-                self._failures[name] = 0
-                self._next_attempt.pop(name, None)
                 return True
             except SourceError as exc:
                 self._record_failure(name, self._clock(), str(exc))
@@ -1817,25 +1855,19 @@ class BenchmarkStore:
                 self._inflight.discard(name)
             source_lock.release()
 
-    def _schedule_retry(self, name: str, now: float) -> None:
-        failures = self._failures.get(name, 0) + 1
-        self._failures[name] = failures
-        delay = min(AUTO_RETRY_MAX, AUTO_RETRY_BASE * (2 ** min(failures - 1, 8)))
-        self._next_attempt[name] = now + delay
-
     def _record_failure(self, name: str, now: float, message: str) -> None:
         safe = message if message in {
             _SOURCE_ERROR_NETWORK, _SOURCE_ERROR_TIMEOUT, _SOURCE_ERROR_DEADLINE,
             _SOURCE_ERROR_TOO_LARGE, _SOURCE_ERROR_REDIRECT, _SOURCE_ERROR_JSON,
             _SOURCE_ERROR_CSV, _SOURCE_ERROR_SCHEMA, _SOURCE_ERROR_PAGINATION,
             _SOURCE_ERROR_EMPTY,
+            _SOURCE_ERROR_START,
         } or (isinstance(message, str) and message.startswith("HTTP ")
               and message[5:].isdigit()) else _SOURCE_ERROR_NETWORK
         with self._state_lock:
             state = self._state[name]
             state["last_checked"] = now
             state["error"] = safe
-        self._schedule_retry(name, now)
 
     def _record_storage_failure(self, name: str, now: float) -> None:
         """Persistence failed after a valid network refresh.
@@ -1844,57 +1876,53 @@ class BenchmarkStore:
         the previous disk bytes are untouched by ``_persist``.  ``last_success``
         still describes the successful upstream validation, while the fixed
         error and the stale flag prevent this from being reported as a complete
-        fresh success.  Retry backoff prevents an active poll from turning a
-        broken cache path into a fetch/write storm.
+        fresh success. The daily reservation remains consumed, so local polls
+        cannot turn a broken cache path into a fetch/write storm.
         """
         with self._state_lock:
             state = self._state[name]
             state["last_checked"] = now
             state["error"] = _CACHE_ERROR_STORAGE
         _log.warning("benchmark cache storage unavailable")
-        self._schedule_retry(name, now)
 
-    def refresh_now(self, *, names=None, force: bool = True) -> dict:
-        """Synchronous refresh (tests and the coordinator worker)."""
+    def refresh_now(self, *, names=None) -> dict:
+        """Internal synchronous test helper; API calls must use request_refresh."""
         results = {}
         for name in (self._enabled_sources() if names is None else names):
-            if not force and not self._auto_due(name, self._clock()):
-                continue
             results[name] = self.refresh_source(name)
         return results
-
-    def _begin_coordinator(self) -> bool:
-        with self._coord_lock:
-            if self._coordinator:
-                return False
-            self._coordinator = True
-            return True
 
     def _end_coordinator(self) -> None:
         with self._coord_lock:
             self._coordinator = False
 
     def _spawn(self, target, name: str):
-        thread = self._thread_factory(target, name)
         try:
+            thread = self._thread_factory(target, name)
             thread.start()
         except Exception:
             self._end_coordinator()
             raise
         return thread
 
-    def _refresh_worker(self, force: bool) -> None:
+    def _refresh_worker(self) -> None:
         try:
             threads = []
             for name in self._enabled_sources():
-                if not force and not self._auto_due(name, self._clock()):
+                try:
+                    thread = self._thread_factory(
+                        lambda source=name: self.refresh_source(source),
+                        f"benchmark-{name}",
+                    )
+                    thread.start()
+                except Exception:
+                    # A reserved run still counts when a source cannot start.
+                    # Keep its last-good scores, report a sanitized failure and
+                    # let independent sources run instead of claiming success.
+                    self._record_failure(name, self._clock(), _SOURCE_ERROR_START)
+                    self._persist()
                     continue
-                thread = self._thread_factory(
-                    lambda source=name: self.refresh_source(source),
-                    f"benchmark-{name}",
-                )
                 threads.append(thread)
-                thread.start()
             for thread in threads:
                 # Leave room for retries/backoff beyond the per-request deadline.
                 thread.join(SOURCE_DEADLINE + 15)
@@ -1902,32 +1930,51 @@ class BenchmarkStore:
             self._end_coordinator()
 
     def request_refresh(self) -> dict:
-        """Launch one guarded background refresh; never overlaps another."""
-        if not self._begin_coordinator():
-            return {"ok": True, "refreshing": True, "started": False,
-                    "sources": list(self._enabled_sources())}
+        """Reserve one manual run durably before any outbound work starts.
+
+        The single-process coordinator serializes callers from all tabs and
+        both API routes. A failed run (including thread startup failure) consumes
+        the reservation; a restart reloads it independently of score freshness.
+        """
+        sources = list(self._enabled_sources())
+        with self._coord_lock:
+            with self._state_lock:
+                running = self._coordinator or bool(self._inflight)
+            policy = self.refresh_policy()
+            if running:
+                return {"ok": True, "refreshing": True, "started": False,
+                        "sources": sources, "refresh_policy": policy}
+            if policy["error"]:
+                return {"ok": False, "error": policy["error"], "started": False,
+                        "refreshing": False, "refresh_policy": policy}
+            if not policy["can_refresh"]:
+                return {"ok": False, "error": "refresh limited to once every 24 hours",
+                        "rate_limited": True, "started": False, "refreshing": False,
+                        "retry_after": max(1, math.ceil(policy["next_allowed_at"] - self._clock())),
+                        "refresh_policy": policy}
+            with self._state_lock:
+                self._last_refresh_attempt = self._clock()
+            if not self._persist():
+                # Fail closed: never send requests when the daily reservation
+                # cannot survive a restart. No upstream work has started yet.
+                with self._state_lock:
+                    self._refresh_history_error = "refresh history unavailable"
+                return {"ok": False, "error": "refresh history unavailable",
+                        "started": False, "refreshing": False,
+                        "refresh_policy": self.refresh_policy()}
+            self._coordinator = True
         try:
-            self._spawn(lambda: self._refresh_worker(force=True), "benchmark-refresh")
+            self._spawn(self._refresh_worker, "benchmark-refresh")
         except Exception:
-            return {"ok": False, "error": "unable to start refresh",
-                    "refreshing": self.refreshing}
+            return {"ok": False, "error": _SOURCE_ERROR_START,
+                    "refreshing": self.refreshing, "started": False,
+                    "refresh_policy": self.refresh_policy()}
         return {"ok": True, "refreshing": True, "started": True,
-                "sources": list(self._enabled_sources())}
+                "sources": sources, "refresh_policy": self.refresh_policy()}
 
     def ensure_refresh_scheduled(self) -> bool:
-        """Best-effort auto refresh for stale sources (used by the read path)."""
-        if self.refreshing:
-            return False
-        now = self._clock()
-        if not any(self._auto_due(name, now) for name in self._enabled_sources()):
-            return False
-        if not self._begin_coordinator():
-            return False
-        try:
-            self._spawn(lambda: self._refresh_worker(force=False), "benchmark-auto-refresh")
-        except Exception:
-            return False
-        return True
+        """Compatibility no-op: reads must never schedule upstream requests."""
+        return False
 
 
 _store_lock = threading.Lock()
@@ -1963,6 +2010,10 @@ def read_state() -> dict:
 
 def is_refreshing() -> bool:
     return get_store().refreshing
+
+
+def refresh_policy() -> dict:
+    return get_store().refresh_policy()
 
 
 # ── Payload assembly ───────────────────────────────────────────────────────
@@ -2225,5 +2276,5 @@ __all__ = [
     "BenchmarkStore", "Deadline", "HttpClient", "METRICS", "SOURCES",
     "SOURCE_ALIASES", "DEEPSWE_ENABLED", "DEEPSWE_WARNING", "DEEPSWE_REVIEW_URL",
     "build_payload", "ensure_refresh_scheduled", "get_store", "is_refreshing",
-    "last_success", "metrics_metadata", "read_state", "request_refresh",
+    "last_success", "metrics_metadata", "read_state", "request_refresh", "refresh_policy",
 ]

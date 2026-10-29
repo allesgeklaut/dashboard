@@ -1692,6 +1692,67 @@ test('manual refresh posts once and polls the same GET until refreshing clears',
   assert.match(d.element('ai-status').textContent, /inventory loaded/);
 });
 
+test('the daily policy disables refresh without fetching and unlocks at its deadline', async () => {
+  const report = aiServicesReport();
+  report.refresh_policy = {
+    manual_only: true, can_refresh: false, error: null,
+    next_allowed_at: Date.now() / 1000 + 86400,
+  };
+  const d = await loadAI(report);
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.match(d.element('btn-ai-refresh').textContent, /REFRESH IN 24H 0M/);
+  assert.match(d.element('btn-ai-refresh').title, /Next manual refresh/);
+  d.context.fetch = () => { throw new Error('cooldown must not send a POST'); };
+  await d.run('aiRefreshBenchmarks()');
+  assert.equal(d.run('_aiRefreshActive'), false);
+  d.run('_aiRefreshPolicy.next_allowed_at=Date.now()/1000; aiRenderStatus();');
+  assert.equal(d.element('btn-ai-refresh').disabled, false);
+  assert.equal(d.element('btn-ai-refresh').textContent, '⟳ REFRESH SCORES');
+});
+
+test('a daily-limit race response adopts the server policy without claiming success', async () => {
+  const d = await loadAI();
+  let posts = 0;
+  const rows = d.element('ai-tbody').innerHTML;
+  d.context.fetch = async () => {
+    posts++;
+    return response({ok:false, rate_limited:true, refreshing:false, refresh_policy:{
+      can_refresh:false, next_allowed_at:Date.now()/1000+3600, error:null,
+    }});
+  };
+  await d.run('aiRefreshBenchmarks()');
+  assert.equal(posts, 1);
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.equal(d.element('ai-tbody').innerHTML, rows);
+  assert.match(d.element('toast').textContent, /daily refresh limit/);
+  assert.doesNotMatch(d.element('toast').textContent, /scores updated/);
+  await d.run('aiRefreshBenchmarks()');
+  assert.equal(posts, 1);
+  assert.equal(d.timers.filter(timer => timer.ms === 2000).length, 0);
+});
+
+test('a failed refresh still leaves the daily button locked and cached scores visible', async () => {
+  const d = await loadAI();
+  const report = aiServicesReport();
+  report.sources.harbor.error = 'HTTP 503';
+  report.refresh_policy = {can_refresh:false, next_allowed_at:Date.now()/1000+86400, error:null};
+  d.context.fetch = async (url, options) => response(options.method === 'POST'
+    ? {ok:true, refreshing:false, refresh_policy:report.refresh_policy} : report);
+  await d.run('aiRefreshBenchmarks()');
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.match(d.element('ai-tbody').innerHTML, /72\.4%/);
+  assert.match(d.element('toast').textContent, /source errors/);
+});
+
+test('unavailable persistent refresh history disables the action', async () => {
+  const report = aiServicesReport({refresh_policy:{can_refresh:false, error:'refresh history unavailable'}});
+  const d = await loadAI(report);
+  assert.equal(d.element('btn-ai-refresh').disabled, true);
+  assert.equal(d.element('btn-ai-refresh').textContent, 'REFRESH UNAVAILABLE');
+  d.context.fetch = () => { throw new Error('must not fetch with unavailable history'); };
+  await d.run('aiRefreshBenchmarks()');
+});
+
 test('refresh polling is bounded and transient failures preserve the last data', async () => {
   const d = dashboard();
   d.run("_features.ai_services=true; _activeTab='ai-services';");
@@ -2005,7 +2066,7 @@ test('usage and the entire allowances disclosure follow the OpenCode feature', (
   assert.equal(d.element('ocg-details').open, true, 'sync preserves the user toggle');
 });
 
-// ── AI inventory periodic tick (24h TTL / backoff / stale discovery) ─────────
+// ── AI inventory periodic tick (local cache / shared cooldown) ──────────────
 test('the AI inventory tick only fetches on an enabled, active, visible tab', async () => {
   const d = dashboard();
   const requests = [];

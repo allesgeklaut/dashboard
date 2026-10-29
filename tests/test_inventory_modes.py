@@ -260,7 +260,7 @@ model_list:
                 patch.object(benchmarks, "ensure_refresh_scheduled") as ensure, \
                 patch.object(benchmarks, "is_refreshing", return_value=False):
             payload = core.get_ai_services()
-        ensure.assert_called_once_with()
+        ensure.assert_not_called()
         payload_text = json.dumps(payload)
         for secret in ("sk-config-secret", "secret.invalid", "extra-secret",
                        "internal-secret-id", "secret-base"):

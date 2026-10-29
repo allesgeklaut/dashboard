@@ -3223,6 +3223,7 @@ let _aiLoadFailed = false, _aiRefreshUnknown = false;
 let _aiSort = { key: 'model', dir: 1 };
 let _aiMetric = aiRestoreMetric();
 let _aiRefreshPromise = null, _aiRefreshTimer = null, _aiRefreshActive = false;
+let _aiRefreshPolicy = null;
 let _aiUsageStarted = false;
 let _aiEnterHooked = false, _aiLastEnterAt = 0;
 
@@ -3512,6 +3513,7 @@ function aiLoadedStatusText() {
 function aiRenderStatus() {
   const status = document.getElementById('ai-status');
   const busy = _aiRefreshActive;
+  aiSetRefreshBusy(busy);
   status.classList.toggle('busy', busy);
   if (_aiRefreshActive) {
     status.textContent = 'refreshing benchmark sources — polling…';
@@ -3552,8 +3554,12 @@ function aiAcceptServices(data) {
     metrics: Array.isArray(data.metrics) ? data.metrics : [],
     sources: aiObject(data.sources),
     refreshing: data.refreshing === true,
+    refresh_policy: aiObject(data.refresh_policy),
     error: aiText(data.error),
   };
+  if (data.refresh_policy && typeof data.refresh_policy === 'object') {
+    _aiRefreshPolicy = data.refresh_policy;
+  }
   // Runs after _aiData is set: a disabled or missing metric cannot stay
   // selected, and the sort cannot reference a hidden benchmark.
   if (!aiAvailableMetrics().includes(_aiMetric)) {
@@ -3634,10 +3640,8 @@ function aiServicesOnEnter() {
   aiFetchServices();
 }
 function aiServicesTick() {
-  // Long-lived active tabs must notice the 24h source TTL, backend backoff and
-  // a source turning stale without a manual refresh. The GET is enough: the
-  // backend schedules one guarded stale-source fetch itself, and accepting a
-  // `refreshing` payload starts the existing bounded monitor. Never POST here.
+  // Read local inventory/cache and the shared cooldown; this GET never causes
+  // upstream requests, even for empty/stale scores. Never POST here.
   if (!aiServicesEnabled()) return;
   if (_activeTab !== 'ai-services') return;
   if (document.hidden) return;
@@ -3667,10 +3671,31 @@ function aiHookEnterEvents() {
   }
 }
 
+function aiRefreshBlocked() {
+  if (!_aiRefreshPolicy) return false;
+  if (_aiRefreshPolicy.error) return true;
+  const next = _aiRefreshPolicy.next_allowed_at;
+  if (typeof next === 'number' && Number.isFinite(next)) return Date.now() / 1000 < next;
+  return _aiRefreshPolicy.can_refresh === false;
+}
 function aiSetRefreshBusy(busy) {
   const button = document.getElementById('btn-ai-refresh');
-  button.disabled = busy;
+  const blocked = aiRefreshBlocked();
+  button.disabled = busy || blocked;
   button.textContent = busy ? '… REFRESHING' : '⟳ REFRESH SCORES';
+  button.title = 'Manual only · one refresh run per 24 hours, including failed runs';
+  if (busy || !blocked) return;
+  if (_aiRefreshPolicy.error) {
+    button.textContent = 'REFRESH UNAVAILABLE';
+    button.title = aiText(_aiRefreshPolicy.error);
+    return;
+  }
+  const next = _aiRefreshPolicy.next_allowed_at;
+  if (typeof next === 'number' && Number.isFinite(next)) {
+    const minutes = Math.max(1, Math.ceil((next * 1000 - Date.now()) / 60000));
+    button.textContent = `⟳ REFRESH IN ${Math.floor(minutes / 60)}H ${minutes % 60}M`;
+    button.title = `Next manual refresh: ${new Date(next * 1000).toLocaleString()}`;
+  }
 }
 function aiRefreshOutcome() {
   // A completed refresh is only a success when every enabled source reports no
@@ -3729,6 +3754,10 @@ function aiBeginRefreshPoll() {
 function aiRefreshBenchmarks() {
   if (!aiServicesEnabled()) return Promise.resolve(null);
   if (_aiRefreshActive) return _aiRefreshPromise || Promise.resolve(null);
+  if (aiRefreshBlocked()) {
+    aiSetRefreshBusy(false);
+    return Promise.resolve(null);
+  }
   _aiRefreshActive = true;
   _aiRefreshUnknown = false;
   _aiRefreshPromise = null;
@@ -3737,8 +3766,10 @@ function aiRefreshBenchmarks() {
   const request = (async () => {
     try {
       const result = await apiPost('/api/benchmarks/fetch', 25000);
+      if (result && result.refresh_policy) _aiRefreshPolicy = result.refresh_policy;
       if (!result || result.ok !== true) {
-        toast('fetch failed: ' + aiText(result && (result.detail || result.error) || 'request failed'), true);
+        if (result && result.rate_limited) toast('daily refresh limit — cached scores unchanged');
+        else toast('fetch failed: ' + aiText(result && (result.detail || result.error) || 'request failed'), true);
         aiFinishRefresh('silent');
         return null;
       }

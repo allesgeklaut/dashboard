@@ -859,16 +859,14 @@ def _read_litellm_inventory() -> tuple[list[dict] | None, str | None]:
 def get_ai_services() -> dict:
     """Read the AI Services contract immediately from local state.
 
-    Cached per-source snapshots are returned without blocking; stale sources
-    schedule one guarded background refresh.  Existing same-origin guard and
-    the legacy routes are unaffected.
+    No read, including a missing or stale snapshot, schedules upstream work.
+    Only the guarded manual refresh action can reserve a daily refresh run.
     """
     inventory, error = _read_litellm_inventory()
-    if _litellm_config_path() or _read_opencode_go_key():
-        benchmarks.ensure_refresh_scheduled()
     state = benchmarks.read_state()
     payload = benchmarks.build_payload(inventory or [], state)
     payload["refreshing"] = benchmarks.is_refreshing()
+    payload["refresh_policy"] = benchmarks.refresh_policy()
     if error is not None:
         payload["error"] = error
     return payload

@@ -94,7 +94,11 @@ When any AI Services feature is enabled, the tab button is visible. The browser
 loads `GET /api/ai-services` on tab entry and then every 60 seconds, but only
 while that tab is active and the page is visible; hidden pages and other tabs do
 not poll. That polling is a read-only GET and never sends the refresh POST;
-only **⟳ REFRESH SCORES** sends the guarded `POST /api/benchmarks/fetch`.
+it also never triggers upstream work, even when scores are missing or stale.
+Only **⟳ REFRESH SCORES** sends the guarded `POST /api/benchmarks/fetch`, with
+one refresh run allowed per rolling 24 hours. The button displays the remaining
+cooldown and disables itself; the server enforces the same limit across tabs,
+both refresh endpoints and restarts, including failed runs.
 
 The dashboard exports only `model_name`, `litellm_params.model`, and
 `model_info.mode` from the LiteLLM configuration. Other route parameters and
@@ -253,14 +257,19 @@ cache survives restarts without a new mount. The old Artificial Analysis cache
 is not read, reinterpreted, or displayed; the first run starts with empty
 per-source snapshots and uses only the sources above.
 
-Page loads read the snapshot file only and render it immediately, even when it
-is stale. A snapshot older than about 24 hours is marked stale; the server
-refreshes sources independently in the background. The **⟳ REFRESH SCORES**
-button is a manual, same-origin-guarded fallback and shares the in-flight guard,
-so concurrent page loads or button presses do not start duplicate fetches.
+Page loads read local snapshots and render them immediately, even when stale
+or empty. A snapshot older than about 24 hours is marked stale, but **no read,
+timer or tab activation fetches an upstream feed**. The **⟳ REFRESH SCORES**
+button is the only refresh trigger. At most one refresh run may start in a
+rolling 24-hour window, shared across every source and both refresh endpoints.
+Concurrent tabs cannot reserve separate runs. Failed runs and worker-start
+failures consume the window too; reopening the page or restarting the service
+does not reset it. A run may need several feed/page requests and bounded retries
+within its existing per-source deadline; it is not a single HTTP request.
 
-A refresh is per source, with bounded retries and backoff (including rate-limit
-responses); a failed source retries after five minutes, doubling up to one hour.
+A manual run refreshes the enabled sources independently, with bounded HTTP
+retries/backoff (including rate-limit responses) inside that run only. There
+are no automatic retry runs after a source fails.
 One source failing, or returning invalid data, does not erase another source's
 snapshot or fail the whole refresh; the last good snapshot is retained and its
 error and age are preserved in the API. Refresh feedback reports partial or
@@ -278,22 +287,38 @@ never an undated or guessed score. Snapshots are written atomically.
 With persistence enabled, a cache write failure is a refresh failure, not a
 silent success. A refresh that validates data but cannot persist it reports the
 fixed `cache storage unavailable` error (never a path or OS exception), is
-marked stale, and follows the retry backoff. The last good in-memory snapshot
-stays readable, and the previous cache file is left untouched because snapshots
-replace it atomically.
+marked stale, and cannot be retried until the daily window expires. The last
+good in-memory snapshot stays readable, and the previous cache file is left
+untouched because snapshots replace it atomically.
+
+The global `last_refresh_attempt` is persisted atomically in the same versioned
+cache **before any outbound work**. An older cache is migrated using its latest
+per-source check/success timestamp, including failed checks. This preserves
+existing scores and avoids an extra run immediately after upgrading. If refresh
+history is corrupt/unreadable, persistence is disabled, or the reservation
+cannot be saved, refresh fails closed without network work; repair the cache
+path/permissions before retrying. The deployment must retain its single uvicorn
+worker (`--workers 1`); this is not a distributed multi-worker scheduler.
 
 #### API
 
 - `GET /api/ai-services` returns the read-only AI Services payload: `models`
   (inventory rows with `bench`, `results` carrying `date` and `date_kind`, and
   `missing` reasons),
-  `metrics` metadata, per-source `sources` state, and a `refreshing` flag. It
+  `metrics` metadata, per-source `sources` state, a `refreshing` flag and
+  `refresh_policy` (manual-only, interval, last attempt, next allowed time,
+  eligibility and any history error). It
   also includes `error` when the local LiteLLM configuration is missing or
   invalid. It reads local configuration and snapshot files only; a page load
   never waits for an upstream feed. OpenCode usage and limits remain available
   through their existing read endpoints and caches.
-- `POST /api/benchmarks/fetch` starts one asynchronous manual refresh and
-  returns `ok`, `refreshing`, `started`, and the enabled `sources`. The tab
+- `POST /api/benchmarks/fetch` reserves one asynchronous manual refresh and
+  returns `ok`, `refreshing`, `started`, the enabled `sources`, and
+  `refresh_policy`. Cooldown requests return **429** with `Retry-After` and the
+  next allowed timestamp; unavailable reservation storage/history returns
+  **503**, without starting any requests. An already-running refresh is joined
+  rather than duplicated. The legacy OpenCode refresh endpoint uses the same
+  reservation and responses. The tab
   polls `GET /api/ai-services` every 2 seconds, up to 40 attempts, until
   `refreshing` is false, and keeps the current inventory visible meanwhile;
   reaching that bound reports an unknown refresh status, never success. It is an
@@ -701,7 +726,9 @@ docker compose up -d --build
 | AI Services inventory empty or missing | Check `LITELLM_CONFIG_FILE` locally or the read-only `/run/litellm/config.yaml` mount in Docker; only valid `model_list` routes are listed |
 | Benchmark score is a dash | Hover for the missing reason: no exact identity match, audio/embedding modality, no dated summary, or an unavailable source. Missing coverage is not a fetch failure |
 | Benchmark data stale or a source unavailable | Last-good snapshots stay visible; use the manual refresh and inspect `sources` in `/api/ai-services`. An old Artificial Analysis cache is intentionally ignored |
-| Benchmark cache cannot be written | Sources report a storage error and stay stale with retry backoff; check `HOMELAB_BENCH_FILE` and `/data` volume permissions. The last good in-memory snapshot and previous cache file are retained |
+| Refresh button shows a countdown / API returns 429 | One run was reserved within the last 24 hours, even if it failed; wait until `refresh_policy.next_allowed_at`. Page reloads/restarts do not reset the limit |
+| Refresh history unavailable / API returns 503 | No requests start without a durable reservation. Check `HOMELAB_BENCH_FILE`, cache validity and `/data` permissions; do not erase history to reset a valid cooldown |
+| Benchmark cache cannot be written after a run | Sources report a storage error and stay stale; the daily reservation still counts. Last-good in-memory data and the previous readable file are retained |
 | LiveBench suites absent from dropdown | Defaults off pending operator review; set `HOMELAB_LIVEBENCH_ENABLED=true` in the repo `.env` and recreate the container (or restart local uvicorn). This private install opts in |
 | DeepSWE absent or scoreless | Optional and off unless `HOMELAB_DEEPSWE_ENABLED=true`; current undated results have no summary, and grading-defect warnings remain in the API (see the review above) |
 | SECURITY tab missing | Locally, `SECURITY_REPORT_DIR` is unset; in Docker, check the report directory, its uid-1000 ownership, and the read-only mount (see the SECURITY tab section) |

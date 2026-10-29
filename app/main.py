@@ -81,8 +81,18 @@ def api_opencode_go_limits():
 
 @app.post("/api/opencode-go-benchmarks/fetch")
 def api_opencode_go_benchmarks_fetch():
-    res = core.fetch_opencode_go_benchmarks()
+    return _benchmark_refresh_response(core.fetch_opencode_go_benchmarks())
+
+
+def _benchmark_refresh_response(res):
+    if res.get("rate_limited"):
+        return JSONResponse(res, status_code=429, headers={
+            "Retry-After": str(res["retry_after"]), "Cache-Control": "no-store"})
+    if res.get("refresh_policy", {}).get("error"):
+        return JSONResponse(res, status_code=503, headers={"Cache-Control": "no-store"})
     if not res.get("ok"):
+        if "refresh_policy" in res:
+            return JSONResponse(res, status_code=500, headers={"Cache-Control": "no-store"})
         raise HTTPException(500, res.get("error", "fetch failed"))
     return res
 
@@ -92,16 +102,13 @@ def api_mistral_models():
 
 @app.get("/api/ai-services")
 def api_ai_services():
-    # Local cache read only; stale sources schedule a guarded background
-    # refresh. no-store keeps the poll from showing a stale refreshing flag.
+    # Local state only, never upstream work. no-store keeps the cooldown and
+    # refreshing flag current across tabs.
     return JSONResponse(core.get_ai_services(), headers={"Cache-Control": "no-store"})
 
 @app.post("/api/benchmarks/fetch")
 def api_benchmarks_fetch():
-    res = core.fetch_benchmarks()
-    if not res.get("ok"):
-        raise HTTPException(500, res.get("error", "fetch failed"))
-    return res
+    return _benchmark_refresh_response(core.fetch_benchmarks())
 
 @app.get("/api/containers")
 def api_containers():

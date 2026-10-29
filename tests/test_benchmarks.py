@@ -1142,8 +1142,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
             self.assertTrue(state["harbor"]["stale"])
             # The fetched last-good snapshot is still available in memory.
             self.assertEqual(state["harbor"]["data"]["entries"][0]["model"], "Model")
-            self.assertGreater(store._next_attempt["harbor"], NOW)
-            self.assertFalse(store._auto_due("harbor", NOW + 1))
+            self.assertFalse(store.ensure_refresh_scheduled())
             self.assertIn("cache storage unavailable", "\n".join(logs.output))
         finally:
             directory.cleanup()
@@ -1223,7 +1222,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
             self.assertTrue(state["harbor"]["stale"])
             self.assertEqual(len(state["harbor"]["data"]["entries"]), 1)
             self.assertEqual(Path(path).read_bytes(), stable)
-            self.assertFalse(store._auto_due("harbor", NOW + 20))
+            self.assertFalse(store.ensure_refresh_scheduled())
 
             # The cache is writable again: the same 304 becomes a fresh success.
             self.assertTrue(store.refresh_source("harbor"))
@@ -1546,7 +1545,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
             "deepswe": static_fetcher(benchmarks.SourceError("empty feed")),
         })
         try:
-            store.refresh_now(force=True)
+            store.refresh_now()
             state = store.read_state(now=NOW)
             self.assertEqual(len(state["harbor"]["data"]["entries"]), 1)
             self.assertIsNone(state["harbor"]["error"])
@@ -1666,7 +1665,7 @@ class RefreshConcurrencyTests(unittest.TestCase):
         finally:
             directory.cleanup()
 
-    def test_auto_refresh_starts_once_and_only_for_stale_sources(self):
+    def test_auto_refresh_never_starts_even_with_missing_or_stale_sources(self):
         created = []
 
         def factory(target, name):
@@ -1676,9 +1675,11 @@ class RefreshConcurrencyTests(unittest.TestCase):
 
         directory, store, _ = temp_store(thread_factory=factory)
         try:
-            self.assertTrue(store.ensure_refresh_scheduled())
             self.assertFalse(store.ensure_refresh_scheduled())
-            self.assertEqual(len(created), 1)
+            self.assertFalse(store.ensure_refresh_scheduled())
+            store._clock = lambda: NOW + benchmarks.CACHE_TTL + 1
+            self.assertFalse(store.ensure_refresh_scheduled())
+            self.assertEqual(created, [])
         finally:
             directory.cleanup()
 
@@ -1760,12 +1761,250 @@ class RefreshConcurrencyTests(unittest.TestCase):
         try:
             with patch.object(benchmarks, "LIVEBENCH_ENABLED", True), \
                     patch.object(benchmarks, "DEEPSWE_ENABLED", True):
-                store._refresh_worker(force=True)
+                store._refresh_worker()
             state = store.read_state(now=NOW)
             self.assertFalse(state["harbor"]["stale"])
             self.assertEqual(state["epoch"]["error"], "empty feed")
         finally:
             directory.cleanup()
+
+
+class ManualRefreshPolicyTests(unittest.TestCase):
+    def make_store(self, **kwargs):
+        directory, store, path = temp_store(
+            thread_factory=lambda target, name: _FakeThread(target, name), **kwargs)
+        self.addCleanup(directory.cleanup)
+        return store, path
+
+    def test_reservation_is_persisted_before_worker_creation(self):
+        store, path = self.make_store()
+        created = []
+
+        def factory(target, name):
+            self.assertEqual(json.loads(Path(path).read_text())["last_refresh_attempt"], NOW)
+            created.append(name)
+            return _FakeThread(target, name)
+
+        store._thread_factory = factory
+        result = store.request_refresh()
+        self.assertTrue(result["started"])
+        self.assertEqual(created, ["benchmark-refresh"])
+        self.assertEqual(result["refresh_policy"]["next_allowed_at"], NOW + 86400)
+
+    def test_cooldown_survives_restart_and_expires_at_exact_boundary(self):
+        store, path = self.make_store()
+        store.request_refresh()
+        reloaded = benchmarks.BenchmarkStore(
+            path=path, clock=lambda: NOW + 86399,
+            thread_factory=lambda target, name: _FakeThread(target, name))
+        denied = reloaded.request_refresh()
+        self.assertTrue(denied["rate_limited"])
+        self.assertEqual(denied["retry_after"], 1)
+        reloaded._clock = lambda: NOW + 86400
+        self.assertTrue(reloaded.request_refresh()["started"])
+
+    def test_failed_sources_and_failed_worker_start_still_consume_the_day(self):
+        store, path = self.make_store(fetchers={
+            "harbor": static_fetcher(benchmarks.SourceError("HTTP 503"))})
+        store.request_refresh()
+        self.assertFalse(store.refresh_source("harbor"))
+        store._end_coordinator()
+        self.assertTrue(store.request_refresh()["rate_limited"])
+        self.assertEqual(benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+                         .refresh_policy()["last_attempt"], NOW)
+
+        store._clock = lambda: NOW + 86400
+        store._thread_factory = Mock(side_effect=RuntimeError("private details"))
+        denied = store.request_refresh()
+        self.assertEqual(denied["error"], "unable to start refresh")
+        self.assertNotIn("private details", json.dumps(denied))
+        self.assertTrue(store.request_refresh()["rate_limited"])
+
+    def test_coordinator_thread_start_failure_releases_guard_and_keeps_reservation(self):
+        store, path = self.make_store()
+        thread = Mock()
+        thread.start.side_effect = RuntimeError("private details")
+        store._thread_factory = Mock(return_value=thread)
+        result = store.request_refresh()
+        self.assertEqual(result["error"], "unable to start refresh")
+        self.assertFalse(store.refreshing)
+        self.assertNotIn("private details", json.dumps(result))
+        self.assertTrue(store.request_refresh()["rate_limited"])
+        reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+        self.assertTrue(reloaded.request_refresh()["rate_limited"])
+
+    def test_source_thread_startup_failures_keep_scores_and_run_other_sources(self):
+        for stage in ("construct", "start"):
+            for failed in ("harbor", "epoch"):
+                with self.subTest(stage=stage, source=failed):
+                    store, path = self.make_store(fetchers={
+                        "harbor": static_fetcher(snapshot([entry("tb4", "A", 10.0)])),
+                        "epoch": static_fetcher(snapshot([entry("eci", "A", 20.0)])),
+                    })
+                    store._clock = lambda: NOW - 60
+                    self.assertTrue(store.refresh_source("harbor"))
+                    self.assertTrue(store.refresh_source("epoch"))
+                    store._clock = lambda: NOW
+                    self.assertTrue(store.request_refresh()["started"])
+                    started = []
+                    testcase = self
+
+                    class SourceThread(_FakeThread):
+                        def start(self):
+                            if self.name == f"benchmark-{failed}":
+                                raise RuntimeError("private details")
+                            super().start()
+                            started.append(self)
+                            self.target()
+
+                        def join(self, timeout=None):
+                            testcase.assertTrue(store._coordinator)
+                            super().join(timeout)
+
+                    def factory(target, name):
+                        if stage == "construct" and name == f"benchmark-{failed}":
+                            raise RuntimeError("private details")
+                        return SourceThread(target, name)
+
+                    store._thread_factory = factory
+                    with patch.object(benchmarks, "LIVEBENCH_ENABLED", False), \
+                            patch.object(benchmarks, "DEEPSWE_ENABLED", False):
+                        store._refresh_worker()
+                    state = store.read_state()
+                    self.assertFalse(store.refreshing)
+                    self.assertEqual(state[failed]["error"], "unable to start refresh")
+                    self.assertTrue(state[failed]["stale"])
+                    self.assertEqual(state[failed]["last_checked"], NOW)
+                    self.assertEqual(state[failed]["last_success"], NOW - 60)
+                    self.assertIsNotNone(state[failed]["data"])
+                    other = "epoch" if failed == "harbor" else "harbor"
+                    self.assertIsNone(state[other]["error"])
+                    self.assertEqual(state[other]["last_success"], NOW)
+                    self.assertEqual(len(started), 1)
+                    self.assertTrue(started[0].joined)
+                    self.assertTrue(store.request_refresh()["rate_limited"])
+                    document = json.loads(Path(path).read_text())
+                    self.assertNotIn("private details", json.dumps(document))
+                    reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+                    self.assertEqual(reloaded.read_state()[failed]["error"],
+                                     "unable to start refresh")
+                    self.assertTrue(reloaded.request_refresh()["rate_limited"])
+
+    def test_parallel_tabs_share_one_reservation(self):
+        store, path = self.make_store()
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(store.request_refresh()))
+                   for _ in range(20)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(sum(result["started"] for result in results), 1)
+        self.assertEqual(json.loads(Path(path).read_text())["last_refresh_attempt"], NOW)
+
+    def test_persistence_failure_prevents_all_outbound_work(self):
+        store, _ = self.make_store()
+        factory = Mock()
+        store._thread_factory = factory
+        with patch.object(store, "_persist", return_value=False):
+            result = store.request_refresh()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "refresh history unavailable")
+        self.assertFalse(store.refresh_policy()["can_refresh"])
+        factory.assert_not_called()
+
+    def test_disabled_persistence_cannot_bypass_restart_guarantee(self):
+        store, _ = self.make_store(persist=False)
+        self.assertFalse(store.refresh_policy()["can_refresh"])
+        self.assertFalse(store.request_refresh()["ok"])
+        self.assertFalse(store.refresh_policy()["can_refresh"])
+
+    def test_source_version_change_does_not_reset_a_saved_reservation(self):
+        store, path = self.make_store()
+        store.request_refresh()
+        document = json.loads(Path(path).read_text())
+        document["sources"]["harbor"]["version"] = "retired-version"
+        Path(path).write_text(json.dumps(document))
+        reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW + 60)
+        self.assertTrue(reloaded.request_refresh()["rate_limited"])
+
+    def test_unreadable_or_linked_history_cannot_silently_reset_the_limit(self):
+        store, path = self.make_store()
+        store.request_refresh()
+        with patch.object(benchmarks, "_read_cache_bytes", return_value=None):
+            reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+        self.assertFalse(reloaded.request_refresh()["ok"])
+        link = Path(path).with_name("linked.json")
+        link.symlink_to(path)
+        reloaded = benchmarks.BenchmarkStore(path=str(link), clock=lambda: NOW)
+        self.assertFalse(reloaded.request_refresh()["ok"])
+
+    def test_uninspectable_cache_path_is_not_treated_as_a_missing_history(self):
+        store, path = self.make_store()
+        factory = Mock()
+        with patch.object(benchmarks.os, "lstat", side_effect=PermissionError("private path")):
+            reloaded = benchmarks.BenchmarkStore(
+                path=path, clock=lambda: NOW, thread_factory=factory)
+        self.assertFalse(reloaded.refresh_policy()["can_refresh"])
+        self.assertEqual(reloaded.request_refresh()["error"], "refresh history unavailable")
+        self.assertFalse(Path(path).exists())
+        factory.assert_not_called()
+
+    def test_migration_rejects_malformed_source_history_without_discarding_scores(self):
+        store, path = self.make_store(fetchers={
+            "harbor": static_fetcher(snapshot([entry("tb4", "A", 10.0)]))})
+        store._clock = lambda: NOW - 86460
+        self.assertTrue(store.refresh_source("harbor"))
+        document = json.loads(Path(path).read_text())
+        document.pop("last_refresh_attempt")
+        for invalid in (None, [], "broken"):
+            with self.subTest(record=invalid):
+                document["sources"]["livebench"] = invalid
+                Path(path).write_text(json.dumps(document))
+                reloaded = benchmarks.BenchmarkStore(
+                    path=path, clock=lambda: NOW,
+                    thread_factory=lambda target, name: _FakeThread(target, name))
+                self.assertFalse(reloaded.refresh_policy()["can_refresh"])
+                self.assertEqual(reloaded.request_refresh()["error"], "refresh history unavailable")
+                self.assertEqual(reloaded.read_state()["harbor"]["data"]["entries"][0]["value"], 10.0)
+
+    def test_migration_counts_old_checks_including_failures_and_disabled_sources(self):
+        store, path = self.make_store()
+        document = store._disk_document()
+        document.pop("last_refresh_attempt")
+        document["sources"]["livebench"]["last_checked"] = NOW - 60
+        document["sources"]["livebench"]["error"] = "HTTP 503"
+        document["sources"]["livebench"]["version"] = "old-version"
+        Path(path).write_text(json.dumps(document))
+        reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+        result = reloaded.request_refresh()
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(result["refresh_policy"]["last_attempt"], NOW - 60)
+
+    def test_corrupt_history_fails_closed_without_discarding_scores(self):
+        store, path = self.make_store(fetchers={
+            "harbor": static_fetcher(snapshot([entry("tb4", "A", 10.0)]))})
+        store.refresh_source("harbor")
+        document = json.loads(Path(path).read_text())
+        document["last_refresh_attempt"] = "invalid"
+        Path(path).write_text(json.dumps(document))
+        reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+        self.assertEqual(reloaded.read_state()["harbor"]["data"]["entries"][0]["value"], 10.0)
+        self.assertEqual(reloaded.request_refresh()["error"], "refresh history unavailable")
+        Path(path).write_text("broken JSON")
+        reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+        self.assertFalse(reloaded.request_refresh()["ok"])
+
+    def test_clock_rollback_and_source_toggle_cannot_reset_the_limit(self):
+        store, _ = self.make_store()
+        store.request_refresh()
+        store._end_coordinator()
+        store._clock = lambda: NOW - 100
+        with patch.object(benchmarks, "LIVEBENCH_ENABLED", True):
+            result = store.request_refresh()
+        self.assertTrue(result["rate_limited"])
+        self.assertEqual(result["refresh_policy"]["last_attempt"], NOW)
 
 
 # ── Payload contract and identities ─────────────────────────────────────────
@@ -2454,17 +2693,18 @@ model_list:
         self.assertEqual(result["bench_fetched_at"], NOW)
         self.assertNotIn("config-secret", json.dumps(result))
 
-    def test_ai_services_reads_cache_and_schedules_guarded_refresh(self):
+    def test_ai_services_reads_cache_without_scheduling_any_refresh(self):
         self.write("model_list:\n  - model_name: gpt\n    litellm_params:\n      model: openai/gpt-6.1-sol\n")
         state = make_state({"harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)]})
         with patch.object(benchmarks, "read_state", return_value=state), \
                 patch.object(benchmarks, "ensure_refresh_scheduled") as ensure, \
                 patch.object(benchmarks, "is_refreshing", return_value=True):
             payload = core.get_ai_services()
-        ensure.assert_called_once_with()
+        ensure.assert_not_called()
         self.assertTrue(payload["refreshing"])
         self.assertEqual(payload["models"][0]["bench"]["tb4"], 58.18)
         self.assertNotIn("error", payload)
+        self.assertTrue(payload["refresh_policy"]["manual_only"])
 
     def test_ai_services_not_configured_stays_offline_and_safe(self):
         with patch.object(core, "LITELLM_CONFIG_FILE", ""), \
@@ -2618,6 +2858,53 @@ class ApiContractTests(unittest.TestCase):
         with patch.object(core, "fetch_benchmarks") as fetch:
             self.assertEqual(self.client.post("/api/benchmarks/fetch").status_code, 403)
             fetch.assert_not_called()
+
+    def test_both_post_routes_share_daily_limit_and_get_never_launches_work(self):
+        directory, store, path = temp_store(
+            thread_factory=lambda target, name: _FakeThread(target, name))
+        benchmarks._reset_store_for_tests(store)
+        headers = {"Origin": "https://testserver", "X-Homelab-Request": "1"}
+        try:
+            with patch.object(core, "LITELLM_CONFIG_FILE", "/absent/config.yaml"), \
+                    patch.object(core, "_read_opencode_go_key", return_value="fixture"):
+                for _ in range(3):
+                    response = self.client.get("/api/ai-services")
+                    self.assertEqual(response.status_code, 200)
+                    self.assertTrue(response.json()["refresh_policy"]["can_refresh"])
+                    self.assertFalse(store.refreshing)
+                self.assertEqual(self.client.post("/api/benchmarks/fetch").status_code, 403)
+                self.assertIsNone(store.refresh_policy()["last_attempt"])
+                first = self.client.post("/api/benchmarks/fetch", headers=headers)
+                self.assertTrue(first.json()["started"])
+                store._end_coordinator()  # fake worker has completed/crashed
+                for route in ("/api/benchmarks/fetch", "/api/opencode-go-benchmarks/fetch"):
+                    denied = self.client.post(route, headers=headers)
+                    self.assertEqual(denied.status_code, 429)
+                    self.assertEqual(denied.headers["retry-after"], "86400")
+                    self.assertEqual(denied.headers["cache-control"], "no-store")
+                    self.assertFalse(denied.json()["started"])
+                # Restart and repeat GET: neither cooldown nor read behavior resets.
+                reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW + 60)
+                benchmarks._reset_store_for_tests(reloaded)
+                response = self.client.get("/api/ai-services")
+                self.assertFalse(response.json()["refresh_policy"]["can_refresh"])
+                self.assertFalse(reloaded.refreshing)
+                denied = self.client.post("/api/benchmarks/fetch", headers=headers)
+                self.assertEqual(denied.status_code, 429)
+        finally:
+            benchmarks._reset_store_for_tests(None)
+            directory.cleanup()
+
+    def test_unwritable_refresh_history_reports_503_without_launching_work(self):
+        result = {"ok": False, "error": "refresh history unavailable",
+                  "refresh_policy": {"error": "refresh history unavailable"}}
+        headers = {"Origin": "https://testserver", "X-Homelab-Request": "1"}
+        for route, function in (("/api/benchmarks/fetch", "fetch_benchmarks"),
+                                ("/api/opencode-go-benchmarks/fetch", "fetch_opencode_go_benchmarks")):
+            with patch.object(core, function, return_value=result):
+                response = self.client.post(route, headers=headers)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.json(), result)
 
     def test_legacy_and_new_routes_are_registered(self):
         routes = {route.path: route.methods for route in self.main.app.routes

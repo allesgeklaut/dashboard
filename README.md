@@ -46,7 +46,12 @@ and responses pass strict JSON/CSV validation. They never send LiteLLM,
 OpenCode, or provider credentials, and the manual refresh keeps the same-origin
 mutation guard. The AI Services tab reads `GET /api/ai-services` (a 60-second
 poll only while that tab is visible and active); `POST /api/benchmarks/fetch`
-starts a guarded refresh.
+is the only way to start a refresh. Reading the tab never fetches upstream data,
+even with an empty or stale cache. Refreshes are limited server-side to one run
+per rolling 24 hours across all sources; failed runs count. The reservation is
+persisted before network work, survives restarts, and is shared by the legacy
+refresh endpoint too. A run can require multiple feed/page requests and bounded
+HTTP retries. Cached scores remain readable during the cooldown.
 
 Docker loads credentials from `/opt/secrets/dashboard.env` and
 `/opt/secrets/portainer.env`, not the repository's local-development `.env`.
