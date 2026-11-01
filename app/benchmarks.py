@@ -104,8 +104,9 @@ BENCHLM_RANKINGS_URL = "https://data.benchlm.ai/v1/rankings/current"
 BENCHLM_MCP_URL = "https://data.benchlm.ai/mcp"
 BENCHLM_PAGE_SIZE = 100
 # Hard read cap per refresh: at most 3 pages per surface (6 GETs) plus one
-# MCP POST = 7 upstream requests.  Reaching the cap only stops pagination,
-# it never raises.
+# MCP POST — at most 7 logical requests; each may be retried up to
+# HTTP_ATTEMPTS times by the shared client, so the wire worst case is 21.
+# Reaching the cap only stops pagination, it never raises.
 BENCHLM_MAX_PAGES = 3
 BENCHLM_MAX_REQUESTS = 2 * BENCHLM_MAX_PAGES + 1
 BENCHLM_SURFACES = (
@@ -279,8 +280,8 @@ BENCHLM_WARNING = (
     "leaderboard."
 )
 BENCHLM_DISABLED_WARNING = (
-    "BenchLM.ai BenchAlign is opt-in: set the BenchLM data-key environment "
-    "variable (the one this module's gate reads) to enable the source. "
+    "BenchLM.ai BenchAlign is opt-in: set the BENCHLM_DATA_KEY environment "
+    "variable to enable the source. "
     "Cached scores are hidden while disabled."
 )
 SOURCE_DISABLED_WARNINGS = {
@@ -714,7 +715,10 @@ def _make_entry(metric: str, model: str, value: float, *, evaluator: str,
     # drift (for example a 0-1 pass_at_1 leaking into a percent field).
     if METRIC_BY_KEY[metric].unit == "pct" and not 0.0 <= entry["value"] <= 100.0:
         raise SourceError(_SOURCE_ERROR_SCHEMA)
-    if metric == "eci" and not 0.0 <= entry["value"] <= 1000.0:
+    # Every index metric (ECI, BenchAlign overall/coding) is bounded to
+    # 0-1000 on every path — including the reload path — so a tampered
+    # cache cannot smuggle an arbitrary value into a persisted snapshot.
+    if METRIC_BY_KEY[metric].unit == "index" and not 0.0 <= entry["value"] <= 1000.0:
         raise SourceError(_SOURCE_ERROR_SCHEMA)
     return entry
 
@@ -1612,6 +1616,10 @@ def _benchlm_rankings_page(payload, *, metric: str, offset: int,
     items = payload.get("items")
     if not isinstance(items, list):
         raise SourceError(_SOURCE_ERROR_SCHEMA)
+    # Bound the row count before any per-row allocation: a page may never
+    # carry more rows than the advertised page size.
+    if len(items) > BENCHLM_PAGE_SIZE:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
     pagination = payload.get("pagination")
     if not isinstance(pagination, dict):
         raise SourceError(_SOURCE_ERROR_PAGINATION)
@@ -1676,6 +1684,9 @@ def _benchlm_mcp_entries(payload, *, seen: set) -> tuple[list[dict], str]:
     items = inner.get("items")
     if not isinstance(items, list):
         raise SourceError(_SOURCE_ERROR_SCHEMA)
+    # Same per-page row bound as the rankings surface, before allocation.
+    if len(items) > BENCHLM_PAGE_SIZE:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
     entries = []
     for item in items:
         if not isinstance(item, dict):
@@ -1698,9 +1709,11 @@ def fetch_benchlm(client: HttpClient, previous: dict | None, deadline: Deadline)
     """Read both BenchAlign ranking surfaces plus the TB4 MCP board.
 
     Hard read cap: at most ``BENCHLM_MAX_PAGES`` pages per surface (6 GETs)
-    plus one MCP POST — 7 upstream requests per refresh.  Pagination stops
-    when ``nextOffset`` is null, when a page is empty, or at the cap; hitting
-    the cap never raises, it just stops reading.
+    plus one MCP POST — at most 7 logical requests; each may be retried up
+    to ``HTTP_ATTEMPTS`` times by the shared client, so the wire worst case
+    is 21.  Pagination stops when ``nextOffset`` is null, when a page is
+    empty, or at the cap; hitting the cap never raises, it just stops
+    reading.
     """
     entries: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -1724,6 +1737,11 @@ def fetch_benchlm(client: HttpClient, previous: dict | None, deadline: Deadline)
                                        seen=seen))
             entries.extend(page_entries)
             pages += 1
+            # Enforce the shared entry cap after every page, not once at the
+            # end: a multi-page refresh must never accumulate past
+            # MAX_ENTRIES before the final check runs.
+            if len(entries) > MAX_ENTRIES:
+                raise SourceError(_SOURCE_ERROR_SCHEMA)
             if data_as_of is None:
                 data_as_of = page_date
             if version is None:
@@ -2520,11 +2538,15 @@ def build_payload(inventory: list[dict], state: dict, *,
             # supplies the rows.  When every candidate fails, the reason of
             # the candidate that got furthest is reported (unavailable <
             # unmatched < not evaluated), so a disabled fallback never masks
-            # the primary source's own unmatched/not-evaluated reason.
+            # the primary source's own unmatched/not-evaluated reason —
+            # except when the primary itself is unavailable: a primary-source
+            # outage is always reported as "source unavailable", never as a
+            # deeper fallback reason such as "not evaluated".
             chosen: tuple[str, list[dict]] | None = None
             reason = MISSING_UNAVAILABLE
             reason_rank = -1
-            for source in (spec.source, *spec.fallback):
+            primary_reason = None
+            for position, source in enumerate((spec.source, *spec.fallback)):
                 if not source_has_data.get(source):
                     candidate_reason = MISSING_UNAVAILABLE
                 else:
@@ -2539,9 +2561,15 @@ def build_payload(inventory: list[dict], state: dict, *,
                         else:
                             chosen = (source, entries)
                             break
+                if position == 0:
+                    primary_reason = candidate_reason
                 rank = _MISSING_REASON_ORDER[candidate_reason]
                 if rank > reason_rank:
                     reason, reason_rank = candidate_reason, rank
+            if primary_reason == MISSING_UNAVAILABLE:
+                # The primary source is enabled but has no data: report its
+                # outage regardless of how far the fallback got.
+                reason = MISSING_UNAVAILABLE
             if chosen is None:
                 model["missing"][spec.key] = reason
                 continue

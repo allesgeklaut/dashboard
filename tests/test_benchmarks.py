@@ -783,6 +783,45 @@ class BenchLMAdapterTests(unittest.TestCase):
         self.assertTrue(all(call["method"] == "GET" for call in client.calls))
         self.assertEqual(len(result["entries"]), 3)
 
+    def test_oversized_items_lists_are_rejected_before_row_allocation(self):
+        too_many = [benchlm_item(f"model-{i}", 50.0)
+                    for i in range(benchmarks.BENCHLM_PAGE_SIZE + 1)]
+        cases = [
+            ("rankings page", [benchlm_page(too_many)], 1),
+            ("mcp inner items", [
+                benchlm_page([benchlm_item("m", 90.0)]),
+                benchlm_page([benchlm_item("c", 80.0)]),
+                benchlm_mcp_response(too_many),
+            ], 3),
+        ]
+        for label, responses, expected_calls in cases:
+            with self.subTest(label=label):
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient(responses)
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), "invalid response schema")
+                self.assertEqual(len(client.calls), expected_calls)
+                self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_max_entries_is_enforced_after_each_page_not_once_at_the_end(self):
+        def page(offset):
+            items = [benchlm_item(f"model-{offset}-{i}", 50.0)
+                     for i in range(benchmarks.BENCHLM_PAGE_SIZE)]
+            return benchlm_page(items, offset=offset,
+                                next_offset=offset + benchmarks.BENCHLM_PAGE_SIZE)
+
+        with benchlm_env(BENCHLM_TEST_KEY), \
+                patch.object(benchmarks, "MAX_ENTRIES", 150):
+            client = StubClient([page(0), page(100), page(200)])
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(str(caught.exception), "invalid response schema")
+        # The per-page cap fired after the second page (100 + 100 > 150), so
+        # the third request was never made.
+        self.assertEqual(len(client.calls), 2)
+        self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
     def test_every_request_carries_the_bearer_key_and_mcp_protocol_headers(self):
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient(benchlm_standard_responses())
@@ -819,6 +858,27 @@ class BenchLMAdapterTests(unittest.TestCase):
                         benchmarks.fetch_benchlm(client, None, deadline())
                 self.assertEqual(str(caught.exception), "unable to start refresh")
                 self.assertEqual(client.calls, [])  # zero requests recorded
+
+    def test_http_401_is_sanitized_and_never_echoes_the_data_key(self):
+        def responder(handler, _server):
+            # A hostile upstream that echoes the credential back in the 401
+            # body: the sanitized error must still be exactly "HTTP 401".
+            echoed = handler.headers.get("Authorization", "")
+            _write_response(handler, json.dumps({"detail": echoed}).encode(),
+                            status=401)
+
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(responder) as server, \
+                benchlm_env(BENCHLM_TEST_KEY), \
+                patch.object(benchmarks, "BENCHLM_RANKINGS_URL",
+                             server.base_url + "/v1/rankings/current"):
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(str(caught.exception), "HTTP 401")
+        self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+        self.assertEqual(len(server.seen), 1)  # 401 is not retried
+        self.assertEqual(server.seen[0]["headers"]["authorization"],
+                         f"Bearer {BENCHLM_TEST_KEY}")
 
     def test_rankings_schema_failures_raise_sanitized_errors(self):
         good = [benchlm_item("gpt-6-1-sol", 91.5)]
@@ -975,6 +1035,42 @@ class BenchLMAdapterTests(unittest.TestCase):
             with self.subTest(metric=foreign["metric"]):
                 with self.assertRaises(benchmarks.SourceError):
                     benchmarks._validated_entries([foreign], source="benchlm")
+
+    def test_validated_entries_rejects_benchalign_rows_under_harbor(self):
+        # The reverse masquerade direction: a benchalign row even wearing
+        # Harbor's own pinned version must be rejected when the snapshot is
+        # validated as a harbor one.
+        row = benchmarks._make_entry(
+            "benchalign_overall", "gpt-6-1-sol", 91.5,
+            evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+            version=benchmarks.SOURCES["harbor"].version,
+            date="2026-09-01", date_kind=benchmarks.DATE_KIND_MODEL_RELEASE)
+        with self.assertRaises(benchmarks.SourceError) as caught:
+            benchmarks._validated_entries([row], source="harbor")
+        self.assertEqual(str(caught.exception), "invalid response schema")
+
+    def test_index_metric_range_is_enforced_on_the_reload_path(self):
+        good = entry("benchalign_overall", "gpt-6-1-sol", 91.5, source="benchlm",
+                     evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                     version="benchalign-2026.10.28", date="2026-10-28")
+        # A tampered cache cannot smuggle an out-of-range index value through
+        # _sanitize_entry/_validated_entries (the fetch path already enforces
+        # 0-100 on BenchLM scores).
+        for bad_value in (5000.0, 1000.5, -1.0):
+            with self.subTest(value=bad_value):
+                tampered = dict(good, value=bad_value)
+                with self.assertRaises(benchmarks.SourceError) as caught:
+                    benchmarks._sanitize_entry(tampered)
+                self.assertEqual(str(caught.exception), "invalid response schema")
+                with self.assertRaises(benchmarks.SourceError):
+                    benchmarks._validated_entries([tampered], source="benchlm")
+        # The 0-1000 index bound itself is accepted on the reload path.
+        self.assertEqual(
+            benchmarks._sanitize_entry(dict(good, value=1000.0))["value"], 1000.0)
+        # eci is an index metric too and keeps the same bound.
+        with self.assertRaises(benchmarks.SourceError):
+            benchmarks._sanitize_entry(
+                dict(entry("eci", "Model", 100.0), value=1001.0))
 
 
 class BenchLMSecurityTests(unittest.TestCase):
@@ -3158,6 +3254,22 @@ class BenchLMPayloadTests(unittest.TestCase):
         payload = benchmarks.build_payload(
             [inventory_model("absent", "x/absent")], state, benchlm_enabled=False)
         self.assertEqual(payload["models"][0]["missing"]["tb4"], "unmatched identity")
+
+    def test_primary_outage_is_never_reported_as_not_evaluated(self):
+        # Harbor (the tb4 primary) is enabled but has no data (an outage),
+        # while BenchLM covers the model yet has no tb4 row: the primary's
+        # "source unavailable" must win over the fallback's deeper
+        # "not evaluated".
+        state = make_state({
+            "harbor": None,
+            "benchlm": [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5)],
+        })
+        payload = benchmarks.build_payload(
+            [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+            benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["missing"]["tb4"], "source unavailable")
+        self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
 
     def test_benchalign_values_resolve_through_the_reviewed_aliases(self):
         state = make_state({
