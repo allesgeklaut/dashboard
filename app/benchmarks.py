@@ -1,21 +1,27 @@
 """Benchmark source adapters, snapshots, and AI Services payload assembly.
 
-Four fixed, public, no-auth sources replace the removed Artificial Analysis
-scraping:
+Five fixed sources replace the removed Artificial Analysis scraping:
 
 * Harbor (Terminal-Bench 4.0), a documented public JSON leaderboard read.
 * Epoch AI's ECI CSV (abstract composite index; CC BY 4.0 attribution).
 * LiveBench, pinned to the explicitly released ``20261025`` table.
 * DeepSWE (optional, disabled by default because of documented task grading
   defects; see ``DEEPSWE_WARNING``).
+* BenchLM (BenchLM.ai Data API; optional, credentialed, disabled by default;
+  see ``BENCHLM_WARNING``).  It contributes the BenchAlign composite indexes
+  and, as a fallback for Terminal-Bench 4.0, its recorded TB4 board.
 
 Security posture: only the module's fixed HTTPS URLs are ever requested, TLS
 verification is on, redirects are rejected, sessions ignore proxy/netrc
-configuration (``trust_env = False``), no credentials are attached, response
-bodies are streamed with a byte budget under one absolute wall-clock source
-deadline that also bounds connection setup and header receipt, and every
-upstream error is mapped to a fixed sanitized message.  No upstream content is
-executed and no upstream URLs are copied into API responses.
+configuration (``trust_env = False``), response bodies are streamed with a
+byte budget under one absolute wall-clock source deadline that also bounds
+connection setup and header receipt, and every upstream error is mapped to a
+fixed sanitized message.  No upstream content is executed and no upstream
+URLs are copied into API responses.  Exactly one credential exists: the
+BenchLM data key.  It is read from the environment only when a request
+header is built, is sent only to ``data.benchlm.ai`` (enforced by
+``ALLOWED_HOSTS``), and is never stored in snapshots, never logged, and never
+echoed in errors or payloads.
 
 Nothing here is a database or a job queue: per-source state is held in memory
 and persisted as one versioned, atomically replaced JSON document at
@@ -24,20 +30,22 @@ explicit manual action starts a refresh run, at most once per rolling 24 hours
 across all enabled sources. The reservation is persisted before outbound work;
 failed runs count and reads never schedule a refresh.
 
-Default source availability: Harbor and Epoch are enabled.  LiveBench and
-DeepSWE are opt-in (``HOMELAB_LIVEBENCH_ENABLED`` / ``HOMELAB_DEEPSWE_ENABLED``,
-both false by default) because their scores' reuse terms could not be verified
-here; disabled sources are never fetched and their cached rows are never
-exposed. API definitions remain available, while disabled suites are omitted
-from the UI dropdown.
+Default source availability: Harbor and Epoch are enabled.  LiveBench,
+DeepSWE, and BenchLM are opt-in (``HOMELAB_LIVEBENCH_ENABLED`` /
+``HOMELAB_DEEPSWE_ENABLED`` / the BenchLM data key, all false by default)
+because their scores' reuse terms could not be verified here, or — for BenchLM
+— because the source needs an operator-supplied data key; disabled sources
+are never fetched and their cached rows are never exposed. API definitions
+remain available, while disabled suites are omitted from the UI dropdown.
 
 Dates are semantic, never inferred: every dated entry carries ``date_kind``
-(``model_release`` for Harbor/Epoch, ``benchmark_release`` for LiveBench, or
-``evaluation`` only when a source actually supplies an eval date).  Summary
-selection uses the latest published dated result and never relabels it as an
-evaluation.  ``source_updated`` is feed mutation metadata only (Harbor
-leaderboard/row timestamps, Epoch Last-Modified, DeepSWE generated_at), never a
-model-release or evaluation date.
+(``model_release`` for Harbor/Epoch, ``benchmark_release`` for LiveBench,
+``source_snapshot`` for BenchLM's board capture date, or ``evaluation`` only
+when a source actually supplies an eval date).  Summary selection uses the
+latest published dated result and never relabels it as an evaluation.
+``source_updated`` is feed mutation metadata only (Harbor leaderboard/row
+timestamps, Epoch Last-Modified, DeepSWE generated_at, BenchLM ``dataAsOf``),
+never a model-release or evaluation date.
 """
 from __future__ import annotations
 
@@ -65,8 +73,10 @@ import httpx
 _log = logging.getLogger(__name__)
 
 # ── Fixed endpoints ──────────────────────────────────────────────────────────
-# These are the only URLs this module will ever request.  They are public,
-# documented, credential-free feeds; no user or config supplied URL is used.
+# These are the only URLs this module will ever request.  They are fixed,
+# documented feeds; no user or config supplied URL is used.  All of them are
+# public and credential-free except the BenchLM endpoints, whose bearer key
+# is read from the environment at request time and only ever sent here.
 HARBOR_ENDPOINT = "https://api.harborframework.com/functions/v1/leaderboard-read"
 HARBOR_PACKAGE = "terminal-bench/terminal-bench"
 HARBOR_LEADERBOARD = "4-0-0"
@@ -90,11 +100,35 @@ DEEPSWE_TASKS = 113
 DEEPSWE_KNOWN_DEFECTIVE_TASKS = 23
 DEEPSWE_REVIEW_URL = "https://epoch.ai/benchmarks/deepswe/review"
 
+BENCHLM_RANKINGS_URL = "https://data.benchlm.ai/v1/rankings/current"
+BENCHLM_MCP_URL = "https://data.benchlm.ai/mcp"
+BENCHLM_PAGE_SIZE = 100
+# Hard read cap per refresh: at most 3 pages per surface (6 GETs) plus one
+# MCP POST = 7 upstream requests.  Reaching the cap only stops pagination,
+# it never raises.
+BENCHLM_MAX_PAGES = 3
+BENCHLM_MAX_REQUESTS = 2 * BENCHLM_MAX_PAGES + 1
+BENCHLM_SURFACES = (
+    ("benchalign_overall", "overall"),
+    ("benchalign_coding", "coding"),
+)
+BENCHLM_TB4_BOARD_ID = "benchlm-recorded:agentic.terminalBench4"
+BENCHLM_MCP_TOOL = "benchlm_list_current_benchmark_results"
+BENCHLM_MCP_PROTOCOL_VERSION = "2025-11-25"
+BENCHLM_COMPOSITE_EVALUATOR = "BenchLM BenchAlign"
+BENCHLM_TB4_EVALUATOR = "Terminal-Bench 4.0"
+BENCHLM_TB4_VERSION = "benchlm-capture"
+# BenchLM stamps every capture with its own methodology version instead of
+# one pinned feed version, so its snapshot/entry versions are validated as
+# sanitized text rather than compared against a single fixed pin.
+_DYNAMIC_VERSION_SOURCES = frozenset({"benchlm"})
+
 ALLOWED_HOSTS = frozenset({
     "api.harborframework.com",
     "epoch.ai",
     "livebench.ai",
     "deepswe.datacurve.ai",
+    "data.benchlm.ai",
 })
 
 # ── Budgets ─────────────────────────────────────────────────────────────────
@@ -122,6 +156,10 @@ def _env_flag(name: str) -> bool:
 
 LIVEBENCH_ENABLED = _env_flag("HOMELAB_LIVEBENCH_ENABLED")
 DEEPSWE_ENABLED = _env_flag("HOMELAB_DEEPSWE_ENABLED")
+# BenchLM is the only credentialed source: the data key gates the source at
+# import time and is read again when a request header is built.  The key is
+# never stored on the module, in snapshots, in logs, or in error text.
+BENCHLM_ENABLED = bool(os.environ.get("BENCHLM_DATA_KEY", "").strip())
 
 USER_AGENT = "homelab-ctrl-benchmarks/1.0"
 
@@ -130,14 +168,23 @@ MISSING_NOT_EVALUATED = "not evaluated"
 MISSING_UNMATCHED = "unmatched identity"
 MISSING_UNSUPPORTED = "unsupported modality"
 MISSING_UNAVAILABLE = "source unavailable"
+# Progress order of the per-metric missing reasons: a fallback candidate that
+# fails earlier (e.g. disabled) never masks a primary candidate's deeper reason.
+_MISSING_REASON_ORDER = {
+    MISSING_UNAVAILABLE: 0, MISSING_UNMATCHED: 1, MISSING_NOT_EVALUATED: 2,
+}
 
 # The result's date is never renamed into an evaluation date.  Known values are
 # deliberately narrow and are persisted/revalidated with the entry.
 DATE_KIND_MODEL_RELEASE = "model_release"
 DATE_KIND_BENCHMARK_RELEASE = "benchmark_release"
 DATE_KIND_EVALUATION = "evaluation"
+# Capture date of a source's own published board/snapshot (BenchLM dataAsOf):
+# never an evaluation date, never a model or benchmark release date.
+DATE_KIND_SOURCE_SNAPSHOT = "source_snapshot"
 DATE_KINDS = frozenset({
     DATE_KIND_MODEL_RELEASE, DATE_KIND_BENCHMARK_RELEASE, DATE_KIND_EVALUATION,
+    DATE_KIND_SOURCE_SNAPSHOT,
 })
 
 
@@ -148,6 +195,9 @@ class MetricSpec:
     name: str
     unit: str
     source: str
+    # Secondary sources that may supply rows for this metric when the primary
+    # source does not cover a model (tb4 falls back to BenchLM's TB4 board).
+    fallback: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {"key": self.key, "label": self.label, "name": self.name,
@@ -155,7 +205,8 @@ class MetricSpec:
 
 
 METRICS: tuple[MetricSpec, ...] = (
-    MetricSpec("tb4", "TB4", "Terminal-Bench 4.0", "pct", "harbor"),
+    MetricSpec("tb4", "TB4", "Terminal-Bench 4.0", "pct", "harbor",
+               fallback=("benchlm",)),
     MetricSpec("livebench_coding", "LB-CODE", "LiveBench Coding", "pct", "livebench"),
     MetricSpec("eci", "ECI", "Epoch Capabilities Index", "index", "epoch"),
     MetricSpec("livebench_long_agentic", "LB-AGENT", "LiveBench Long Agentic", "pct", "livebench"),
@@ -165,6 +216,8 @@ METRICS: tuple[MetricSpec, ...] = (
     MetricSpec("livebench_research", "LB-RESEARCH", "LiveBench Research", "pct", "livebench"),
     MetricSpec("livebench_design", "LB-DESIGN", "LiveBench Design", "pct", "livebench"),
     MetricSpec("deepswe", "DSWE", "DeepSWE pass@1", "pct", "deepswe"),
+    MetricSpec("benchalign_overall", "BAL-ALL", "BenchAlign Overall", "index", "benchlm"),
+    MetricSpec("benchalign_coding", "BAL-CODE", "BenchAlign Coding", "index", "benchlm"),
 )
 METRIC_BY_KEY = {spec.key: spec for spec in METRICS}
 LIVEBENCH_COLUMNS = {
@@ -218,9 +271,22 @@ DEEPSWE_DISABLED_WARNING = (
     f"{DEEPSWE_WARNING} Disabled: set HOMELAB_DEEPSWE_ENABLED only after reviewing "
     "the artifact terms."
 )
+BENCHLM_WARNING = (
+    "BenchLM.ai BenchAlign scores are composite 0-100 point estimates, not "
+    "percentages. BenchLM.ai BenchAlign data, CC BY-NC 4.0; cite BenchLM.ai. "
+    "Dates are the board capture date (source_snapshot), never evaluation "
+    "dates. Terminal-Bench 4.0 rows are BenchLM-recorded runs, not the Harbor "
+    "leaderboard."
+)
+BENCHLM_DISABLED_WARNING = (
+    "BenchLM.ai BenchAlign is opt-in: set the BenchLM data-key environment "
+    "variable (the one this module's gate reads) to enable the source. "
+    "Cached scores are hidden while disabled."
+)
 SOURCE_DISABLED_WARNINGS = {
     "livebench": LIVEBENCH_DISABLED_WARNING,
     "deepswe": DEEPSWE_DISABLED_WARNING,
+    "benchlm": BENCHLM_DISABLED_WARNING,
 }
 
 SOURCES: dict[str, SourceSpec] = {
@@ -228,6 +294,7 @@ SOURCES: dict[str, SourceSpec] = {
     "epoch": SourceSpec("epoch", "eci_scores", EPOCH_PROVENANCE_URL, EPOCH_WARNING),
     "livebench": SourceSpec("livebench", LIVEBENCH_VERSION, LIVEBENCH_CSV_URL, LIVEBENCH_WARNING),
     "deepswe": SourceSpec("deepswe", DEEPSWE_VERSION, DEEPSWE_URL, DEEPSWE_WARNING),
+    "benchlm": SourceSpec("benchlm", "v1", "https://data.benchlm.ai/", BENCHLM_WARNING),
 }
 SOURCE_NAMES = tuple(SOURCES)
 
@@ -364,6 +431,25 @@ SOURCE_ALIASES: dict[str, dict[str, str]] = {
         "gemini-3.8-flash": "gemini-3-8-flash",
         "grok-4.5": "grok-4-5",
         "grok-4.6": "grok-4-6",
+    },
+    # BenchLM indexes models by its own modelKey values.  The entries below
+    # are reviewed one-to-one identities only; there is no punctuation or
+    # version-prefix normalization.
+    "benchlm": {
+        "gpt-6.1-sol": "gpt-6-1-sol",
+        "zai-glm-5-3": "glm-5-3",
+        "zai-glm-5-3-flash": "glm-5-3-flash",
+        "deepseek-v4-1-flash-1017": "deepseek-v4-1-flash",
+        "qwen3.8:27b": "qwen3-8-27b",
+        "glm-5.3": "glm-5-3",
+        "glm-5.3-flash": "glm-5-3-flash",
+        "gpt-5.6-luna": "gpt-5-6-luna",
+        "kimi-k2.7-code": "kimi-k2-7-code",
+        "mimo-v2.6-flash": "mimo-v2-6-flash",
+        "mimo-v2.6-pro": "mimo-v2-6-pro",
+        "qwen3.8-max": "qwen3-8-max",
+        "deepseek-v4.1-flash": "deepseek-v4-1-flash",
+        "muse-spark-1.3-contributor": "muse-spark-1-3",
     },
 }
 
@@ -658,7 +744,14 @@ def _validated_entries(entries, *, source: str) -> list[dict]:
     for entry in entries:
         item = _sanitize_entry(entry)
         spec = METRIC_BY_KEY[item["metric"]]
-        if spec.source != source or item["version"] != expected_version:
+        # A fallback source may also carry rows for metrics whose primary
+        # source is another feed (BenchLM supplies Terminal-Bench 4.0 rows).
+        if spec.source != source and source not in spec.fallback:
+            raise SourceError(_SOURCE_ERROR_SCHEMA)
+        # BenchLM stamps each capture with its own methodology version, so
+        # its entry versions are validated as sanitized text, not one pin.
+        if (source not in _DYNAMIC_VERSION_SOURCES
+                and item["version"] != expected_version):
             raise SourceError(_SOURCE_ERROR_SCHEMA)
         clean.append(item)
     return clean
@@ -1466,11 +1559,215 @@ def fetch_deepswe(client: HttpClient, previous: dict | None, deadline: Deadline)
     }
 
 
+# ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
+def _benchlm_request_headers(*, mcp: bool = False) -> dict:
+    """Build the BenchLM request headers.
+
+    The data key is read from the environment here, at request time, and is
+    never stored on the module, in snapshots, in log records, or in exception
+    text; it is sent only to data.benchlm.ai (enforced by ``ALLOWED_HOSTS``).
+    """
+    key = os.environ.get("BENCHLM_DATA_KEY", "").strip()
+    if not key:
+        # Never attach an empty credential; fail before any request goes out.
+        raise SourceError(_SOURCE_ERROR_START)
+    headers = {"Authorization": f"Bearer {key}"}
+    if mcp:
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json, text/event-stream"
+        headers["MCP-Protocol-Version"] = BENCHLM_MCP_PROTOCOL_VERSION
+    else:
+        headers["Accept"] = "application/json"
+    return headers
+
+
+def _benchlm_ci(item: dict) -> dict | None:
+    """Map the 90% score interval when both bounds are valid 0-100 numbers."""
+    low = item.get("scoreInterval90Lower")
+    high = item.get("scoreInterval90Upper")
+    if not (_is_number(low) and _is_number(high)):
+        return None
+    low = float(low)
+    high = float(high)
+    if not (0.0 <= low <= 100.0 and 0.0 <= high <= 100.0 and low <= high):
+        return None
+    return {"low": low, "high": high, "half_width": round((high - low) / 2, 4)}
+
+
+def _benchlm_rankings_page(payload, *, metric: str, offset: int,
+                           seen: set) -> tuple[list[dict], str, str, int | None]:
+    """Parse one rankings page.
+
+    Returns (entries, data_as_of, methodology_version, next_offset).
+    """
+    if not isinstance(payload, dict):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    data_as_of = _date_from_iso(payload.get("dataAsOf"))
+    if data_as_of is None:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    methodology = payload.get("methodology")
+    if not isinstance(methodology, dict):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    version = _text(methodology.get("version"), maximum=64, required=True)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    pagination = payload.get("pagination")
+    if not isinstance(pagination, dict):
+        raise SourceError(_SOURCE_ERROR_PAGINATION)
+    if _integer(pagination.get("offset"), minimum=0, maximum=10**7) != offset:
+        raise SourceError(_SOURCE_ERROR_PAGINATION)
+    if _integer(pagination.get("limit"), minimum=1, maximum=1000) != BENCHLM_PAGE_SIZE:
+        raise SourceError(_SOURCE_ERROR_PAGINATION)
+    next_offset = pagination.get("nextOffset")
+    if next_offset is not None and (isinstance(next_offset, bool)
+                                    or not isinstance(next_offset, int)
+                                    or next_offset < 0):
+        raise SourceError(_SOURCE_ERROR_PAGINATION)
+    entries = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise SourceError(_SOURCE_ERROR_SCHEMA)
+        model = _text(item.get("modelKey"), maximum=200, required=True)
+        score = _number(item.get("score"), low=0.0, high=100.0)
+        metadata = {}
+        rank = item.get("rank")
+        if rank is not None:
+            metadata["rank"] = _integer(rank, minimum=1, maximum=MAX_ENTRIES)
+        key = (metric, model)
+        if key in seen:
+            continue  # repeated row across pages: keep the first occurrence
+        seen.add(key)
+        entries.append(_make_entry(
+            metric, model, score, evaluator=BENCHLM_COMPOSITE_EVALUATOR,
+            version=version, date=data_as_of,
+            # BenchLM supplies no per-run dates: the board capture date is
+            # labelled as a source snapshot, never an evaluation date.
+            date_kind=DATE_KIND_SOURCE_SNAPSHOT,
+            ci=_benchlm_ci(item), metadata=metadata,
+        ))
+    return entries, data_as_of, version, next_offset
+
+
+def _benchlm_mcp_entries(payload, *, seen: set) -> tuple[list[dict], str]:
+    """Parse the MCP tools/call response into Terminal-Bench 4.0 rows."""
+    if not isinstance(payload, dict):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    content = result.get("content")
+    if not isinstance(content, list) or not content:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    text = None
+    for block in content:
+        if (isinstance(block, dict) and block.get("type") == "text"
+                and isinstance(block.get("text"), str)):
+            text = block["text"]
+            break
+    if text is None:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    inner = _load_json(text.encode("utf-8"))
+    if not isinstance(inner, dict):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    data_as_of = _date_from_iso(inner.get("dataAsOf"))
+    if data_as_of is None:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    items = inner.get("items")
+    if not isinstance(items, list):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    entries = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise SourceError(_SOURCE_ERROR_SCHEMA)
+        model = _text(item.get("modelKey"), maximum=200, required=True)
+        score = _number(item.get("score"), low=0.0, high=100.0)
+        key = ("tb4", model)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(_make_entry(
+            "tb4", model, score, evaluator=BENCHLM_TB4_EVALUATOR,
+            version=BENCHLM_TB4_VERSION, date=data_as_of,
+            date_kind=DATE_KIND_SOURCE_SNAPSHOT, metadata={},
+        ))
+    return entries, data_as_of
+
+
+def fetch_benchlm(client: HttpClient, previous: dict | None, deadline: Deadline) -> dict:
+    """Read both BenchAlign ranking surfaces plus the TB4 MCP board.
+
+    Hard read cap: at most ``BENCHLM_MAX_PAGES`` pages per surface (6 GETs)
+    plus one MCP POST — 7 upstream requests per refresh.  Pagination stops
+    when ``nextOffset`` is null, when a page is empty, or at the cap; hitting
+    the cap never raises, it just stops reading.
+    """
+    entries: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    requests = 0
+    pages = 0
+    data_as_of: str | None = None
+    version: str | None = None
+    for metric, surface in BENCHLM_SURFACES:
+        offset = 0
+        for _page in range(BENCHLM_MAX_PAGES):
+            if requests >= BENCHLM_MAX_REQUESTS:
+                break  # hard cap reached: stop, never raise
+            url = (f"{BENCHLM_RANKINGS_URL}?surface={surface}"
+                   f"&limit={BENCHLM_PAGE_SIZE}&offset={offset}")
+            response = client.request(
+                "GET", url, headers=_benchlm_request_headers(), deadline=deadline)
+            requests += 1
+            payload = _load_json(response.body)
+            page_entries, page_date, page_version, next_offset = (
+                _benchlm_rankings_page(payload, metric=metric, offset=offset,
+                                       seen=seen))
+            entries.extend(page_entries)
+            pages += 1
+            if data_as_of is None:
+                data_as_of = page_date
+            if version is None:
+                version = page_version
+            if not payload.get("items") or next_offset is None:
+                break  # empty page or no further page
+            offset = next_offset
+    if requests < BENCHLM_MAX_REQUESTS:
+        mcp_body = {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": BENCHLM_MCP_TOOL,
+                       "arguments": {"boardId": BENCHLM_TB4_BOARD_ID,
+                                     "limit": BENCHLM_PAGE_SIZE}},
+        }
+        response = client.request(
+            "POST", BENCHLM_MCP_URL, json_body=mcp_body,
+            headers=_benchlm_request_headers(mcp=True), deadline=deadline)
+        requests += 1
+        mcp_entries, mcp_date = _benchlm_mcp_entries(
+            _load_json(response.body), seen=seen)
+        entries.extend(mcp_entries)
+        if data_as_of is None:
+            data_as_of = mcp_date
+    if len(entries) > MAX_ENTRIES:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    if not entries:
+        raise SourceError(_SOURCE_ERROR_EMPTY)
+    return {
+        "entries": entries,
+        "version": version or BENCHLM_TB4_VERSION,
+        # dataAsOf is the board capture date: feed mutation metadata, never
+        # a model-release or evaluation date.
+        "source_updated": data_as_of,
+        "validators": {},
+        "meta": {"pages": pages, "rows": len(entries)},
+    }
+
+
 FETCHERS = {
     "harbor": fetch_harbor,
     "epoch": fetch_epoch,
     "livebench": fetch_livebench,
     "deepswe": fetch_deepswe,
+    "benchlm": fetch_benchlm,
 }
 
 
@@ -1561,7 +1858,8 @@ def _sanitize_source_record(name: str, record) -> dict | None:
         state["last_checked"] = _sanitize_timestamp(record.get("last_checked"))
         state["last_success"] = _sanitize_timestamp(record.get("last_success"))
         version = _text(record.get("version"), maximum=64)
-        if version != SOURCES[name].version:
+        if version is None or (name not in _DYNAMIC_VERSION_SOURCES
+                               and version != SOURCES[name].version):
             return None
         state["version"] = version
         state["source_updated"] = _date_from_iso(record.get("source_updated"))
@@ -1816,7 +2114,8 @@ class BenchmarkStore:
                     return True
                 entries = _validated_entries(snapshot.get("entries"), source=name)
                 version = _text(snapshot.get("version"), maximum=64)
-                if version != SOURCES[name].version:
+                if version is None or (name not in _DYNAMIC_VERSION_SOURCES
+                                       and version != SOURCES[name].version):
                     raise SourceError(_SOURCE_ERROR_SCHEMA)
                 source_updated = _date_from_iso(snapshot.get("source_updated"))
                 validators = _clean_validators_any(snapshot.get("validators"))
@@ -2018,13 +2317,16 @@ def refresh_policy() -> dict:
 
 # ── Payload assembly ───────────────────────────────────────────────────────
 def _source_enabled(name: str, *, deepswe_enabled: bool | None = None,
-                    livebench_enabled: bool | None = None) -> bool:
+                    livebench_enabled: bool | None = None,
+                    benchlm_enabled: bool | None = None) -> bool:
     if name == "harbor" or name == "epoch":
         return True
     if name == "livebench":
         return LIVEBENCH_ENABLED if livebench_enabled is None else livebench_enabled
     if name == "deepswe":
         return DEEPSWE_ENABLED if deepswe_enabled is None else deepswe_enabled
+    if name == "benchlm":
+        return BENCHLM_ENABLED if benchlm_enabled is None else benchlm_enabled
     return False
 
 
@@ -2166,11 +2468,13 @@ def _select_latest(results: list[dict]) -> int | None:
 
 def build_payload(inventory: list[dict], state: dict, *,
                   deepswe_enabled: bool | None = None,
+                  benchlm_enabled: bool | None = None,
                   include_sources: bool = True) -> dict:
     """Assemble the AI Services contract from inventory rows and cache state."""
     metrics = _enabled_metrics(deepswe_enabled)
     enabled_sources = {source for source in SOURCE_NAMES
-                       if _source_enabled(source, deepswe_enabled=deepswe_enabled)}
+                       if _source_enabled(source, deepswe_enabled=deepswe_enabled,
+                                          benchlm_enabled=benchlm_enabled)}
     # Disabled sources never contribute cached rows, even if an earlier run
     # (or another deployment) left data in the cache file.
     indexes = {
@@ -2210,18 +2514,38 @@ def build_payload(inventory: list[dict], state: dict, *,
             if blocked:
                 model["missing"][spec.key] = MISSING_UNMATCHED
                 continue
-            source = spec.source
-            if not source_has_data.get(source):
-                model["missing"][spec.key] = MISSING_UNAVAILABLE
+            # The primary source wins; each fallback source (BenchLM for tb4)
+            # is tried in order and the FIRST one that is enabled, has cached
+            # data, resolves an identity, and has entries for this metric
+            # supplies the rows.  When every candidate fails, the reason of
+            # the candidate that got furthest is reported (unavailable <
+            # unmatched < not evaluated), so a disabled fallback never masks
+            # the primary source's own unmatched/not-evaluated reason.
+            chosen: tuple[str, list[dict]] | None = None
+            reason = MISSING_UNAVAILABLE
+            reason_rank = -1
+            for source in (spec.source, *spec.fallback):
+                if not source_has_data.get(source):
+                    candidate_reason = MISSING_UNAVAILABLE
+                else:
+                    identity = resolved.get(source)
+                    if identity is None:
+                        candidate_reason = MISSING_UNMATCHED
+                    else:
+                        entries = indexes[source]["by_metric"].get(
+                            spec.key, {}).get(identity, [])
+                        if not entries:
+                            candidate_reason = MISSING_NOT_EVALUATED
+                        else:
+                            chosen = (source, entries)
+                            break
+                rank = _MISSING_REASON_ORDER[candidate_reason]
+                if rank > reason_rank:
+                    reason, reason_rank = candidate_reason, rank
+            if chosen is None:
+                model["missing"][spec.key] = reason
                 continue
-            identity = resolved.get(source)
-            if identity is None:
-                model["missing"][spec.key] = MISSING_UNMATCHED
-                continue
-            entries = indexes[source]["by_metric"].get(spec.key, {}).get(identity, [])
-            if not entries:
-                model["missing"][spec.key] = MISSING_NOT_EVALUATED
-                continue
+            source, entries = chosen
             results = [_result(entry, source) for entry in entries]
             selected_index = _select_latest(results)
             if selected_index is None:
@@ -2274,7 +2598,8 @@ def last_success(state: dict) -> float | None:
 
 __all__ = [
     "BenchmarkStore", "Deadline", "HttpClient", "METRICS", "SOURCES",
-    "SOURCE_ALIASES", "DEEPSWE_ENABLED", "DEEPSWE_WARNING", "DEEPSWE_REVIEW_URL",
+    "SOURCE_ALIASES", "BENCHLM_ENABLED", "BENCHLM_WARNING", "DEEPSWE_ENABLED",
+    "DEEPSWE_WARNING", "DEEPSWE_REVIEW_URL",
     "build_payload", "ensure_refresh_scheduled", "get_store", "is_refreshing",
     "last_success", "metrics_metadata", "read_state", "request_refresh", "refresh_policy",
 ]

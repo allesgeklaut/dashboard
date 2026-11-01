@@ -1,5 +1,6 @@
 """Offline tests for benchmark adapters, snapshots, identities and the API contract."""
 import asyncio
+import contextlib
 import http.server
 import json
 import math
@@ -137,6 +138,71 @@ def deepswe_response(rows=None, *, task_count=113, generated_at="2026-09-22T06:2
     return benchmarks.Response(200, {}, json.dumps(payload).encode())
 
 
+# ── BenchLM fixtures ────────────────────────────────────────────────────────
+# Test-only sentinel credential; never a real key.
+BENCHLM_TEST_KEY = "benchlm-test-sentinel-0000notarealkey"
+
+
+@contextlib.contextmanager
+def benchlm_env(key):
+    """Set BENCHLM_DATA_KEY for one test (key=None removes it); always restored."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("BENCHLM_DATA_KEY", None)
+        if key is not None:
+            os.environ["BENCHLM_DATA_KEY"] = key
+        yield
+
+
+def benchlm_item(model, score, *, rank=None, interval=None):
+    item = {"modelKey": model, "score": score}
+    if rank is not None:
+        item["rank"] = rank
+    if interval is not None:
+        item["scoreInterval90Lower"], item["scoreInterval90Upper"] = interval
+    return item
+
+
+def benchlm_page_dict(items, *, offset=0, next_offset=None, **overrides):
+    payload = {
+        "dataAsOf": "2026-10-28T09:15:00Z",
+        "methodology": {"version": "benchalign-2026.10.28"},
+        "items": items,
+        "pagination": {"offset": offset, "limit": benchmarks.BENCHLM_PAGE_SIZE,
+                       "nextOffset": next_offset},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def benchlm_raw_response(payload):
+    return benchmarks.Response(200, {}, json.dumps(payload).encode())
+
+
+def benchlm_page(items, **overrides):
+    return benchlm_raw_response(benchlm_page_dict(items, **overrides))
+
+
+def benchlm_mcp_envelope(text, **overrides):
+    envelope = {"jsonrpc": "2.0", "id": 1,
+                "result": {"content": [{"type": "text", "text": text}]}}
+    envelope.update(overrides)
+    return benchmarks.Response(200, {}, json.dumps(envelope).encode())
+
+
+def benchlm_mcp_response(items, *, data_as_of="2026-10-28T09:15:00Z"):
+    return benchlm_mcp_envelope(
+        json.dumps({"dataAsOf": data_as_of, "items": items}))
+
+
+def benchlm_standard_responses():
+    """One page per ranking surface plus the Terminal-Bench 4.0 MCP board."""
+    overall = [benchlm_item("gpt-6-1-sol", 91.5, rank=1, interval=(89.0, 94.0)),
+               benchlm_item("glm-5-3", 80.25, rank=2)]
+    coding = [benchlm_item("gpt-6-1-sol", 88.0, rank=1)]
+    tb4 = [benchlm_item("gpt-6-1-sol", 55.5)]
+    return [benchlm_page(overall), benchlm_page(coding), benchlm_mcp_response(tb4)]
+
+
 class StubClient:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -162,7 +228,10 @@ _UNSET = object()
 
 def entry(metric, model, value, *, date=_UNSET, source=None, **kwargs):
     spec = benchmarks.METRIC_BY_KEY[metric]
-    assert source is None or spec.source == source
+    # An explicit source may also be one of the metric's fallback sources:
+    # BenchLM supplies tb4 rows although Harbor stays the primary source.
+    assert source is None or source in (spec.source, *spec.fallback)
+    resolved_source = source or spec.source
     if date is _UNSET:
         # DeepSWE carries no eval date; other sources default to a dated fixture.
         date = None if spec.source == "deepswe" else "2026-09-01"
@@ -170,11 +239,14 @@ def entry(metric, model, value, *, date=_UNSET, source=None, **kwargs):
     if date is not None and date_kind is None:
         if spec.source == "livebench":
             date_kind = benchmarks.DATE_KIND_BENCHMARK_RELEASE
+        elif resolved_source == "benchlm":
+            # BenchLM dates are board capture dates, never eval dates.
+            date_kind = benchmarks.DATE_KIND_SOURCE_SNAPSHOT
         elif spec.source in ("harbor", "epoch"):
             date_kind = benchmarks.DATE_KIND_MODEL_RELEASE
     return benchmarks._make_entry(
         metric, model, value, evaluator=kwargs.pop("evaluator", "Fixture"),
-        version=kwargs.pop("version", benchmarks.SOURCES[spec.source].version),
+        version=kwargs.pop("version", benchmarks.SOURCES[resolved_source].version),
         date=date, date_kind=date_kind,
         agent=kwargs.pop("agent", None), effort=kwargs.pop("effort", None),
         configuration=kwargs.pop("configuration", None),
@@ -585,6 +657,446 @@ class DeepSweAdapterTests(unittest.TestCase):
         self.assertTrue(result["not_modified"])
         self.assertEqual(client.calls[0]["headers"]["If-Modified-Since"],
                          "Mon, 26 Oct 2026 08:25:02 GMT")
+
+
+# ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
+class BenchLMAdapterTests(unittest.TestCase):
+    def test_happy_path_reads_both_surfaces_then_the_mcp_board(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(benchlm_standard_responses())
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual([call["method"] for call in client.calls],
+                         ["GET", "GET", "POST"])
+        self.assertEqual(client.calls[0]["url"],
+                         f"{benchmarks.BENCHLM_RANKINGS_URL}?surface=overall"
+                         f"&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0")
+        self.assertEqual(client.calls[1]["url"],
+                         f"{benchmarks.BENCHLM_RANKINGS_URL}?surface=coding"
+                         f"&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0")
+        self.assertEqual(client.calls[2]["url"], benchmarks.BENCHLM_MCP_URL)
+        self.assertEqual(client.calls[2]["json"], {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": benchmarks.BENCHLM_MCP_TOOL,
+                       "arguments": {"boardId": benchmarks.BENCHLM_TB4_BOARD_ID,
+                                     "limit": benchmarks.BENCHLM_PAGE_SIZE}},
+        })
+        entries = {(item["metric"], item["model"]): item
+                   for item in result["entries"]}
+        self.assertEqual(set(entries), {
+            ("benchalign_overall", "gpt-6-1-sol"),
+            ("benchalign_overall", "glm-5-3"),
+            ("benchalign_coding", "gpt-6-1-sol"),
+            ("tb4", "gpt-6-1-sol"),
+        })
+        overall = entries[("benchalign_overall", "gpt-6-1-sol")]
+        self.assertEqual(overall["value"], 91.5)
+        self.assertEqual(overall["ci"], {"low": 89.0, "high": 94.0, "half_width": 2.5})
+        self.assertEqual(overall["date"], "2026-10-28")
+        self.assertEqual(overall["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        self.assertEqual(overall["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        self.assertEqual(overall["version"], "benchalign-2026.10.28")
+        self.assertEqual(overall["metadata"], {"rank": 1})
+        coding = entries[("benchalign_coding", "gpt-6-1-sol")]
+        self.assertEqual(coding["value"], 88.0)
+        self.assertIsNone(coding["ci"])
+        self.assertEqual(coding["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        tb4 = entries[("tb4", "gpt-6-1-sol")]
+        self.assertEqual(tb4["value"], 55.5)
+        self.assertEqual(tb4["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
+        self.assertEqual(tb4["version"], benchmarks.BENCHLM_TB4_VERSION)
+        self.assertEqual(tb4["date"], "2026-10-28")
+        self.assertEqual(tb4["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        self.assertEqual(result["version"], "benchalign-2026.10.28")
+        self.assertEqual(result["source_updated"], "2026-10-28")
+        self.assertEqual(result["validators"], {})
+        self.assertEqual(result["meta"], {"pages": 2, "rows": 4})
+        # The whole result also passes the store's per-source validation.
+        self.assertEqual(
+            benchmarks._validated_entries(result["entries"], source="benchlm"),
+            result["entries"])
+
+    def test_pagination_follows_next_offset_and_second_page_carries_offset_100(self):
+        overall_p1 = [benchlm_item("model-a", 90.0)]
+        overall_p2 = [benchlm_item("model-a", 89.0),  # duplicate row: skipped
+                      benchlm_item("model-b", 85.0)]
+        coding_p1 = [benchlm_item("model-a", 80.0)]
+        coding_p2 = [benchlm_item("model-c", 70.0)]
+        responses = [
+            benchlm_page(overall_p1, offset=0, next_offset=100),
+            benchlm_page(overall_p2, offset=100, next_offset=None),
+            benchlm_page(coding_p1, offset=0, next_offset=100),
+            benchlm_page(coding_p2, offset=100, next_offset=None),
+            benchlm_mcp_response([benchlm_item("model-a", 60.0)]),
+        ]
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(len(client.calls), 5)
+        self.assertIn("surface=overall&limit=100&offset=0", client.calls[0]["url"])
+        self.assertIn("surface=overall&limit=100&offset=100", client.calls[1]["url"])
+        self.assertIn("surface=coding&limit=100&offset=0", client.calls[2]["url"])
+        self.assertIn("surface=coding&limit=100&offset=100", client.calls[3]["url"])
+        seen = {(item["metric"], item["model"]): item for item in result["entries"]}
+        self.assertEqual(set(seen), {
+            ("benchalign_overall", "model-a"), ("benchalign_overall", "model-b"),
+            ("benchalign_coding", "model-a"), ("benchalign_coding", "model-c"),
+            ("tb4", "model-a"),
+        })
+        # The repeated (overall, model-a) row kept its first occurrence.
+        self.assertEqual(seen[("benchalign_overall", "model-a")]["value"], 90.0)
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 5})
+
+    def test_read_cap_yields_exactly_seven_requests_and_never_raises(self):
+        responses = []
+        for surface_index in range(2):
+            for page_index in range(benchmarks.BENCHLM_MAX_PAGES):
+                offset = page_index * benchmarks.BENCHLM_PAGE_SIZE
+                responses.append(benchlm_page(
+                    [benchlm_item(f"model-{surface_index}-{page_index}",
+                                  50.0 + page_index)],
+                    offset=offset,
+                    next_offset=offset + benchmarks.BENCHLM_PAGE_SIZE))
+        responses.append(benchlm_mcp_response([benchlm_item("mcp-model", 42.0)]))
+        responses.append(benchlm_page([benchlm_item("never-fetched", 1.0)]))
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            # An always-advancing nextOffset must not raise and must stop at
+            # the hard cap: 6 GETs + 1 POST, no more.
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(len(client.calls), benchmarks.BENCHLM_MAX_REQUESTS)
+        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 7)
+        self.assertEqual(sum(call["method"] == "GET" for call in client.calls), 6)
+        self.assertEqual(sum(call["method"] == "POST" for call in client.calls), 1)
+        self.assertEqual(result["meta"], {"pages": 6, "rows": 7})
+        self.assertEqual(len(result["entries"]), 7)
+
+    def test_hitting_the_cap_mid_pagination_stops_reads_and_skips_the_mcp_post(self):
+        responses = [benchlm_page([benchlm_item(f"m{i}", 10.0 + i)],
+                                  offset=i * 100, next_offset=(i + 1) * 100)
+                     for i in range(4)]
+        responses.append(benchlm_mcp_response([benchlm_item("mcp", 1.0)]))
+        with benchlm_env(BENCHLM_TEST_KEY), \
+                patch.object(benchmarks, "BENCHLM_MAX_REQUESTS", 3):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(len(client.calls), 3)  # cap reached: stop, never raise
+        self.assertTrue(all(call["method"] == "GET" for call in client.calls))
+        self.assertEqual(len(result["entries"]), 3)
+
+    def test_every_request_carries_the_bearer_key_and_mcp_protocol_headers(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(benchlm_standard_responses())
+            benchmarks.fetch_benchlm(client, None, deadline())
+            for call in client.calls:
+                self.assertEqual(call["headers"]["Authorization"],
+                                 f"Bearer {BENCHLM_TEST_KEY}")
+            get_headers = client.calls[0]["headers"]
+            self.assertEqual(get_headers["Accept"], "application/json")
+            self.assertNotIn("MCP-Protocol-Version", get_headers)
+            self.assertNotIn("Content-Type", get_headers)
+            mcp_headers = client.calls[-1]["headers"]
+            self.assertEqual(mcp_headers["Content-Type"], "application/json")
+            self.assertEqual(mcp_headers["Accept"],
+                             "application/json, text/event-stream")
+            self.assertEqual(mcp_headers["MCP-Protocol-Version"],
+                             benchmarks.BENCHLM_MCP_PROTOCOL_VERSION)
+            # Direct header construction reads the key at request time only.
+            self.assertEqual(benchmarks._benchlm_request_headers(), {
+                "Authorization": f"Bearer {BENCHLM_TEST_KEY}",
+                "Accept": "application/json",
+            })
+            mcp = benchmarks._benchlm_request_headers(mcp=True)
+            self.assertEqual(mcp["Authorization"], f"Bearer {BENCHLM_TEST_KEY}")
+            self.assertEqual(mcp["MCP-Protocol-Version"],
+                             benchmarks.BENCHLM_MCP_PROTOCOL_VERSION)
+
+    def test_missing_or_blank_key_fails_before_any_request(self):
+        for key in (None, "", "   "):
+            with self.subTest(key=key):
+                with benchlm_env(key):
+                    client = StubClient(benchlm_standard_responses())
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), "unable to start refresh")
+                self.assertEqual(client.calls, [])  # zero requests recorded
+
+    def test_rankings_schema_failures_raise_sanitized_errors(self):
+        good = [benchlm_item("gpt-6-1-sol", 91.5)]
+        missing_as_of = benchlm_page_dict(good)
+        del missing_as_of["dataAsOf"]
+        schema = "invalid response schema"
+        pagination = "invalid pagination"
+        cases = [
+            ("missing dataAsOf", benchlm_raw_response(missing_as_of), schema),
+            ("null dataAsOf", benchlm_page(good, dataAsOf=None), schema),
+            ("invalid dataAsOf", benchlm_page(good, dataAsOf="2026-13-40"), schema),
+            ("short dataAsOf", benchlm_page(good, dataAsOf="2026-1-1"), schema),
+            ("payload not a dict", benchmarks.Response(200, {}, b"[1,2]"), schema),
+            ("methodology not a dict", benchlm_page(good, methodology=None), schema),
+            ("version missing", benchlm_page(good, methodology={}), schema),
+            ("items not a list", benchlm_page({"modelKey": "m"}), schema),
+            ("item not a dict", benchlm_page([3]), schema),
+            ("modelKey missing", benchlm_page([{"score": 50.0}]), schema),
+            ("text score", benchlm_page([benchlm_item("m", "high")]), schema),
+            ("bool score", benchlm_page([{"modelKey": "m", "score": True}]), schema),
+            ("score above 100", benchlm_page([benchlm_item("m", 100.5)]), schema),
+            ("negative score", benchlm_page([benchlm_item("m", -0.5)]), schema),
+            ("rank zero", benchlm_page([benchlm_item("m", 50.0, rank=0)]), schema),
+            ("wrong offset", benchlm_page(good, pagination={
+                "offset": 7, "limit": 100, "nextOffset": None}), pagination),
+            ("wrong limit", benchlm_page(good, pagination={
+                "offset": 0, "limit": 50, "nextOffset": None}), pagination),
+            ("offset not an int", benchlm_page(good, pagination={
+                "offset": "0", "limit": 100, "nextOffset": None}), schema),
+            ("negative nextOffset", benchlm_page(good, pagination={
+                "offset": 0, "limit": 100, "nextOffset": -1}), pagination),
+            ("bool nextOffset", benchlm_page(good, pagination={
+                "offset": 0, "limit": 100, "nextOffset": True}), pagination),
+        ]
+        for label, response, message in cases:
+            with self.subTest(label=label):
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient([response])
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), message)
+                self.assertEqual(len(client.calls), 1)
+                self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_malformed_mcp_envelopes_raise_sanitized_errors(self):
+        schema = "invalid response schema"
+        cases = [
+            ("no result", {"jsonrpc": "2.0", "id": 1}, schema),
+            ("result not a dict", {"result": []}, schema),
+            ("no content", {"result": {}}, schema),
+            ("empty content", {"result": {"content": []}}, schema),
+            ("no text block",
+             {"result": {"content": [{"type": "image", "data": "x"}]}}, schema),
+            ("non-JSON text", benchlm_mcp_envelope("not json"),
+             "invalid JSON response"),
+            ("inner not a dict", benchlm_mcp_envelope("[1,2]"), schema),
+            ("inner missing dataAsOf",
+             benchlm_mcp_envelope(json.dumps({"items": []})), schema),
+            ("inner items not a list",
+             benchlm_mcp_envelope(json.dumps(
+                 {"dataAsOf": "2026-10-28", "items": {}})), schema),
+            ("inner bad score",
+             benchlm_mcp_envelope(json.dumps(
+                 {"dataAsOf": "2026-10-28",
+                  "items": [{"modelKey": "m", "score": 200.0}]})), schema),
+        ]
+        for label, envelope, message in cases:
+            with self.subTest(label=label):
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient([
+                        benchlm_page([benchlm_item("m", 90.0)]),
+                        benchlm_page([benchlm_item("c", 80.0)]),
+                        envelope if isinstance(envelope, benchmarks.Response)
+                        else benchlm_raw_response(envelope),
+                    ])
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), message)
+                self.assertEqual(len(client.calls), 3)  # 2 GETs then the POST
+                self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_empty_surfaces_and_empty_board_raise_empty_feed(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient([benchlm_page([]), benchlm_page([]),
+                                 benchlm_mcp_response([])])
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(str(caught.exception), "empty feed")
+        self.assertEqual(len(client.calls), 3)
+
+    def test_empty_ranking_surfaces_still_contribute_the_mcp_board(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient([
+                benchlm_page([]),
+                benchlm_page([]),
+                benchlm_mcp_response([benchlm_item("mcp-model", 42.0)]),
+            ])
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual([(item["metric"], item["model"], item["value"])
+                          for item in result["entries"]],
+                         [("tb4", "mcp-model", 42.0)])
+        self.assertEqual(result["source_updated"], "2026-10-28")
+        self.assertEqual(result["version"], "benchalign-2026.10.28")
+        self.assertEqual(result["meta"], {"pages": 2, "rows": 1})
+
+    def test_ci_interval_mapping(self):
+        cases = [
+            ((89.0, 94.0), {"low": 89.0, "high": 94.0, "half_width": 2.5}),
+            ((0, 100), {"low": 0.0, "high": 100.0, "half_width": 50.0}),
+            ((50, 50), {"low": 50.0, "high": 50.0, "half_width": 0.0}),
+            ((94.0, 89.0), None),   # inverted bounds
+            ((-1.0, 50.0), None),   # below range
+            ((50.0, 101.0), None),  # above range
+            (("89", "94"), None),   # non-numeric
+            ((None, 94.0), None),   # partial
+            ((True, 94.0), None),   # bool is not a number
+        ]
+        for interval, expected in cases:
+            with self.subTest(interval=interval):
+                item = benchlm_item("m", 90.0)
+                item["scoreInterval90Lower"], item["scoreInterval90Upper"] = interval
+                self.assertEqual(benchmarks._benchlm_ci(item), expected)
+        self.assertIsNone(benchmarks._benchlm_ci({"modelKey": "m", "score": 90.0}))
+        # Integration: a page row's interval lands on the entry's ci.
+        with benchlm_env(BENCHLM_TEST_KEY):
+            result = benchmarks.fetch_benchlm(StubClient([
+                benchlm_page([benchlm_item("m", 90.0, interval=(88.0, 92.0))]),
+                benchlm_page([benchlm_item("c", 80.0)]),
+                benchlm_mcp_response([benchlm_item("t", 50.0)]),
+            ]), None, deadline())
+        self.assertEqual(result["entries"][0]["ci"],
+                         {"low": 88.0, "high": 92.0, "half_width": 2.0})
+        self.assertIsNone(result["entries"][1]["ci"])
+
+    def test_validated_entries_accepts_benchlm_rows_and_rejects_foreign_metrics(self):
+        tb4_row = entry("tb4", "gpt-6-1-sol", 55.5, source="benchlm",
+                        evaluator=benchmarks.BENCHLM_TB4_EVALUATOR,
+                        version=benchmarks.BENCHLM_TB4_VERSION, date="2026-10-28")
+        self.assertEqual(tb4_row["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        overall = entry("benchalign_overall", "gpt-6-1-sol", 91.5, source="benchlm",
+                        evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                        version="benchalign-2026.10.28", date="2026-10-28")
+        coding = entry("benchalign_coding", "glm-5-3", 77.0, source="benchlm",
+                       evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                       version="benchalign-2026.10.28", date="2026-10-28")
+        cleaned = benchmarks._validated_entries([tb4_row, overall, coding],
+                                                source="benchlm")
+        self.assertEqual([item["metric"] for item in cleaned],
+                         ["tb4", "benchalign_overall", "benchalign_coding"])
+        # A benchlm row for a metric it neither owns nor falls back for (eci,
+        # livebench_*) is rejected.
+        for foreign in (entry("eci", "Model", 100.0),
+                        entry("livebench_coding", "model", 80.0)):
+            with self.subTest(metric=foreign["metric"]):
+                with self.assertRaises(benchmarks.SourceError):
+                    benchmarks._validated_entries([foreign], source="benchlm")
+
+
+class BenchLMSecurityTests(unittest.TestCase):
+    def test_benchlm_endpoints_are_fixed_https_and_allowlisted(self):
+        for url in (benchmarks.BENCHLM_RANKINGS_URL, benchmarks.BENCHLM_MCP_URL):
+            benchmarks.HttpClient._validate_url(url)  # must not raise
+            parts = urlsplit(url)
+            self.assertEqual(parts.scheme, "https")
+            self.assertIn(parts.hostname, benchmarks.ALLOWED_HOSTS)
+
+    def test_data_key_never_leaks_into_result_cache_or_payload(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            result = benchmarks.fetch_benchlm(
+                StubClient(benchlm_standard_responses()), None, deadline())
+        # (a) the fetch result itself
+        self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(result))
+        # (b) the persisted cache file bytes after a real store refresh
+        directory, store, path = temp_store(fetchers={
+            "benchlm": benchmarks.fetch_benchlm,
+            **{name: static_fetcher(benchmarks.SourceError("empty feed"))
+               for name in ("harbor", "epoch", "livebench", "deepswe")},
+        }, client_factory=lambda: StubClient(benchlm_standard_responses()))
+        try:
+            with benchlm_env(BENCHLM_TEST_KEY), \
+                    patch.object(benchmarks, "BENCHLM_ENABLED", True):
+                self.assertTrue(store.refresh_source("benchlm"))
+            self.assertNotIn(BENCHLM_TEST_KEY.encode(), Path(path).read_bytes())
+            state = store.read_state(now=NOW)
+            self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(state))
+            self.assertEqual(len(state["benchlm"]["data"]["entries"]), 4)
+            reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+            reloaded_state = reloaded.read_state(now=NOW)
+            self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(reloaded_state))
+            self.assertEqual(len(reloaded_state["benchlm"]["data"]["entries"]), 4)
+            # (c) the API payload built from the reloaded state
+            payload = benchmarks.build_payload(
+                [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")],
+                reloaded_state, benchlm_enabled=True)
+            self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(payload))
+            model = payload["models"][0]
+            self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
+            self.assertEqual(model["bench"]["tb4"], 55.5)  # fallback fills tb4
+            self.assertEqual(model["results"]["tb4"][0]["source"], "benchlm")
+        finally:
+            directory.cleanup()
+
+    def test_source_enabled_gate_follows_the_module_flag_and_explicit_override(self):
+        with patch.object(benchmarks, "BENCHLM_ENABLED", False):
+            self.assertFalse(benchmarks._source_enabled("benchlm"))
+            self.assertTrue(benchmarks._source_enabled("benchlm",
+                                                        benchlm_enabled=True))
+        with patch.object(benchmarks, "BENCHLM_ENABLED", True):
+            self.assertTrue(benchmarks._source_enabled("benchlm"))
+            self.assertFalse(benchmarks._source_enabled("benchlm",
+                                                         benchlm_enabled=False))
+        # Without an override the import-time env gate decides.
+        self.assertEqual(benchmarks._source_enabled("benchlm"),
+                         benchmarks.BENCHLM_ENABLED)
+
+    def test_disabled_benchlm_is_never_fetched_by_the_store(self):
+        called = []
+
+        def fetcher(*args):
+            called.append(True)
+            return snapshot([entry("benchalign_overall", "gpt-6-1-sol", 91.5,
+                                   source="benchlm", version="benchalign-2026.10.28",
+                                   date="2026-10-28")])
+
+        directory = tempfile.TemporaryDirectory()
+        store = benchmarks.BenchmarkStore(
+            path=str(Path(directory.name) / "b.json"), clock=lambda: NOW,
+            fetchers={"benchlm": fetcher})
+        try:
+            with patch.object(benchmarks, "BENCHLM_ENABLED", False):
+                self.assertNotIn("benchlm", store._enabled_sources())
+                self.assertFalse(store.refresh_source("benchlm"))
+            with patch.object(benchmarks, "BENCHLM_ENABLED", True):
+                self.assertIn("benchlm", store._enabled_sources())
+                self.assertTrue(store.refresh_source("benchlm"))
+            self.assertEqual(len(called), 1)  # only the enabled run fetched
+        finally:
+            directory.cleanup()
+
+    def test_sanitize_source_record_round_trip_and_tamper_rejection(self):
+        good = entry("benchalign_overall", "gpt-6-1-sol", 91.5, source="benchlm",
+                     evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                     version="benchalign-2026.10.28", date="2026-10-28")
+        tb4 = entry("tb4", "glm-5-3", 60.0, source="benchlm",
+                    evaluator=benchmarks.BENCHLM_TB4_EVALUATOR,
+                    version=benchmarks.BENCHLM_TB4_VERSION, date="2026-10-28")
+        record = {
+            "schema_version": benchmarks.SOURCE_SCHEMA_VERSION,
+            "version": "benchalign-2026.10.28",
+            "last_checked": NOW, "last_success": NOW,
+            "source_updated": "2026-10-28T09:15:00Z",
+            "error": None, "validators": {},
+            "data": {"entries": [good, tb4], "meta": {"pages": 2, "rows": 2}},
+        }
+        state = benchmarks._sanitize_source_record("benchlm", record)
+        self.assertIsNotNone(state)
+        # The dynamic methodology version is accepted, not pinned.
+        self.assertEqual(state["version"], "benchalign-2026.10.28")
+        self.assertEqual(state["source_updated"], "2026-10-28")
+        self.assertEqual(state["last_success"], NOW)
+        self.assertIsNone(state["error"])
+        self.assertEqual(len(state["data"]["entries"]), 2)
+        self.assertEqual(state["data"]["meta"], {"pages": 2, "rows": 2})
+        tampered = [
+            ("wrong schema_version", {**record, "schema_version": 99}),
+            ("missing version",
+             {key: value for key, value in record.items() if key != "version"}),
+            ("control char in version", {**record, "version": "bad\nversion"}),
+            ("foreign metric row",
+             {**record, "data": {"entries": [entry("eci", "X", 100.0)], "meta": {}}}),
+            ("empty entries", {**record, "data": {"entries": [], "meta": {}}}),
+            ("oversized timestamp", {**record, "last_success": 10 ** 400}),
+            ("bad source_updated", {**record, "source_updated": "not-a-date"}),
+        ]
+        for label, bad in tampered:
+            with self.subTest(label=label):
+                self.assertIsNone(benchmarks._sanitize_source_record("benchlm", bad))
+        self.assertIsNone(benchmarks._sanitize_source_record("benchlm", "nope"))
 
 
 # ── HTTP and provenance security ────────────────────────────────────────────
@@ -2571,6 +3083,135 @@ class PayloadContractTests(unittest.TestCase):
         for model in payload["models"]:
             for value in model["bench"].values():
                 self.assertTrue(math.isfinite(value))
+
+
+# ── BenchLM payload and fallback contract ───────────────────────────────────
+class BenchLMPayloadTests(unittest.TestCase):
+    def benchlm_entry(self, metric, model, value, **kwargs):
+        kwargs.setdefault("source", "benchlm")
+        kwargs.setdefault("date", "2026-10-28")
+        if metric == "tb4":
+            kwargs.setdefault("evaluator", benchmarks.BENCHLM_TB4_EVALUATOR)
+            kwargs.setdefault("version", benchmarks.BENCHLM_TB4_VERSION)
+        else:
+            kwargs.setdefault("evaluator", benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+            kwargs.setdefault("version", "benchalign-2026.10.28")
+        return entry(metric, model, value, **kwargs)
+
+    def test_tb4_spec_keeps_harbor_primary_with_benchlm_fallback(self):
+        spec = benchmarks.METRIC_BY_KEY["tb4"]
+        self.assertEqual(spec.source, "harbor")
+        self.assertEqual(spec.fallback, ("benchlm",))
+        self.assertTrue(benchmarks.SOURCE_ALIASES["benchlm"])
+
+    def test_harbor_wins_tb4_when_both_sources_cover_the_model(self):
+        state = make_state({
+            "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
+            "benchlm": [self.benchlm_entry("tb4", "gpt-6-1-sol", 55.5),
+                        self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5)],
+        })
+        payload = benchmarks.build_payload(
+            [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+            benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["bench"]["tb4"], 58.18)
+        self.assertEqual(model["results"]["tb4"][0]["source"], "harbor")
+        self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
+        result = model["results"]["benchalign_overall"][0]
+        self.assertEqual(result["source"], "benchlm")
+        self.assertEqual(result["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+
+    def test_benchlm_fills_tb4_when_harbor_has_no_identity_or_no_entries(self):
+        benchlm = [self.benchlm_entry("tb4", "glm-5-3", 41.0),
+                   self.benchlm_entry("benchalign_overall", "glm-5-3", 80.25)]
+        for label, harbor in (("no identity", [entry("tb4", "GPT-6.1 Sol", 58.18)]),
+                              ("no entries", None)):
+            with self.subTest(label=label):
+                state = make_state({"harbor": harbor, "benchlm": benchlm})
+                payload = benchmarks.build_payload(
+                    [inventory_model("zai-glm-5-3", "mistral/zai-glm-5-3")],
+                    state, benchlm_enabled=True)
+                model = payload["models"][0]
+                self.assertEqual(model["bench"]["tb4"], 41.0)
+                self.assertNotIn("tb4", model["missing"])
+                result = model["results"]["tb4"][0]
+                self.assertEqual(result["source"], "benchlm")
+                self.assertEqual(result["version"], benchmarks.BENCHLM_TB4_VERSION)
+                self.assertEqual(result["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
+                self.assertEqual(result["date_kind"],
+                                 benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+                self.assertEqual(model["bench"]["benchalign_overall"], 80.25)
+
+    def test_missing_reason_is_the_furthest_progressed_candidate(self):
+        state = make_state({
+            "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
+            "benchlm": [self.benchlm_entry("benchalign_overall", "glm-5-3", 80.25)],
+        })
+        # Harbor has data but no identity for this model (unmatched), while
+        # BenchLM resolves the identity but has no tb4 row (not evaluated):
+        # the deeper reason wins.
+        payload = benchmarks.build_payload(
+            [inventory_model("zai-glm-5-3", "mistral/zai-glm-5-3")], state,
+            benchlm_enabled=True)
+        self.assertEqual(payload["models"][0]["missing"]["tb4"], "not evaluated")
+        # A disabled fallback (unavailable) never masks the primary's unmatched.
+        payload = benchmarks.build_payload(
+            [inventory_model("absent", "x/absent")], state, benchlm_enabled=False)
+        self.assertEqual(payload["models"][0]["missing"]["tb4"], "unmatched identity")
+
+    def test_benchalign_values_resolve_through_the_reviewed_aliases(self):
+        state = make_state({
+            "benchlm": [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5),
+                        self.benchlm_entry("benchalign_coding", "gpt-6-1-sol", 88.0)],
+        })
+        payload = benchmarks.build_payload(
+            [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+            benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
+        self.assertEqual(model["bench"]["benchalign_coding"], 88.0)
+        result = model["results"]["benchalign_overall"][0]
+        self.assertEqual(result["source"], "benchlm")
+        self.assertEqual(result["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        self.assertEqual(result["version"], "benchalign-2026.10.28")
+        self.assertEqual(result["date"], "2026-10-28")
+        self.assertEqual(result["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        self.assertEqual(result["metadata"]["date_kind"],
+                         benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        self.assertTrue(result["selected"])
+        source = payload["sources"]["benchlm"]
+        self.assertFalse(source["disabled"])
+        self.assertEqual(source["warning"], benchmarks.BENCHLM_WARNING)
+
+    def test_disabled_benchlm_hides_cached_rows_and_reports_source_unavailable(self):
+        state = make_state({
+            "benchlm": [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5),
+                        self.benchlm_entry("tb4", "gpt-6-1-sol", 55.5)],
+        })
+        cases = [
+            ("module flag off", patch.object(benchmarks, "BENCHLM_ENABLED", False), {}),
+            ("override off", patch.object(benchmarks, "BENCHLM_ENABLED", True),
+             {"benchlm_enabled": False}),
+        ]
+        for label, patcher, kwargs in cases:
+            with self.subTest(label=label), patcher:
+                payload = benchmarks.build_payload(
+                    [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")],
+                    state, **kwargs)
+            model = payload["models"][0]
+            self.assertEqual(model["bench"], {})
+            self.assertEqual(model["results"], {})
+            self.assertEqual(model["missing"]["benchalign_overall"], "source unavailable")
+            self.assertEqual(model["missing"]["benchalign_coding"], "source unavailable")
+            self.assertEqual(model["missing"]["tb4"], "source unavailable")
+            source = payload["sources"]["benchlm"]
+            self.assertTrue(source["disabled"])
+            self.assertEqual(source["warning"], benchmarks.BENCHLM_DISABLED_WARNING)
+            serialized = json.dumps(payload)
+            self.assertNotIn("91.5", serialized)
+            self.assertNotIn("55.5", serialized)
+            # Definitions stay in the metrics contract (like LiveBench).
+            self.assertIn("benchalign_overall", [m["key"] for m in payload["metrics"]])
 
 
 # ── Inventory and API wrappers ──────────────────────────────────────────────
