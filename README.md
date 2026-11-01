@@ -15,6 +15,8 @@ responsive browser UI, and optional integrations controlled by environment setti
 - Versioned benchmark snapshots from Harbor Terminal-Bench 4 and Epoch ECI by
   default; LiveBench's seven suites are opt-in (enabled on this private install).
   DeepSWE is optional and off by default, with documented grading defects.
+   BenchLM (BenchAlign composites) is optional, enabled only when
+   `BENCHLM_DATA_KEY` is set.
 - Read-only SECURITY tab for the host watch's daily report (optional, off by default).
 
 ## Run locally
@@ -112,6 +114,20 @@ HTML/JavaScript:
   Epoch AI found grading defects in at least 23 of 113 v1.1 tasks
   ([review](https://epoch.ai/benchmarks/deepswe/review)); the API preserves that
   warning and no invented correction. Current undated rows have no summary score.
+- **BenchLM (BenchLM.ai Data API)** (optional, off unless `BENCHLM_DATA_KEY` is
+  set) —
+  [rankings API](https://data.benchlm.ai/v1/rankings/current?surface=overall|coding)
+  and [MCP endpoint](https://data.benchlm.ai/mcp). Adds **BenchAlign Overall**
+  and **BenchAlign Coding** (0–100 composite point estimates, not percentages)
+  plus a Terminal-Bench 4.0 fallback for models Harbor does not cover; it does
+  not replace any other source — no ECI composite, no LiveBench per-suite
+  breakdown, and it covers roughly 19 of this install's 28 inventory models.
+  BenchLM data is [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/);
+  this private, non-commercial single-user install shows it with attribution
+  ("Data from BenchLM.ai") as the operator's choice; redistribution or
+  commercial display requires a separate licence from BenchLM. Not legal
+  advice. Its scores carry the `source_snapshot` date kind (the date BenchLM
+  captured the board), never an evaluation date.
 
 Each dated result carries a `date_kind`: Harbor's Release Date
 and Epoch's `date` are model releases (`model_release`), and LiveBench's pin is

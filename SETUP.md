@@ -159,7 +159,8 @@ bind mount from the main Compose file before recreating the service.
 
 Harbor Terminal-Bench 4 and Epoch ECI are enabled by default. LiveBench 2.0
 is opt-in and DeepSWE is optional, so neither is fetched until explicitly
-enabled. The two opt-in flags are ordinary feature flags in the repository
+enabled; BenchLM is opt-in through the `BENCHLM_DATA_KEY` secret. The two
+opt-in flags are ordinary feature flags in the repository
 `.env` (used for Compose interpolation and local startup), not `/opt/secrets`
 credentials. This private, single-user installation uses
 `HOMELAB_LIVEBENCH_ENABLED=true`; DeepSWE remains off. Defaults in `.env.example`
@@ -233,6 +234,30 @@ evidence.
   correction is invented. Datacurve's benchmark is not the Together or
   Agentica coding agent of the same name; do not fill gaps from community
   leaderboards.
+- **BenchLM (BenchLM.ai Data API)** (optional, off unless keyed) — enabled if
+  and only if `BENCHLM_DATA_KEY` is set and non-empty; there is no separate
+  flag, and while disabled the source is never fetched and its cached rows
+  stay hidden. The key is a secret: it lives only in
+  `/opt/secrets/dashboard.env` (already mounted via `env_file`) or the local
+  gitignored `.env`, and is never committed or printed. It reads
+  `https://data.benchlm.ai/v1/rankings/current?surface=overall|coding` and
+  `https://data.benchlm.ai/mcp`. It contributes two metrics, **BenchAlign
+  Overall** and **BenchAlign Coding** — 0–100 composite point estimates, not
+  percentages — and a fallback for Terminal-Bench 4.0: Harbor stays the
+  primary source and BenchLM only fills models Harbor does not cover. The
+  free plan allows 250 successful reads per month at 30 requests/minute; one
+  page is one read, and a single manual refresh costs at most 7 reads (3 pages
+  per surface × 2 surfaces + 1 MCP call), so daily use is roughly 210
+  reads/month. BenchLM supplies no per-run dates, so its scores carry the new
+  date kind `source_snapshot` — the date BenchLM captured the board — never an
+  evaluation date or a benchmark release date. BenchLM data is
+  [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): this
+  private, non-commercial single-user install displays it with attribution
+  ("Data from BenchLM.ai") as the operator's choice; redistribution or
+  commercial display requires a separate licence from BenchLM. Not legal
+  advice. BenchLM does not replace the other sources — it has no Epoch ECI
+  composite and no LiveBench per-suite breakdown, and covers roughly 19 of
+  this install's 28 inventory models.
 
 Harbor documents unauthenticated reads so you can display a public leaderboard
 on your website; this repository does not assert a broader redistribution
