@@ -4186,14 +4186,14 @@ function renderContainers() {
     const isSel  = selected && selected.id === c.id;
     const portsHtml = c.ports && c.ports.length
       ? `<div class="ctr-ports">${c.ports.map(p => escHtml(p)).join(' · ')}</div>` : '';
-    return `<div class="ctr-card ${isSel?'selected':''}" onclick="selectContainer('${c.id}')">
+    return `<div class="ctr-card ${isSel?'selected':''}" data-id="${escAttr(c.id)}" onclick="selectContainer(this.dataset.id)">
       <span class="ctr-dot ${dotCls}"></span>
       <div class="ctr-info">
         <div class="ctr-name">${escHtml(c.name)}</div>
         <div class="ctr-meta">${escHtml(c.host)} · ${escHtml(c.status)}</div>
         ${portsHtml}
       </div>
-      <span class="ctr-badge ${dotCls}">${c.state==='running'?'UP':c.state==='exited'?'DOWN':c.state.toUpperCase()}</span>
+      <span class="ctr-badge ${dotCls}">${escHtml(c.state==='running'?'UP':c.state==='exited'?'DOWN':c.state.toUpperCase())}</span>
     </div>`;
   }).join('');
 }

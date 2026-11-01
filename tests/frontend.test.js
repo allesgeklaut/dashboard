@@ -2454,3 +2454,21 @@ test('swipes do not wrap around at the first or last visible tab', () => {
   doSwipe(d, -100, 0); // swipe left on the last visible tab (security hidden)
   assert.equal(d.run('_activeTab'), 'processes');
 });
+
+test('container card escapes hostile id and state (no HTML/JS injection)', () => {
+  const d = dashboard();
+  const hostileId = 'x\'");alert(1);//';
+  const hostileState = 'boom<img src=x onerror=alert(1)>';
+  d.run(`containers = [{id: ${JSON.stringify(hostileId)}, name: 'hostile', host: 'h', status: 's', state: ${JSON.stringify(hostileState)}, ports: []}]; renderContainers()`);
+  const html = d.element('ctr-list').innerHTML;
+  // id must not appear inside the inline handler — it travels via data-id instead
+  assert.ok(html.includes('onclick="selectContainer(this.dataset.id)"'));
+  assert.ok(!/onclick="[^"]*alert/.test(html), 'raw id must not appear inside an onclick attribute');
+  // escaped forms present, raw markup absent
+  assert.ok(html.includes('&#39;') && html.includes('&quot;') && html.includes('&lt;'));
+  assert.ok(!html.includes('<img'), 'unescaped tag from state must not appear');
+  // card still carries the (escaped) id in data-id so selectContainer(this.dataset.id) resolves it
+  assert.ok(html.includes('data-id="x&#39;&quot;);alert(1);//"'));
+  // badge label is escaped text
+  assert.ok(html.includes('BOOM&lt;IMG SRC=X ONERROR=ALERT(1)&gt;'));
+});
