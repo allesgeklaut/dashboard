@@ -199,8 +199,11 @@ def benchlm_standard_responses():
     overall = [benchlm_item("gpt-6-1-sol", 91.5, rank=1, interval=(89.0, 94.0)),
                benchlm_item("glm-5-3", 80.25, rank=2)]
     coding = [benchlm_item("gpt-6-1-sol", 88.0, rank=1)]
+    agentic = [benchlm_item("kimi-k2-7-code", 76.5, rank=1)]
+    knowledge = [benchlm_item("mimo-v2-6-pro", 68.0, rank=1)]
     tb4 = [benchlm_item("gpt-6-1-sol", 55.5)]
-    return [benchlm_page(overall), benchlm_page(coding), benchlm_mcp_response(tb4)]
+    return [benchlm_page(overall), benchlm_page(coding), benchlm_page(agentic),
+            benchlm_page(knowledge), benchlm_mcp_response(tb4)]
 
 
 class StubClient:
@@ -661,20 +664,19 @@ class DeepSweAdapterTests(unittest.TestCase):
 
 # ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
 class BenchLMAdapterTests(unittest.TestCase):
-    def test_happy_path_reads_both_surfaces_then_the_mcp_board(self):
+    def test_happy_path_reads_all_four_surfaces_then_the_mcp_board(self):
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient(benchlm_standard_responses())
             result = benchmarks.fetch_benchlm(client, None, deadline())
         self.assertEqual([call["method"] for call in client.calls],
-                         ["GET", "GET", "POST"])
-        self.assertEqual(client.calls[0]["url"],
-                         f"{benchmarks.BENCHLM_RANKINGS_URL}?surface=overall"
-                         f"&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0")
-        self.assertEqual(client.calls[1]["url"],
-                         f"{benchmarks.BENCHLM_RANKINGS_URL}?surface=coding"
-                         f"&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0")
-        self.assertEqual(client.calls[2]["url"], benchmarks.BENCHLM_MCP_URL)
-        self.assertEqual(client.calls[2]["json"], {
+                         ["GET", "GET", "GET", "GET", "POST"])
+        for index, surface in enumerate(
+                surface for _metric, surface in benchmarks.BENCHLM_SURFACES):
+            self.assertEqual(client.calls[index]["url"],
+                             f"{benchmarks.BENCHLM_RANKINGS_URL}?surface={surface}"
+                             f"&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0")
+        self.assertEqual(client.calls[4]["url"], benchmarks.BENCHLM_MCP_URL)
+        self.assertEqual(client.calls[4]["json"], {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": benchmarks.BENCHLM_MCP_TOOL,
                        "arguments": {"boardId": benchmarks.BENCHLM_TB4_BOARD_ID,
@@ -686,6 +688,8 @@ class BenchLMAdapterTests(unittest.TestCase):
             ("benchalign_overall", "gpt-6-1-sol"),
             ("benchalign_overall", "glm-5-3"),
             ("benchalign_coding", "gpt-6-1-sol"),
+            ("benchalign_agentic", "kimi-k2-7-code"),
+            ("benchalign_knowledge", "mimo-v2-6-pro"),
             ("tb4", "gpt-6-1-sol"),
         })
         overall = entries[("benchalign_overall", "gpt-6-1-sol")]
@@ -700,6 +704,12 @@ class BenchLMAdapterTests(unittest.TestCase):
         self.assertEqual(coding["value"], 88.0)
         self.assertIsNone(coding["ci"])
         self.assertEqual(coding["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        agentic = entries[("benchalign_agentic", "kimi-k2-7-code")]
+        self.assertEqual(agentic["value"], 76.5)
+        self.assertEqual(agentic["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        knowledge = entries[("benchalign_knowledge", "mimo-v2-6-pro")]
+        self.assertEqual(knowledge["value"], 68.0)
+        self.assertEqual(knowledge["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
         tb4 = entries[("tb4", "gpt-6-1-sol")]
         self.assertEqual(tb4["value"], 55.5)
         self.assertEqual(tb4["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
@@ -709,7 +719,7 @@ class BenchLMAdapterTests(unittest.TestCase):
         self.assertEqual(result["version"], "benchalign-2026.10.28")
         self.assertEqual(result["source_updated"], "2026-10-28")
         self.assertEqual(result["validators"], {})
-        self.assertEqual(result["meta"], {"pages": 2, "rows": 4})
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 6})
         # The whole result also passes the store's per-source validation.
         self.assertEqual(
             benchmarks._validated_entries(result["entries"], source="benchlm"),
@@ -721,34 +731,70 @@ class BenchLMAdapterTests(unittest.TestCase):
                       benchlm_item("model-b", 85.0)]
         coding_p1 = [benchlm_item("model-a", 80.0)]
         coding_p2 = [benchlm_item("model-c", 70.0)]
+        agentic_p1 = [benchlm_item("model-a", 75.0)]
+        agentic_p2 = [benchlm_item("model-d", 65.0)]
+        knowledge_p1 = [benchlm_item("model-a", 72.0)]
+        knowledge_p2 = [benchlm_item("model-e", 62.0)]
         responses = [
             benchlm_page(overall_p1, offset=0, next_offset=100),
             benchlm_page(overall_p2, offset=100, next_offset=None),
             benchlm_page(coding_p1, offset=0, next_offset=100),
             benchlm_page(coding_p2, offset=100, next_offset=None),
+            benchlm_page(agentic_p1, offset=0, next_offset=100),
+            benchlm_page(agentic_p2, offset=100, next_offset=None),
+            benchlm_page(knowledge_p1, offset=0, next_offset=100),
+            benchlm_page(knowledge_p2, offset=100, next_offset=None),
             benchlm_mcp_response([benchlm_item("model-a", 60.0)]),
         ]
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient(responses)
             result = benchmarks.fetch_benchlm(client, None, deadline())
-        self.assertEqual(len(client.calls), 5)
+        self.assertEqual(len(client.calls), 9)
         self.assertIn("surface=overall&limit=100&offset=0", client.calls[0]["url"])
         self.assertIn("surface=overall&limit=100&offset=100", client.calls[1]["url"])
         self.assertIn("surface=coding&limit=100&offset=0", client.calls[2]["url"])
         self.assertIn("surface=coding&limit=100&offset=100", client.calls[3]["url"])
+        self.assertIn("surface=agentic&limit=100&offset=0", client.calls[4]["url"])
+        self.assertIn("surface=agentic&limit=100&offset=100", client.calls[5]["url"])
+        self.assertIn("surface=knowledge&limit=100&offset=0", client.calls[6]["url"])
+        self.assertIn("surface=knowledge&limit=100&offset=100", client.calls[7]["url"])
         seen = {(item["metric"], item["model"]): item for item in result["entries"]}
         self.assertEqual(set(seen), {
             ("benchalign_overall", "model-a"), ("benchalign_overall", "model-b"),
             ("benchalign_coding", "model-a"), ("benchalign_coding", "model-c"),
+            ("benchalign_agentic", "model-a"), ("benchalign_agentic", "model-d"),
+            ("benchalign_knowledge", "model-a"), ("benchalign_knowledge", "model-e"),
             ("tb4", "model-a"),
         })
         # The repeated (overall, model-a) row kept its first occurrence.
         self.assertEqual(seen[("benchalign_overall", "model-a")]["value"], 90.0)
-        self.assertEqual(result["meta"], {"pages": 4, "rows": 5})
+        self.assertEqual(result["meta"], {"pages": 8, "rows": 9})
 
-    def test_read_cap_yields_exactly_seven_requests_and_never_raises(self):
+    def test_read_cap_is_derived_from_the_surface_count(self):
+        # Regression guard: the cap must scale with BENCHLM_SURFACES so every
+        # surface is always reachable (2 surfaces hardcoded here once starved
+        # the remaining surfaces of reads).
+        self.assertEqual(
+            benchmarks.BENCHLM_MAX_REQUESTS,
+            len(benchmarks.BENCHLM_SURFACES) * benchmarks.BENCHLM_MAX_PAGES + 1)
+        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 13)
+
+    def test_each_surface_is_requested_once_in_order_and_yields_its_metric(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(benchlm_standard_responses())
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        gets = [call for call in client.calls if call["method"] == "GET"]
+        surfaces = [urlsplit(call["url"]).query for call in gets]
+        expected = [f"surface={surface}&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0"
+                    for _metric, surface in benchmarks.BENCHLM_SURFACES]
+        self.assertEqual(surfaces, expected)
+        metric_keys = {item["metric"] for item in result["entries"]}
+        for metric, _surface in benchmarks.BENCHLM_SURFACES:
+            self.assertIn(metric, metric_keys)
+
+    def test_read_cap_yields_exactly_thirteen_requests_and_never_raises(self):
         responses = []
-        for surface_index in range(2):
+        for surface_index in range(len(benchmarks.BENCHLM_SURFACES)):
             for page_index in range(benchmarks.BENCHLM_MAX_PAGES):
                 offset = page_index * benchmarks.BENCHLM_PAGE_SIZE
                 responses.append(benchlm_page(
@@ -761,14 +807,14 @@ class BenchLMAdapterTests(unittest.TestCase):
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient(responses)
             # An always-advancing nextOffset must not raise and must stop at
-            # the hard cap: 6 GETs + 1 POST, no more.
+            # the hard cap: 12 GETs + 1 POST, no more.
             result = benchmarks.fetch_benchlm(client, None, deadline())
         self.assertEqual(len(client.calls), benchmarks.BENCHLM_MAX_REQUESTS)
-        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 7)
-        self.assertEqual(sum(call["method"] == "GET" for call in client.calls), 6)
+        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 13)
+        self.assertEqual(sum(call["method"] == "GET" for call in client.calls), 12)
         self.assertEqual(sum(call["method"] == "POST" for call in client.calls), 1)
-        self.assertEqual(result["meta"], {"pages": 6, "rows": 7})
-        self.assertEqual(len(result["entries"]), 7)
+        self.assertEqual(result["meta"], {"pages": 12, "rows": 13})
+        self.assertEqual(len(result["entries"]), 13)
 
     def test_hitting_the_cap_mid_pagination_stops_reads_and_skips_the_mcp_post(self):
         responses = [benchlm_page([benchlm_item(f"m{i}", 10.0 + i)],
@@ -791,8 +837,10 @@ class BenchLMAdapterTests(unittest.TestCase):
             ("mcp inner items", [
                 benchlm_page([benchlm_item("m", 90.0)]),
                 benchlm_page([benchlm_item("c", 80.0)]),
+                benchlm_page([benchlm_item("a", 70.0)]),
+                benchlm_page([benchlm_item("k", 60.0)]),
                 benchlm_mcp_response(too_many),
-            ], 3),
+            ], 5),
         ]
         for label, responses, expected_calls in cases:
             with self.subTest(label=label):
@@ -951,27 +999,32 @@ class BenchLMAdapterTests(unittest.TestCase):
                     client = StubClient([
                         benchlm_page([benchlm_item("m", 90.0)]),
                         benchlm_page([benchlm_item("c", 80.0)]),
+                        benchlm_page([benchlm_item("a", 70.0)]),
+                        benchlm_page([benchlm_item("k", 60.0)]),
                         envelope if isinstance(envelope, benchmarks.Response)
                         else benchlm_raw_response(envelope),
                     ])
                     with self.assertRaises(benchmarks.SourceError) as caught:
                         benchmarks.fetch_benchlm(client, None, deadline())
                 self.assertEqual(str(caught.exception), message)
-                self.assertEqual(len(client.calls), 3)  # 2 GETs then the POST
+                self.assertEqual(len(client.calls), 5)  # 4 GETs then the POST
                 self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
 
     def test_empty_surfaces_and_empty_board_raise_empty_feed(self):
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient([benchlm_page([]), benchlm_page([]),
+                                 benchlm_page([]), benchlm_page([]),
                                  benchlm_mcp_response([])])
             with self.assertRaises(benchmarks.SourceError) as caught:
                 benchmarks.fetch_benchlm(client, None, deadline())
         self.assertEqual(str(caught.exception), "empty feed")
-        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(len(client.calls), 5)
 
     def test_empty_ranking_surfaces_still_contribute_the_mcp_board(self):
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient([
+                benchlm_page([]),
+                benchlm_page([]),
                 benchlm_page([]),
                 benchlm_page([]),
                 benchlm_mcp_response([benchlm_item("mcp-model", 42.0)]),
@@ -982,7 +1035,7 @@ class BenchLMAdapterTests(unittest.TestCase):
                          [("tb4", "mcp-model", 42.0)])
         self.assertEqual(result["source_updated"], "2026-10-28")
         self.assertEqual(result["version"], "benchalign-2026.10.28")
-        self.assertEqual(result["meta"], {"pages": 2, "rows": 1})
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 1})
 
     def test_ci_interval_mapping(self):
         cases = [
@@ -1007,6 +1060,8 @@ class BenchLMAdapterTests(unittest.TestCase):
             result = benchmarks.fetch_benchlm(StubClient([
                 benchlm_page([benchlm_item("m", 90.0, interval=(88.0, 92.0))]),
                 benchlm_page([benchlm_item("c", 80.0)]),
+                benchlm_page([benchlm_item("a", 70.0)]),
+                benchlm_page([benchlm_item("k", 60.0)]),
                 benchlm_mcp_response([benchlm_item("t", 50.0)]),
             ]), None, deadline())
         self.assertEqual(result["entries"][0]["ci"],
@@ -1024,10 +1079,17 @@ class BenchLMAdapterTests(unittest.TestCase):
         coding = entry("benchalign_coding", "glm-5-3", 77.0, source="benchlm",
                        evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
                        version="benchalign-2026.10.28", date="2026-10-28")
-        cleaned = benchmarks._validated_entries([tb4_row, overall, coding],
-                                                source="benchlm")
+        agentic = entry("benchalign_agentic", "glm-5-3", 66.0, source="benchlm",
+                        evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                        version="benchalign-2026.10.28", date="2026-10-28")
+        knowledge = entry("benchalign_knowledge", "glm-5-3", 61.0, source="benchlm",
+                          evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                          version="benchalign-2026.10.28", date="2026-10-28")
+        cleaned = benchmarks._validated_entries(
+            [tb4_row, overall, coding, agentic, knowledge], source="benchlm")
         self.assertEqual([item["metric"] for item in cleaned],
-                         ["tb4", "benchalign_overall", "benchalign_coding"])
+                         ["tb4", "benchalign_overall", "benchalign_coding",
+                          "benchalign_agentic", "benchalign_knowledge"])
         # A benchlm row for a metric it neither owns nor falls back for (eci,
         # livebench_*) is rejected.
         for foreign in (entry("eci", "Model", 100.0),
@@ -1100,11 +1162,11 @@ class BenchLMSecurityTests(unittest.TestCase):
             self.assertNotIn(BENCHLM_TEST_KEY.encode(), Path(path).read_bytes())
             state = store.read_state(now=NOW)
             self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(state))
-            self.assertEqual(len(state["benchlm"]["data"]["entries"]), 4)
+            self.assertEqual(len(state["benchlm"]["data"]["entries"]), 6)
             reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
             reloaded_state = reloaded.read_state(now=NOW)
             self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(reloaded_state))
-            self.assertEqual(len(reloaded_state["benchlm"]["data"]["entries"]), 4)
+            self.assertEqual(len(reloaded_state["benchlm"]["data"]["entries"]), 6)
             # (c) the API payload built from the reloaded state
             payload = benchmarks.build_payload(
                 [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")],

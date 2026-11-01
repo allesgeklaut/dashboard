@@ -3260,7 +3260,7 @@ const AI_METRIC_ORDER = [
   'livebench_coding', 'livebench_long_agentic', 'livebench_reasoning',
   'livebench_browser', 'livebench_data_analysis', 'livebench_research',
   'livebench_design', 'deepswe',
-  'benchalign_overall', 'benchalign_coding',
+  'benchalign_overall', 'benchalign_coding', 'benchalign_agentic', 'benchalign_knowledge',
 ];
 const AI_METRIC_FALLBACK = {
   tb4: { key: 'tb4', label: 'TB4', name: 'Terminal-Bench 4.0', unit: 'pct', source: 'harbor' },
@@ -3275,6 +3275,8 @@ const AI_METRIC_FALLBACK = {
   deepswe: { key: 'deepswe', label: 'DSWE', name: 'DeepSWE pass@1', unit: 'pct', source: 'deepswe' },
   benchalign_overall: { key: 'benchalign_overall', label: 'BAL-ALL', name: 'BenchAlign Overall', unit: 'index', source: 'benchlm' },
   benchalign_coding: { key: 'benchalign_coding', label: 'BAL-CODE', name: 'BenchAlign Coding', unit: 'index', source: 'benchlm' },
+  benchalign_agentic: { key: 'benchalign_agentic', label: 'BAL-AGENT', name: 'BenchAlign Agentic', unit: 'index', source: 'benchlm' },
+  benchalign_knowledge: { key: 'benchalign_knowledge', label: 'BAL-KNOW', name: 'BenchAlign Knowledge', unit: 'index', source: 'benchlm' },
 };
 const AI_METRIC_SOURCE_FALLBACK = {
   tb4: 'harbor', livebench_coding: 'livebench', eci: 'epoch', deepswe: 'deepswe',
@@ -3282,6 +3284,7 @@ const AI_METRIC_SOURCE_FALLBACK = {
   livebench_browser: 'livebench', livebench_data_analysis: 'livebench',
   livebench_research: 'livebench', livebench_design: 'livebench',
   benchalign_overall: 'benchlm', benchalign_coding: 'benchlm',
+  benchalign_agentic: 'benchlm', benchalign_knowledge: 'benchlm',
 };
 // Backends have used both benchmark keys and source keys for metric.source.
 // Resolve the known aliases, then fall back to the key actually present.
@@ -3293,6 +3296,7 @@ const AI_SOURCE_ALIASES = {
   livebenchdataanalysis: 'livebench', livebenchresearch: 'livebench',
   livebenchdesign: 'livebench',
   benchalignoverall: 'benchlm', benchaligncoding: 'benchlm',
+  benchalignagentic: 'benchlm', benchalignknowledge: 'benchlm',
 };
 // Hover detail keeps the date's source meaning: an evaluation date is never
 // relabelled from a release date.

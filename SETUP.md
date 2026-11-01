@@ -240,15 +240,17 @@ evidence.
   stay hidden. The key is a secret: it lives only in
   `/opt/secrets/dashboard.env` (already mounted via `env_file`) or the local
   gitignored `.env`, and is never committed or printed. It reads
-  `https://data.benchlm.ai/v1/rankings/current?surface=overall|coding` and
-  `https://data.benchlm.ai/mcp`. It contributes two metrics, **BenchAlign
-  Overall** and **BenchAlign Coding** — 0–100 composite point estimates, not
+  `https://data.benchlm.ai/v1/rankings/current?surface=overall|coding|agentic|knowledge`
+  and `https://data.benchlm.ai/mcp`. It contributes four metrics, **BenchAlign
+  Overall**, **BenchAlign Coding**, **BenchAlign Agentic** and **BenchAlign
+  Knowledge** — 0–100 composite point estimates, not
   percentages — and a fallback for Terminal-Bench 4.0: Harbor stays the
   primary source and BenchLM only fills models Harbor does not cover. The
   free plan allows 250 successful reads per month at 30 requests/minute; one
-  page is one read, and a single manual refresh costs at most 7 reads (3 pages
-  per surface × 2 surfaces + 1 MCP call), so daily use is roughly 210
-  reads/month. BenchLM supplies no per-run dates, so its scores carry the new
+  page is one read, and a single manual refresh costs at most 13 reads (3 pages
+  per surface × 4 surfaces + 1 MCP call). At 250 reads/month that is about 19
+  refreshes per month, so a daily refresh no longer fits the free plan —
+  refresh every other day or less. BenchLM supplies no per-run dates, so its scores carry the new
   date kind `source_snapshot` — the date BenchLM captured the board — never an
   evaluation date or a benchmark release date. BenchLM data is
   [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): this

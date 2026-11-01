@@ -103,16 +103,18 @@ DEEPSWE_REVIEW_URL = "https://epoch.ai/benchmarks/deepswe/review"
 BENCHLM_RANKINGS_URL = "https://data.benchlm.ai/v1/rankings/current"
 BENCHLM_MCP_URL = "https://data.benchlm.ai/mcp"
 BENCHLM_PAGE_SIZE = 100
-# Hard read cap per refresh: at most 3 pages per surface (6 GETs) plus one
-# MCP POST — at most 7 logical requests; each may be retried up to
-# HTTP_ATTEMPTS times by the shared client, so the wire worst case is 21.
-# Reaching the cap only stops pagination, it never raises.
-BENCHLM_MAX_PAGES = 3
-BENCHLM_MAX_REQUESTS = 2 * BENCHLM_MAX_PAGES + 1
 BENCHLM_SURFACES = (
     ("benchalign_overall", "overall"),
     ("benchalign_coding", "coding"),
+    ("benchalign_agentic", "agentic"),
+    ("benchalign_knowledge", "knowledge"),
 )
+# Hard read cap per refresh: at most 3 pages per surface (12 GETs across the
+# 4 surfaces) plus one MCP POST — at most 13 logical requests; each may be
+# retried up to HTTP_ATTEMPTS (3) times by the shared client, so the wire
+# worst case is 39.  Reaching the cap only stops pagination, it never raises.
+BENCHLM_MAX_PAGES = 3
+BENCHLM_MAX_REQUESTS = len(BENCHLM_SURFACES) * BENCHLM_MAX_PAGES + 1
 BENCHLM_TB4_BOARD_ID = "benchlm-recorded:agentic.terminalBench4"
 BENCHLM_MCP_TOOL = "benchlm_list_current_benchmark_results"
 BENCHLM_MCP_PROTOCOL_VERSION = "2025-11-25"
@@ -219,6 +221,8 @@ METRICS: tuple[MetricSpec, ...] = (
     MetricSpec("deepswe", "DSWE", "DeepSWE pass@1", "pct", "deepswe"),
     MetricSpec("benchalign_overall", "BAL-ALL", "BenchAlign Overall", "index", "benchlm"),
     MetricSpec("benchalign_coding", "BAL-CODE", "BenchAlign Coding", "index", "benchlm"),
+    MetricSpec("benchalign_agentic", "BAL-AGENT", "BenchAlign Agentic", "index", "benchlm"),
+    MetricSpec("benchalign_knowledge", "BAL-KNOW", "BenchAlign Knowledge", "index", "benchlm"),
 )
 METRIC_BY_KEY = {spec.key: spec for spec in METRICS}
 LIVEBENCH_COLUMNS = {
@@ -715,7 +719,7 @@ def _make_entry(metric: str, model: str, value: float, *, evaluator: str,
     # drift (for example a 0-1 pass_at_1 leaking into a percent field).
     if METRIC_BY_KEY[metric].unit == "pct" and not 0.0 <= entry["value"] <= 100.0:
         raise SourceError(_SOURCE_ERROR_SCHEMA)
-    # Every index metric (ECI, BenchAlign overall/coding) is bounded to
+    # Every index metric (ECI, all BenchAlign composites) is bounded to
     # 0-1000 on every path — including the reload path — so a tampered
     # cache cannot smuggle an arbitrary value into a persisted snapshot.
     if METRIC_BY_KEY[metric].unit == "index" and not 0.0 <= entry["value"] <= 1000.0:
@@ -1706,14 +1710,14 @@ def _benchlm_mcp_entries(payload, *, seen: set) -> tuple[list[dict], str]:
 
 
 def fetch_benchlm(client: HttpClient, previous: dict | None, deadline: Deadline) -> dict:
-    """Read both BenchAlign ranking surfaces plus the TB4 MCP board.
+    """Read every BenchAlign ranking surface plus the TB4 MCP board.
 
-    Hard read cap: at most ``BENCHLM_MAX_PAGES`` pages per surface (6 GETs)
-    plus one MCP POST — at most 7 logical requests; each may be retried up
-    to ``HTTP_ATTEMPTS`` times by the shared client, so the wire worst case
-    is 21.  Pagination stops when ``nextOffset`` is null, when a page is
-    empty, or at the cap; hitting the cap never raises, it just stops
-    reading.
+    Hard read cap: at most ``BENCHLM_MAX_PAGES`` pages per surface (12 GETs
+    across the 4 surfaces) plus one MCP POST — at most 13 logical requests;
+    each may be retried up to ``HTTP_ATTEMPTS`` times by the shared client,
+    so the wire worst case is 39.  Pagination stops when ``nextOffset`` is
+    null, when a page is empty, or at the cap; hitting the cap never raises,
+    it just stops reading.
     """
     entries: list[dict] = []
     seen: set[tuple[str, str]] = set()

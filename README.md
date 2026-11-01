@@ -116,9 +116,11 @@ HTML/JavaScript:
   warning and no invented correction. Current undated rows have no summary score.
 - **BenchLM (BenchLM.ai Data API)** (optional, off unless `BENCHLM_DATA_KEY` is
   set) —
-  [rankings API](https://data.benchlm.ai/v1/rankings/current?surface=overall|coding)
-  and [MCP endpoint](https://data.benchlm.ai/mcp). Adds **BenchAlign Overall**
-  and **BenchAlign Coding** (0–100 composite point estimates, not percentages)
+  [rankings API](https://data.benchlm.ai/v1/rankings/current?surface=overall|coding|agentic|knowledge)
+  and [MCP endpoint](https://data.benchlm.ai/mcp). Adds **BenchAlign Overall**,
+  **BenchAlign Coding**, **BenchAlign Agentic** and **BenchAlign Knowledge**
+  (0–100 composite point estimates, not percentages; one manual refresh reads
+  at most 13 requests across the 4 surfaces + 1 MCP call)
   plus a Terminal-Bench 4.0 fallback for models Harbor does not cover; it does
   not replace any other source — no ECI composite, no LiveBench per-suite
   breakdown, and it covers roughly 19 of this install's 28 inventory models.

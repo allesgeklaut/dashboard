@@ -1532,6 +1532,8 @@ test('BenchAlign metrics appear in the dropdown only while the benchlm source is
   const benchlmMetrics = [
     aiMetric('benchalign_overall', 'BAL-ALL', 'BenchAlign Overall', 'index', 'benchlm'),
     aiMetric('benchalign_coding', 'BAL-CODE', 'BenchAlign Coding', 'index', 'benchlm'),
+    aiMetric('benchalign_agentic', 'BAL-AGENT', 'BenchAlign Agentic', 'index', 'benchlm'),
+    aiMetric('benchalign_knowledge', 'BAL-KNOW', 'BenchAlign Knowledge', 'index', 'benchlm'),
   ];
   const enabled = await loadAI(aiServicesReport({
     metrics: [...base.metrics, ...benchlmMetrics],
@@ -1547,6 +1549,8 @@ test('BenchAlign metrics appear in the dropdown only while the benchlm source is
   const options = enabled.element('ai-metric-select').innerHTML;
   assert.match(options, /BenchAlign Overall/);
   assert.match(options, /BenchAlign Coding/);
+  assert.match(options, /BenchAlign Agentic/);
+  assert.match(options, /BenchAlign Knowledge/);
   enabled.run("aiSetMetric('benchalign_overall')");
   assert.equal(enabled.run('_aiMetric'), 'benchalign_overall');
   assert.match(enabled.element('ai-thead').innerHTML, /BAL-ALL/);
@@ -1555,6 +1559,14 @@ test('BenchAlign metrics appear in the dropdown only while the benchlm source is
   const balBody = enabled.element('ai-tbody').innerHTML;
   assert.match(balBody, />72\.5</);
   assert.doesNotMatch(balBody, /72\.5%/);
+  enabled.run("aiSetMetric('benchalign_agentic')");
+  assert.equal(enabled.run('_aiMetric'), 'benchalign_agentic');
+  assert.match(enabled.element('ai-thead').innerHTML, /BAL-AGENT/);
+  assert.match(enabled.element('ai-thead').innerHTML, /title="BenchAlign Agentic"/);
+  enabled.run("aiSetMetric('benchalign_knowledge')");
+  assert.equal(enabled.run('_aiMetric'), 'benchalign_knowledge');
+  assert.match(enabled.element('ai-thead').innerHTML, /BAL-KNOW/);
+  assert.match(enabled.element('ai-thead').innerHTML, /title="BenchAlign Knowledge"/);
 
   const disabled = await loadAI(aiServicesReport({
     metrics: [...base.metrics, ...benchlmMetrics],
