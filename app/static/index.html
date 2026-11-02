@@ -2504,6 +2504,102 @@ function switchTab(name, btn) {
   } catch(e) {}
 })();
 
+// ── tab swipe gestures (touch) ────────────────────────────────────────────────
+// A horizontal swipe inside a pane switches to the neighbouring visible tab.
+// Listeners are passive and never call preventDefault(), so vertical page
+// scrolling is completely unaffected. No touchmove handling: the gesture is
+// recognised from touchstart/touchend alone.
+const TAB_SWIPE_MIN_DX = 60;    // minimum horizontal travel in px
+const TAB_SWIPE_MAX_MS = 700;   // maximum gesture duration in ms
+// Elements that own their own horizontal gestures; swipes starting inside
+// them must never switch tabs.
+const TAB_SWIPE_NO_HIJACK = '#ocgl-wrap, #ai-table-wrap, .tab-bar-wrap, .ai-table, pre, input, select, textarea, button, a, [contenteditable]';
+
+// DOM order of the .tab-btn elements that are actually visible (skips
+// display:none tabs such as the feature-gated ones).
+function swipeableTabButtons() {
+  try {
+    const buttons = document.querySelectorAll('.tab-btn');
+    return Array.from(buttons || []).filter(btn => {
+      if (!btn) return false;
+      try {
+        if (btn.offsetParent === null) return false;          // display:none
+        if (typeof btn.offsetParent === 'object') return true; // visible
+      } catch(e) {}
+      // Engines/shims without offsetParent: fall back to computed style,
+      // then to the inline style.
+      try {
+        if (typeof getComputedStyle === 'function') {
+          return getComputedStyle(btn).display !== 'none';
+        }
+      } catch(e) {}
+      try { return !!(btn.style && btn.style.display !== 'none'); }
+      catch(e) { return false; }
+    });
+  } catch(e) { return []; }
+}
+
+let _tabSwipeStart = null;
+
+function tabSwipeStart(event) {
+  _tabSwipeStart = null;
+  try {
+    if (!event || !event.touches || event.touches.length !== 1) return;
+    const target = event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    // Only swipes that begin inside a pane switch tabs — not the tab bar,
+    // header or action bar.
+    if (!target.closest('.tab-pane')) return;
+    // Never hijack swipes inside scrollable/interactive elements.
+    try { if (target.closest(TAB_SWIPE_NO_HIJACK)) return; } catch(e) { return; }
+    const touch = event.touches[0];
+    if (!touch || typeof touch.clientX !== 'number' || typeof touch.clientY !== 'number') return;
+    _tabSwipeStart = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+  } catch(e) { _tabSwipeStart = null; }
+}
+
+function tabSwipeEnd(event) {
+  try {
+    const start = _tabSwipeStart;
+    _tabSwipeStart = null;
+    if (!start) return;
+    if (!event || !event.changedTouches || !event.changedTouches.length) return;
+    const touch = event.changedTouches[0];
+    if (!touch || typeof touch.clientX !== 'number' || typeof touch.clientY !== 'number') return;
+    // The gesture must still be over a pane: a drag that ends on the tab bar,
+    // header or action bar is not a tab switch.
+    const endTarget = event.target;
+    if (!endTarget || typeof endTarget.closest !== 'function') return;
+    if (!endTarget.closest('.tab-pane')) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    const dt = Date.now() - start.time;
+    if (Math.abs(dx) < TAB_SWIPE_MIN_DX) return;          // too short
+    if (Math.abs(dx) <= Math.abs(dy) * 1.5) return;       // not horizontal enough
+    if (dt > TAB_SWIPE_MAX_MS) return;                    // too slow: a scroll/drag
+    const tabs = swipeableTabButtons();
+    if (!tabs.length) return;
+    let index = tabs.findIndex(b => b.dataset && b.dataset.tab === _activeTab);
+    if (index < 0) index = tabs.findIndex(b => b.classList && b.classList.contains('active'));
+    if (index < 0) return;
+    // Swipe left (finger right-to-left, dx < 0) → next tab; swipe right →
+    // previous. No wrap-around at the ends.
+    const nextIndex = dx < 0 ? index + 1 : index - 1;
+    if (nextIndex < 0 || nextIndex >= tabs.length) return;
+    const next = tabs[nextIndex];
+    if (!next || !next.dataset) return;
+    switchTab(next.dataset.tab, next);
+  } catch(e) { /* gesture ignored */ }
+}
+
+function tabSwipeCancel() { _tabSwipeStart = null; }
+
+if (typeof document.addEventListener === 'function') {
+  document.addEventListener('touchstart', tabSwipeStart, { passive: true });
+  document.addEventListener('touchend', tabSwipeEnd, { passive: true });
+  document.addEventListener('touchcancel', tabSwipeCancel, { passive: true });
+}
+
 // ── shelly plug 2 ─────────────────────────────────────────────────────────────
 async function fetchShelly2() {
   if (!_features.shelly2) return;
@@ -3171,7 +3267,8 @@ const AI_METRIC_ORDER = [
   'tb4', 'eci',
   'livebench_coding', 'livebench_long_agentic', 'livebench_reasoning',
   'livebench_browser', 'livebench_data_analysis', 'livebench_research',
-  'livebench_design', 'deepswe',
+  'livebench_design',
+  'benchalign_overall', 'benchalign_coding', 'benchalign_agentic', 'benchalign_knowledge',
 ];
 const AI_METRIC_FALLBACK = {
   tb4: { key: 'tb4', label: 'TB4', name: 'Terminal-Bench 4.0', unit: 'pct', source: 'harbor' },
@@ -3183,13 +3280,18 @@ const AI_METRIC_FALLBACK = {
   livebench_data_analysis: { key: 'livebench_data_analysis', label: 'LB-DA', name: 'LiveBench Data Analysis', unit: 'pct', source: 'livebench' },
   livebench_research: { key: 'livebench_research', label: 'LB-RE', name: 'LiveBench Research', unit: 'pct', source: 'livebench' },
   livebench_design: { key: 'livebench_design', label: 'LB-DE', name: 'LiveBench Design', unit: 'pct', source: 'livebench' },
-  deepswe: { key: 'deepswe', label: 'DSWE', name: 'DeepSWE pass@1', unit: 'pct', source: 'deepswe' },
+  benchalign_overall: { key: 'benchalign_overall', label: 'BAL-ALL', name: 'BenchAlign Overall', unit: 'index', source: 'benchlm' },
+  benchalign_coding: { key: 'benchalign_coding', label: 'BAL-CODE', name: 'BenchAlign Coding', unit: 'index', source: 'benchlm' },
+  benchalign_agentic: { key: 'benchalign_agentic', label: 'BAL-AGENT', name: 'BenchAlign Agentic', unit: 'index', source: 'benchlm' },
+  benchalign_knowledge: { key: 'benchalign_knowledge', label: 'BAL-KNOW', name: 'BenchAlign Knowledge', unit: 'index', source: 'benchlm' },
 };
 const AI_METRIC_SOURCE_FALLBACK = {
-  tb4: 'harbor', livebench_coding: 'livebench', eci: 'epoch', deepswe: 'deepswe',
+  tb4: 'harbor', livebench_coding: 'livebench', eci: 'epoch',
   livebench_long_agentic: 'livebench', livebench_reasoning: 'livebench',
   livebench_browser: 'livebench', livebench_data_analysis: 'livebench',
   livebench_research: 'livebench', livebench_design: 'livebench',
+  benchalign_overall: 'benchlm', benchalign_coding: 'benchlm',
+  benchalign_agentic: 'benchlm', benchalign_knowledge: 'benchlm',
 };
 // Backends have used both benchmark keys and source keys for metric.source.
 // Resolve the known aliases, then fall back to the key actually present.
@@ -3200,6 +3302,8 @@ const AI_SOURCE_ALIASES = {
   livebenchreasoning: 'livebench', livebenchbrowser: 'livebench',
   livebenchdataanalysis: 'livebench', livebenchresearch: 'livebench',
   livebenchdesign: 'livebench',
+  benchalignoverall: 'benchlm', benchaligncoding: 'benchlm',
+  benchalignagentic: 'benchlm', benchalignknowledge: 'benchlm',
 };
 // Hover detail keeps the date's source meaning: an evaluation date is never
 // relabelled from a release date.
@@ -3212,6 +3316,7 @@ const AI_DATE_KIND_LABELS = {
   released: 'release date',
   release: 'release date',
   published: 'published date',
+  source_snapshot: 'source snapshot date',
 };
 const AI_REFRESH_POLL_MS = 2000;
 const AI_REFRESH_MAX_POLLS = 40;
@@ -3324,8 +3429,16 @@ function aiMetricDisabled(key) {
   return !!(source && source.disabled === true);
 }
 function aiAvailableMetrics() {
-  // Only enabled sources offer benchmarks in the dropdown.
-  return AI_METRIC_ORDER.filter(key => !!_aiMetricMap[key] && !aiMetricDisabled(key));
+  // Only enabled sources offer benchmarks in the dropdown. BenchLM metrics
+  // additionally require the benchlm source to be reported at all.
+  const sources = aiSourcesObject();
+  const benchlmEnabled = Object.prototype.hasOwnProperty.call(sources, 'benchlm')
+    && aiObject(sources.benchlm).disabled !== true;
+  return AI_METRIC_ORDER.filter(key => {
+    if (!_aiMetricMap[key] || aiMetricDisabled(key)) return false;
+    if (aiSourceKeyFor(key) === 'benchlm') return benchlmEnabled;
+    return true;
+  });
 }
 
 function aiRoutes(model) {
@@ -3338,8 +3451,11 @@ function aiSetMetric(key) {
   if (!aiAvailableMetrics().includes(next)) return;
   _aiMetric = next;
   aiSaveMetric();
-  // Switching benchmarks restarts the sort; the old column is gone.
-  _aiSort = { key: 'model', dir: 1 };
+  // The score column survives a benchmark switch: keep sorting by it, in the
+  // same direction, and re-point the key at the newly selected metric.
+  if (_aiSort.key !== 'model') {
+    _aiSort = { key: next, dir: _aiSort.dir };
+  }
   aiRenderMetricSelect();
   aiRenderTable();
 }
@@ -3366,20 +3482,16 @@ function aiBenchState(model, key) {
   const missing = aiObject(model && model.missing);
   if (missing[key] != null && missing[key] !== '') return { missing: aiMessage(missing[key]) };
   // Only guess "ambiguous" when the backend gave no reason; undated results
-  // (for example DeepSWE rows) must stay "no summary" without inventing one.
+  // must stay "no summary" without inventing one.
   if (aiHasResults(model, key)) return { ambiguous: true };
   return {};
 }
 function aiSortValue(model) {
   if (_aiSort.key === 'model') return aiModelName(model).toLowerCase();
-  if (_aiSort.key === 'routes') {
-    return aiRoutes(model).map(route => aiText(route.name)).join(' ').toLowerCase();
-  }
   const state = aiBenchState(model, _aiSort.key);
   return typeof state.value === 'number' ? state.value : null;
 }
 function aiSort(key) {
-  if (key === 'routes') return;
   if (_aiSort.key === key) _aiSort.dir *= -1;
   else { _aiSort.key = key; _aiSort.dir = key === 'model' ? 1 : -1; }
   aiRenderTable();
@@ -3398,6 +3510,30 @@ function aiRoutesCell(model) {
     const provider = aiText(route.provider);
     return `<span class="ai-route">${escHtml(name)}${provider ? ' · ' + escHtml(provider) : ''}</span>`;
   }).join('');
+}
+function aiResultSourceKey(model, key) {
+  const results = aiObject(model && model.results);
+  const list = Array.isArray(results[key]) ? results[key] : [];
+  const result = list.find(item => item && item.selected === true) || list[0];
+  return result && typeof result === 'object' ? aiSourceKeyValue(result.source) : '';
+}
+function aiSourceDataForCandidate(candidate) {
+  const sources = aiSourcesObject();
+  const key = aiText(candidate).trim().toLowerCase();
+  if (!key) return null;
+  if (Object.prototype.hasOwnProperty.call(sources, key)) return aiObject(sources[key]);
+  const alias = AI_SOURCE_ALIASES[key.replace(/[^a-z0-9]/g, '')];
+  if (alias && Object.prototype.hasOwnProperty.call(sources, alias)) return aiObject(sources[alias]);
+  return null;
+}
+function aiScoreSourceData(model, key) {
+  // tb4 may be supplied by BenchLM instead of Harbor: the selected result's
+  // own source wins; the static source map stays the fallback.
+  if (key === 'tb4') {
+    const fromResult = aiSourceDataForCandidate(aiResultSourceKey(model, key));
+    if (fromResult) return fromResult;
+  }
+  return aiSourceData(key);
 }
 function aiScoreDetail(model, key) {
   // Hover-only provenance: agent, effort, CI, dated kind and trial count.
@@ -3424,7 +3560,7 @@ function aiScoreCell(model) {
   const state = aiBenchState(model, _aiMetric);
   if (typeof state.value === 'number') {
     const parts = [aiScoreDetail(model, _aiMetric)].filter(Boolean);
-    const source = aiSourceData(_aiMetric);
+    const source = aiScoreSourceData(model, _aiMetric);
     if (source && (source.stale === true || source.error)) {
       parts.push('cached score — source stale');
     }
@@ -3566,7 +3702,7 @@ function aiAcceptServices(data) {
     _aiMetric = aiAvailableMetrics()[0] || '';
     aiSaveMetric();
   }
-  if (_aiSort.key !== 'model' && _aiSort.key !== 'routes' && _aiSort.key !== _aiMetric) {
+  if (_aiSort.key !== 'model' && _aiSort.key !== _aiMetric) {
     _aiSort = { key: 'model', dir: 1 };
   }
   _aiLoadedAt = Date.now();
@@ -4060,14 +4196,14 @@ function renderContainers() {
     const isSel  = selected && selected.id === c.id;
     const portsHtml = c.ports && c.ports.length
       ? `<div class="ctr-ports">${c.ports.map(p => escHtml(p)).join(' · ')}</div>` : '';
-    return `<div class="ctr-card ${isSel?'selected':''}" onclick="selectContainer('${c.id}')">
+    return `<div class="ctr-card ${isSel?'selected':''}" data-id="${escAttr(c.id)}" onclick="selectContainer(this.dataset.id)">
       <span class="ctr-dot ${dotCls}"></span>
       <div class="ctr-info">
         <div class="ctr-name">${escHtml(c.name)}</div>
         <div class="ctr-meta">${escHtml(c.host)} · ${escHtml(c.status)}</div>
         ${portsHtml}
       </div>
-      <span class="ctr-badge ${dotCls}">${c.state==='running'?'UP':c.state==='exited'?'DOWN':c.state.toUpperCase()}</span>
+      <span class="ctr-badge ${dotCls}">${escHtml(c.state==='running'?'UP':c.state==='exited'?'DOWN':c.state.toUpperCase())}</span>
     </div>`;
   }).join('');
 }

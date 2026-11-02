@@ -1219,12 +1219,6 @@ function aiServicesReport(overrides = {}) {
         url: 'https://livebench.ai/data/20261025/table.csv', disabled: true,
         warning: 'LiveBench2.0 reuse terms unverified; opt-in after review',
       },
-      deepswe: {
-        last_checked: checked, last_success: null, source_updated: null,
-        stale: false, error: null, version: null,
-        url: 'https://epoch.ai/benchmarks/deepswe/review', disabled: true,
-        warning: 'DeepSWE opt-in after review',
-      },
     },
     models: [
       {
@@ -1353,7 +1347,7 @@ test('AI services merges tabs into one dropdown table without AA or explanation 
     'aiRenderFilters', 'aiRenderColumnPicker', 'aiAvailableOptionalMetrics',
     'aiVisibleColumnKeys', 'aiResetHiddenSort', 'aiRestoreColumns', 'aiSaveColumns',
     'aiAttributionGroups', 'aiConfigEntries', 'aiResultCard', 'aiDateFields', 'aiResultValue',
-    'aiSafeLink', 'aiTimestampMs', 'aiDeepSwePresent', 'aiLiveBenchPresent',
+    'aiSafeLink', 'aiTimestampMs', 'aiLiveBenchPresent',
   ]) {
     assert.doesNotMatch(html, new RegExp(`\\b${gone}\\b`), gone);
   }
@@ -1362,10 +1356,10 @@ test('AI services merges tabs into one dropdown table without AA or explanation 
 test('one dropdown selects the benchmark; the table shows routes and one score column', async () => {
   const d = await loadAI();
   const select = d.element('ai-metric-select');
-  // Enabled sources only: LiveBench and DeepSWE never appear as options.
+  // Enabled sources only: LiveBench never appears as an option.
   assert.match(select.innerHTML, /Terminal-Bench 4\.0/);
   assert.match(select.innerHTML, /Epoch Capabilities Index/);
-  assert.doesNotMatch(select.innerHTML, /LiveBench|DeepSWE/);
+  assert.doesNotMatch(select.innerHTML, /LiveBench/);
   assert.equal(select.value, 'tb4');
 
   const thead = d.element('ai-thead').innerHTML;
@@ -1466,7 +1460,7 @@ test('a disabled stored benchmark falls back to the first available metric', asy
 test('the benchmark dropdown offers every enabled source metric', async () => {
   const base = aiServicesReport();
   const d = await loadAI();
-  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /LiveBench|DeepSWE/);
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /LiveBench/);
 
   const enabled = await loadAI(aiServicesReport({
     sources: { ...base.sources, livebench: { ...base.sources.livebench, disabled: false, warning: null } },
@@ -1474,7 +1468,6 @@ test('the benchmark dropdown offers every enabled source metric', async () => {
   const options = enabled.element('ai-metric-select').innerHTML;
   assert.match(options, /LiveBench Coding/);
   assert.match(options, /LiveBench Reasoning/);
-  assert.doesNotMatch(options, /DeepSWE/);
   enabled.run("aiSetMetric('livebench_coding')");
   assert.equal(enabled.run('_aiMetric'), 'livebench_coding');
   assert.match(enabled.element('ai-thead').innerHTML, /LBC/);
@@ -1520,6 +1513,137 @@ test('hover dates keep the source meaning; unknown kinds never claim an evaluati
   assert.equal(d.run("aiDateKindLabel('benchmark_release')"), 'benchmark release date');
   assert.equal(d.run("aiDateKindLabel('odd-kind')"), 'date (odd kind)');
   assert.equal(d.run("aiDateKindLabel('')"), 'date (kind not reported)');
+});
+
+test('BenchAlign metrics appear in the dropdown only while the benchlm source is enabled', async () => {
+  const base = aiServicesReport();
+  const benchlmSource = {
+    last_checked: Math.floor(Date.now() / 1000) - 60, last_success: Math.floor(Date.now() / 1000) - 90,
+    source_updated: '2026-10-30', stale: false, error: null, version: 'bal-2026-10',
+    url: 'https://benchlm.example.org/board', warning: null,
+  };
+  const benchlmMetrics = [
+    aiMetric('benchalign_overall', 'BAL-ALL', 'BenchAlign Overall', 'index', 'benchlm'),
+    aiMetric('benchalign_coding', 'BAL-CODE', 'BenchAlign Coding', 'index', 'benchlm'),
+    aiMetric('benchalign_agentic', 'BAL-AGENT', 'BenchAlign Agentic', 'index', 'benchlm'),
+    aiMetric('benchalign_knowledge', 'BAL-KNOW', 'BenchAlign Knowledge', 'index', 'benchlm'),
+  ];
+  const enabled = await loadAI(aiServicesReport({
+    metrics: [...base.metrics, ...benchlmMetrics],
+    sources: { ...base.sources, benchlm: benchlmSource },
+    models: [{
+      name: 'bal-model', upstream_model: 'openai/bal', provider: 'openai', mode: 'chat',
+      routes: [{ name: 'bal-route', provider: 'openai' }],
+      bench: { benchalign_overall: 72.5 },
+      results: { benchalign_overall: [{ source: 'benchlm', value: 72.5, date: '2026-10-30', date_kind: 'source_snapshot', selected: true, metadata: {} }] },
+      missing: {},
+    }],
+  }));
+  const options = enabled.element('ai-metric-select').innerHTML;
+  assert.match(options, /BenchAlign Overall/);
+  assert.match(options, /BenchAlign Coding/);
+  assert.match(options, /BenchAlign Agentic/);
+  assert.match(options, /BenchAlign Knowledge/);
+  enabled.run("aiSetMetric('benchalign_overall')");
+  assert.equal(enabled.run('_aiMetric'), 'benchalign_overall');
+  assert.match(enabled.element('ai-thead').innerHTML, /BAL-ALL/);
+  assert.match(enabled.element('ai-thead').innerHTML, /title="BenchAlign Overall"/);
+  // 0–100 composite point estimates render like ECI: an index, not a percentage.
+  const balBody = enabled.element('ai-tbody').innerHTML;
+  assert.match(balBody, />72\.5</);
+  assert.doesNotMatch(balBody, /72\.5%/);
+  enabled.run("aiSetMetric('benchalign_agentic')");
+  assert.equal(enabled.run('_aiMetric'), 'benchalign_agentic');
+  assert.match(enabled.element('ai-thead').innerHTML, /BAL-AGENT/);
+  assert.match(enabled.element('ai-thead').innerHTML, /title="BenchAlign Agentic"/);
+  enabled.run("aiSetMetric('benchalign_knowledge')");
+  assert.equal(enabled.run('_aiMetric'), 'benchalign_knowledge');
+  assert.match(enabled.element('ai-thead').innerHTML, /BAL-KNOW/);
+  assert.match(enabled.element('ai-thead').innerHTML, /title="BenchAlign Knowledge"/);
+
+  const disabled = await loadAI(aiServicesReport({
+    metrics: [...base.metrics, ...benchlmMetrics],
+    sources: { ...base.sources, benchlm: { ...benchlmSource, disabled: true, warning: 'opt-in after review' } },
+  }));
+  assert.doesNotMatch(disabled.element('ai-metric-select').innerHTML, /BenchAlign/);
+
+  const absent = await loadAI(aiServicesReport({
+    metrics: [...base.metrics, ...benchlmMetrics],
+  }));
+  assert.doesNotMatch(absent.element('ai-metric-select').innerHTML, /BenchAlign/);
+});
+
+test('source_snapshot dates render as source snapshot date, never as an evaluation date', async () => {
+  const d = await loadAI();
+  assert.equal(d.run("aiDateKindLabel('source_snapshot')"), 'source snapshot date');
+  const report = aiServicesReport({
+    models: [{
+      name: 'snapshot', upstream_model: 'openai/snapshot', provider: 'openai', mode: 'chat',
+      routes: [{ name: 'snapshot', provider: 'openai' }],
+      bench: { tb4: 66.6 },
+      results: { tb4: [{ agent: 'a', value: 66.6, date: '2026-10-30', date_kind: 'source_snapshot', metadata: {} }] },
+      missing: {},
+    }],
+  });
+  const r = await loadAI(report);
+  assert.match(r.element('ai-tbody').innerHTML, /source snapshot date 2026-10-30/);
+  assert.doesNotMatch(r.element('ai-tbody').innerHTML, /evaluation date/);
+});
+
+test('tb4 provenance follows the selected result source with harbor as the fallback', async () => {
+  const base = aiServicesReport();
+  const benchlmSource = {
+    last_checked: Math.floor(Date.now() / 1000) - 60, last_success: Math.floor(Date.now() / 1000) - 90,
+    source_updated: '2026-10-30', stale: true, error: null, version: 'bal-2026-10',
+    url: 'https://benchlm.example.org/board', warning: null,
+  };
+  const models = [
+    {
+      name: 'benchlm-backed', upstream_model: 'openai/blm', provider: 'openai', mode: 'chat',
+      routes: [{ name: 'blm-route', provider: 'openai' }],
+      bench: { tb4: 70.1 },
+      results: { tb4: [{ source: 'benchlm', agent: 'a', value: 70.1, date: '2026-10-30', date_kind: 'source_snapshot', selected: true, metadata: {} }] },
+      missing: {},
+    },
+    {
+      name: 'harbor-backed', upstream_model: 'openai/hbr', provider: 'openai', mode: 'chat',
+      routes: [{ name: 'hbr-route', provider: 'openai' }],
+      bench: { tb4: 60.2 },
+      results: { tb4: [{ source: 'harbor', agent: 'b', value: 60.2, date: '2026-09-30', date_kind: 'evaluation', selected: true, metadata: {} }] },
+      missing: {},
+    },
+    {
+      name: 'no-result-source', upstream_model: 'openai/none', provider: 'openai', mode: 'chat',
+      routes: [{ name: 'none-route', provider: 'openai' }],
+      bench: { tb4: 55.5 },
+      results: { tb4: [{ agent: 'c', value: 55.5, date: null, metadata: {} }] },
+      missing: {},
+    },
+  ];
+  // harbor is healthy, benchlm is stale: only the BenchLM-supplied score is flagged.
+  const d = await loadAI(aiServicesReport({
+    sources: { ...base.sources, benchlm: benchlmSource },
+    models,
+  }));
+  const rowsOf = html => html.match(/<tr>[\s\S]*?<\/tr>/g);
+  const rows = rowsOf(d.element('ai-tbody').innerHTML);
+  assert.match(rows.find(row => row.includes('<b>benchlm-backed</b>')), /cached score — source stale/);
+  assert.doesNotMatch(rows.find(row => row.includes('<b>harbor-backed</b>')), /cached score/);
+  assert.doesNotMatch(rows.find(row => row.includes('<b>no-result-source</b>')), /cached score/);
+
+  // With harbor itself stale, rows without a result source fall back to harbor.
+  const staleHarbor = aiServicesReport({
+    sources: {
+      ...base.sources,
+      benchlm: benchlmSource,
+      harbor: { ...base.sources.harbor, stale: true },
+    },
+    models,
+  });
+  const d2 = await loadAI(staleHarbor);
+  const rows2 = rowsOf(d2.element('ai-tbody').innerHTML);
+  assert.match(rows2.find(row => row.includes('<b>harbor-backed</b>')), /cached score — source stale/);
+  assert.match(rows2.find(row => row.includes('<b>no-result-source</b>')), /cached score — source stale/);
 });
 
 test('AI inventory text is escaped in the table and hover details', async () => {
@@ -1602,7 +1726,7 @@ test('an explicit missing reason wins over present results', async () => {
   assert.doesNotMatch(tbody, /54\.2%|51\.8%/);
 });
 
-test('the score column sorts; switching benchmarks resets the sort', async () => {
+test('the score column sorts; switching benchmarks keeps the score sort', async () => {
   const d = await loadAI();
   d.run("aiSort('tb4')");
   assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'tb4', dir: -1 }));
@@ -1616,13 +1740,45 @@ test('the score column sorts; switching benchmarks resets the sort', async () =>
   d.run("aiSort('model')");
   assert.equal(d.run('_aiSort.key'), 'model');
   assert.match(d.element('ai-thead').innerHTML, /data-ai-key="model"[^>]*aria-sort="ascending"/);
-  // Switching benchmarks restarts the sort; the old column is gone.
-  d.run("aiSort('tb4')");
+  // The score column survives a benchmark switch: the sort is re-pointed at
+  // the new metric in the same direction, not reset.
+  d.run("aiSort('tb4')");              // -> { key: 'tb4', dir: -1 }
   d.run("aiSetMetric('eci')");
-  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
-  // The routes column is not sortable.
-  d.run("aiSort('routes')");
-  assert.equal(d.run('_aiSort.key'), 'model');
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'eci', dir: -1 }));
+  const head = d.element('ai-thead').innerHTML;
+  assert.match(head, /data-ai-key="eci"[^>]*aria-sort="descending"/);
+  assert.doesNotMatch(head, /data-ai-key="tb4"/);
+  rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('alpha') < rows.indexOf('gamma'), 'highest eci value sorts first after the switch');
+  // The routes column is not sortable: its header carries no sort key.
+  assert.doesNotMatch(head, /data-ai-key="routes"/);
+  assert.equal(d.run('_aiSort.key'), 'eci');
+});
+
+test('switching benchmarks keeps an ascending score sort ascending', async () => {
+  // tb4 and eci order these two models oppositely, so the rendered row order
+  // proves the new metric — not the old one — drives the sort.
+  const report = aiServicesReport({
+    models: [
+      { name: 'low-eci', upstream_model: 'x/low-eci', provider: 'x', mode: 'chat',
+        routes: [{ name: 'low-eci-route', provider: 'x' }],
+        bench: { tb4: 90, eci: 10 }, results: {}, missing: {} },
+      { name: 'high-eci', upstream_model: 'x/high-eci', provider: 'x', mode: 'chat',
+        routes: [{ name: 'high-eci-route', provider: 'x' }],
+        bench: { tb4: 10, eci: 90 }, results: {}, missing: {} },
+    ],
+  });
+  const d = await loadAI(report);
+  d.run("aiSort('tb4')");              // -> { key: 'tb4', dir: -1 }
+  d.run("aiSort('tb4')");              // -> { key: 'tb4', dir: 1 }
+  assert.equal(d.run('_aiSort.dir'), 1);
+  let rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('high-eci') < rows.indexOf('low-eci'), 'ascending tb4 puts the lowest tb4 first');
+  d.run("aiSetMetric('eci')");
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'eci', dir: 1 }));
+  assert.match(d.element('ai-thead').innerHTML, /data-ai-key="eci"[^>]*aria-sort="ascending"/);
+  rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('low-eci') < rows.indexOf('high-eci'), 'ascending eci puts the lowest eci first');
 });
 
 test('a payload that drops the sorted benchmark restores the model sort', async () => {
@@ -1918,7 +2074,6 @@ test('disabled source errors never count as refresh failures', async () => {
     sources: {
       ...base.sources,
       livebench: { ...base.sources.livebench, error: 'artifact not fetched' },
-      deepswe: { ...base.sources.deepswe, error: 'artifact not fetched' },
     },
   });
   const { d } = refreshDashboard(report);
@@ -2235,4 +2390,142 @@ test('tick wiring keeps the 60s interval without touching the usage pollers', ()
   assert.equal((html.match(/setInterval\(fetchOpenCodeGo, 60000\)/g) || []).length, 1,
     'the usage poller keeps its own single 60s interval');
   assert.match(html, /setInterval\(fetchOpenCodeGoLimits, 3600000\)/);
+});
+
+// ── tab swipe gestures ────────────────────────────────────────────────────────
+const SWIPE_TAB_NAMES = ['server', 'ai-services', 'containers', 'processes', 'security'];
+// Fake closest() that matches any selector in a comma-separated list, like the real API.
+const closestMatching = (...sels) => ({
+  closest: sel => (String(sel).split(',').map(s => s.trim()).some(s => sels.includes(s)) ? {} : null),
+});
+const paneTarget = closestMatching('.tab-pane');
+const aiTableTarget = closestMatching('.tab-pane', '#ai-table-wrap');
+
+function swipeTabs(d, hidden = ['ai-services', 'security']) {
+  const tabs = {};
+  for (const name of SWIPE_TAB_NAMES) {
+    tabs[name] = d.context.document.querySelector(`.tab-btn[data-tab="${name}"]`);
+    if (hidden.includes(name)) tabs[name].offsetParent = null; // display:none
+  }
+  d.run(`switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'))`);
+  return tabs;
+}
+
+// Synthetic swipe: finger starts at (300, 200), ends at (300+dx, 200+dy).
+function doSwipe(d, dx, dy, opts = {}) {
+  d.context.swipeTarget = opts.target || paneTarget;
+  d.context.swipeEndTarget = opts.endTarget || d.context.swipeTarget;
+  d.run('tabSwipeStart({ touches: [{ clientX: 300, clientY: 200 }], target: swipeTarget })');
+  if (opts.touches === 2) d.run('tabSwipeStart({ touches: [{ clientX: 300, clientY: 200 }, { clientX: 320, clientY: 200 }], target: swipeTarget })');
+  if (opts.dt) d.run(`_tabSwipeStart.time -= ${opts.dt}`);
+  d.run(`tabSwipeEnd({ touches: [{ clientX: ${300 + dx}, clientY: ${200 + dy} }],
+                       changedTouches: [{ clientX: ${300 + dx}, clientY: ${200 + dy} }],
+                       target: swipeEndTarget })`);
+}
+
+test('tab swipe left/right switches to the next/previous visible tab', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  assert.equal(d.run('_activeTab'), 'server');
+  doSwipe(d, -100, 0); // swipe left → next visible tab (ai-services hidden)
+  assert.equal(d.run('_activeTab'), 'containers');
+  assert.equal(d.storage.get('activeTab'), 'containers');
+  doSwipe(d, -100, 0);
+  assert.equal(d.run('_activeTab'), 'processes');
+  doSwipe(d, 100, 0); // swipe right → previous visible tab
+  assert.equal(d.run('_activeTab'), 'containers');
+});
+
+test('a 30px swipe is ignored', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  doSwipe(d, -30, 0);
+  assert.equal(d.run('_activeTab'), 'server');
+  doSwipe(d, 30, 0);
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('a mostly vertical drag (dx 70, dy 120) is ignored', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  doSwipe(d, -70, 120);
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('a swipe starting inside #ai-table-wrap is ignored', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  doSwipe(d, -100, 0, { target: aiTableTarget });
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('a slow drag over 700ms is ignored', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  doSwipe(d, -100, 0, { dt: 800 });
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('a multi-touch start is ignored', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  doSwipe(d, -100, 0, { touches: 2 });
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('a touchcancel after touchstart clears the pending gesture', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  d.context.swipeTarget = paneTarget;
+  d.run('tabSwipeStart({ touches: [{ clientX: 300, clientY: 200 }], target: swipeTarget })');
+  assert.ok(d.run('_tabSwipeStart'), 'gesture is pending after touchstart');
+  d.run('tabSwipeCancel()');
+  assert.equal(d.run('_tabSwipeStart'), null, 'touchcancel clears the pending gesture');
+  d.run('tabSwipeEnd({ touches: [{ clientX: 200, clientY: 200 }], changedTouches: [{ clientX: 200, clientY: 200 }], target: swipeTarget })');
+  assert.equal(d.run('_activeTab'), 'server', 'the touchend after a cancel does not switch tabs');
+});
+
+test('a qualifying swipe whose touchend lands outside a pane does not switch tabs', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  // Same start/end coordinates as a real switch, but the finger ends on the tab bar.
+  doSwipe(d, -100, 0, { endTarget: closestMatching('.tab-bar-wrap') });
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('hidden tabs are skipped when swiping', () => {
+  const d = dashboard();
+  swipeTabs(d, ['ai-services', 'security']);
+  doSwipe(d, -100, 0); // must land on containers, never the hidden ai-services
+  assert.equal(d.run('_activeTab'), 'containers');
+  const aiBtn = d.context.document.querySelector('.tab-btn[data-tab="ai-services"]');
+  assert.equal(aiBtn.classList.contains('active'), false);
+});
+
+test('swipes do not wrap around at the first or last visible tab', () => {
+  const d = dashboard();
+  swipeTabs(d, ['ai-services', 'security']); // visible: server, containers, processes
+  doSwipe(d, 100, 0); // swipe right on the first tab
+  assert.equal(d.run('_activeTab'), 'server');
+  d.run(`switchTab('processes', document.querySelector('.tab-btn[data-tab="processes"]'))`);
+  doSwipe(d, -100, 0); // swipe left on the last visible tab (security hidden)
+  assert.equal(d.run('_activeTab'), 'processes');
+});
+
+test('container card escapes hostile id and state (no HTML/JS injection)', () => {
+  const d = dashboard();
+  const hostileId = 'x\'");alert(1);//';
+  const hostileState = 'boom<img src=x onerror=alert(1)>';
+  d.run(`containers = [{id: ${JSON.stringify(hostileId)}, name: 'hostile', host: 'h', status: 's', state: ${JSON.stringify(hostileState)}, ports: []}]; renderContainers()`);
+  const html = d.element('ctr-list').innerHTML;
+  // id must not appear inside the inline handler — it travels via data-id instead
+  assert.ok(html.includes('onclick="selectContainer(this.dataset.id)"'));
+  assert.ok(!/onclick="[^"]*alert/.test(html), 'raw id must not appear inside an onclick attribute');
+  // escaped forms present, raw markup absent
+  assert.ok(html.includes('&#39;') && html.includes('&quot;') && html.includes('&lt;'));
+  assert.ok(!html.includes('<img'), 'unescaped tag from state must not appear');
+  // card still carries the (escaped) id in data-id so selectContainer(this.dataset.id) resolves it
+  assert.ok(html.includes('data-id="x&#39;&quot;);alert(1);//"'));
+  // badge label is escaped text
+  assert.ok(html.includes('BOOM&lt;IMG SRC=X ONERROR=ALERT(1)&gt;'));
 });

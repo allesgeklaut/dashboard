@@ -27,7 +27,7 @@ from unittest.mock import patch
 with patch('dotenv.find_dotenv', return_value=sys.argv[1]):
     import homelab_core
 import benchmarks
-print(json.dumps([benchmarks.LIVEBENCH_ENABLED, benchmarks.DEEPSWE_ENABLED]))
+print(json.dumps([benchmarks.LIVEBENCH_ENABLED, benchmarks.BENCHLM_ENABLED]))
 """
             result = subprocess.run(
                 [sys.executable, "-c", script, str(dotenv_path)],
@@ -38,13 +38,18 @@ print(json.dumps([benchmarks.LIVEBENCH_ENABLED, benchmarks.DEEPSWE_ENABLED]))
 
     def test_dotenv_opt_ins_are_loaded_before_benchmark_initialization(self):
         self.assertEqual(self.startup_flags(
-            "HOMELAB_LIVEBENCH_ENABLED=true\nHOMELAB_DEEPSWE_ENABLED=true\n"
+            "HOMELAB_LIVEBENCH_ENABLED=true\n"
+            "BENCHLM_DATA_KEY=test-key\n"
         ), [True, True])
 
     def test_process_environment_takes_precedence_over_dotenv(self):
+        # load_dotenv never overrides existing variables, so the process
+        # environment wins even when it empties the BenchLM data key.
         self.assertEqual(self.startup_flags(
-            "HOMELAB_LIVEBENCH_ENABLED=true\nHOMELAB_DEEPSWE_ENABLED=true\n",
-            HOMELAB_LIVEBENCH_ENABLED="false", HOMELAB_DEEPSWE_ENABLED="false",
+            "HOMELAB_LIVEBENCH_ENABLED=true\n"
+            "BENCHLM_DATA_KEY=test-key\n",
+            HOMELAB_LIVEBENCH_ENABLED="false",
+            BENCHLM_DATA_KEY="",
         ), [False, False])
 
     def test_optional_sources_default_off(self):

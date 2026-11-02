@@ -1,21 +1,26 @@
 """Benchmark source adapters, snapshots, and AI Services payload assembly.
 
-Four fixed, public, no-auth sources replace the removed Artificial Analysis
-scraping:
+Four fixed sources replace the removed Artificial Analysis scraping:
 
 * Harbor (Terminal-Bench 4.0), a documented public JSON leaderboard read.
 * Epoch AI's ECI CSV (abstract composite index; CC BY 4.0 attribution).
 * LiveBench, pinned to the explicitly released ``20261025`` table.
-* DeepSWE (optional, disabled by default because of documented task grading
-  defects; see ``DEEPSWE_WARNING``).
+* BenchLM (BenchLM.ai Data API; optional, credentialed, disabled by default;
+  see ``BENCHLM_WARNING``).  It contributes the BenchAlign composite indexes
+  and Terminal-Bench 4.0 rows from its two TB4 boards; the displayed TB4
+  value is the highest recorded result across Harbor and those boards.
 
 Security posture: only the module's fixed HTTPS URLs are ever requested, TLS
 verification is on, redirects are rejected, sessions ignore proxy/netrc
-configuration (``trust_env = False``), no credentials are attached, response
-bodies are streamed with a byte budget under one absolute wall-clock source
-deadline that also bounds connection setup and header receipt, and every
-upstream error is mapped to a fixed sanitized message.  No upstream content is
-executed and no upstream URLs are copied into API responses.
+configuration (``trust_env = False``), response bodies are streamed with a
+byte budget under one absolute wall-clock source deadline that also bounds
+connection setup and header receipt, and every upstream error is mapped to a
+fixed sanitized message.  No upstream content is executed and no upstream
+URLs are copied into API responses.  Exactly one credential exists: the
+BenchLM data key.  It is read from the environment only when a request
+header is built, is sent only to ``data.benchlm.ai`` (enforced by
+``ALLOWED_HOSTS``), and is never stored in snapshots, never logged, and never
+echoed in errors or payloads.
 
 Nothing here is a database or a job queue: per-source state is held in memory
 and persisted as one versioned, atomically replaced JSON document at
@@ -25,19 +30,21 @@ across all enabled sources. The reservation is persisted before outbound work;
 failed runs count and reads never schedule a refresh.
 
 Default source availability: Harbor and Epoch are enabled.  LiveBench and
-DeepSWE are opt-in (``HOMELAB_LIVEBENCH_ENABLED`` / ``HOMELAB_DEEPSWE_ENABLED``,
-both false by default) because their scores' reuse terms could not be verified
-here; disabled sources are never fetched and their cached rows are never
+BenchLM are opt-in (``HOMELAB_LIVEBENCH_ENABLED`` / the BenchLM data key, all
+false by default) because their scores' reuse terms could not be verified
+here, or — for BenchLM — because the source needs an operator-supplied data
+key; disabled sources are never fetched and their cached rows are never
 exposed. API definitions remain available, while disabled suites are omitted
 from the UI dropdown.
 
 Dates are semantic, never inferred: every dated entry carries ``date_kind``
-(``model_release`` for Harbor/Epoch, ``benchmark_release`` for LiveBench, or
-``evaluation`` only when a source actually supplies an eval date).  Summary
-selection uses the latest published dated result and never relabels it as an
-evaluation.  ``source_updated`` is feed mutation metadata only (Harbor
-leaderboard/row timestamps, Epoch Last-Modified, DeepSWE generated_at), never a
-model-release or evaluation date.
+(``model_release`` for Harbor/Epoch, ``benchmark_release`` for LiveBench,
+``source_snapshot`` for BenchLM's board capture date, or ``evaluation`` only
+when a source actually supplies an eval date).  Summary selection uses the
+latest published dated result and never relabels it as an evaluation.
+``source_updated`` is feed mutation metadata only (Harbor leaderboard/row
+timestamps, Epoch Last-Modified, BenchLM ``dataAsOf``),
+never a model-release or evaluation date.
 """
 from __future__ import annotations
 
@@ -55,6 +62,7 @@ import stat
 import tempfile
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import date as _date
 from email.utils import parsedate_to_datetime
@@ -65,8 +73,10 @@ import httpx
 _log = logging.getLogger(__name__)
 
 # ── Fixed endpoints ──────────────────────────────────────────────────────────
-# These are the only URLs this module will ever request.  They are public,
-# documented, credential-free feeds; no user or config supplied URL is used.
+# These are the only URLs this module will ever request.  They are fixed,
+# documented feeds; no user or config supplied URL is used.  All of them are
+# public and credential-free except the BenchLM endpoints, whose bearer key
+# is read from the environment at request time and only ever sent here.
 HARBOR_ENDPOINT = "https://api.harborframework.com/functions/v1/leaderboard-read"
 HARBOR_PACKAGE = "terminal-bench/terminal-bench"
 HARBOR_LEADERBOARD = "4-0-0"
@@ -81,20 +91,45 @@ LIVEBENCH_VERSION = "20261025"
 LIVEBENCH_CSV_URL = f"https://livebench.ai/data/{LIVEBENCH_VERSION}/table.csv"
 LIVEBENCH_CATEGORIES_URL = f"https://livebench.ai/data/{LIVEBENCH_VERSION}/categories.json"
 
-DEEPSWE_VERSION = "v1.1"
-DEEPSWE_JSON_URL = (
-    "https://deepswe.datacurve.ai/artifacts/v1.1/leaderboard-live.json"
+BENCHLM_RANKINGS_URL = "https://data.benchlm.ai/v1/rankings/current"
+BENCHLM_MCP_URL = "https://data.benchlm.ai/mcp"
+BENCHLM_PAGE_SIZE = 100
+BENCHLM_SURFACES = (
+    ("benchalign_overall", "overall"),
+    ("benchalign_coding", "coding"),
+    ("benchalign_agentic", "agentic"),
+    ("benchalign_knowledge", "knowledge"),
 )
-DEEPSWE_URL = "https://deepswe.datacurve.ai/"
-DEEPSWE_TASKS = 113
-DEEPSWE_KNOWN_DEFECTIVE_TASKS = 23
-DEEPSWE_REVIEW_URL = "https://epoch.ai/benchmarks/deepswe/review"
+BENCHLM_MAX_PAGES = 3
+# Terminal-Bench 4.0 is published on two BenchLM boards whose publishers
+# disagree, so both are fetched and the highest recorded result per model
+# wins.  The label becomes the entry's version, so a row's provenance names
+# the board it came from.
+BENCHLM_TB4_BOARDS = (
+    ("benchlm-recorded", "benchlm-recorded:agentic.terminalBench4"),
+    ("vals-capture", "benchlm-capture:vals_bench_terminal_bench_4:entries"),
+)
+# Hard read cap per refresh: at most 3 pages per surface (12 GETs across the
+# 4 surfaces) plus one MCP POST per TB4 board (2) — at most 14 logical
+# requests; each may be retried up to HTTP_ATTEMPTS (3) times by the shared
+# client, so the wire worst case is 42.  Reaching the cap only stops
+# pagination, it never raises.
+BENCHLM_MAX_REQUESTS = (
+    len(BENCHLM_SURFACES) * BENCHLM_MAX_PAGES + len(BENCHLM_TB4_BOARDS))
+BENCHLM_MCP_TOOL = "benchlm_list_current_benchmark_results"
+BENCHLM_MCP_PROTOCOL_VERSION = "2025-11-25"
+BENCHLM_COMPOSITE_EVALUATOR = "BenchLM BenchAlign"
+BENCHLM_TB4_EVALUATOR = "Terminal-Bench 4.0"
+# BenchLM stamps every capture with its own methodology version instead of
+# one pinned feed version, so its snapshot/entry versions are validated as
+# sanitized text rather than compared against a single fixed pin.
+_DYNAMIC_VERSION_SOURCES = frozenset({"benchlm"})
 
 ALLOWED_HOSTS = frozenset({
     "api.harborframework.com",
     "epoch.ai",
     "livebench.ai",
-    "deepswe.datacurve.ai",
+    "data.benchlm.ai",
 })
 
 # ── Budgets ─────────────────────────────────────────────────────────────────
@@ -113,15 +148,18 @@ SOURCE_SCHEMA_VERSION = 2
 CACHE_TTL = 24 * 60 * 60        # per-source freshness target
 REFRESH_INTERVAL = 24 * 60 * 60 # hard limit between manual refresh runs
 
-# Opt-in flags.  LiveBench 2.0 score reuse terms and DeepSWE artifact terms
-# could not be verified; both sources stay disabled (no fetching, no scores
-# exposed) until an operator reviews them and enables the flag deliberately.
+# Opt-in flag.  LiveBench 2.0 score reuse terms could not be verified; the
+# source stays disabled (no fetching, no scores exposed) until an operator
+# reviews them and enables the flag deliberately.
 def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 LIVEBENCH_ENABLED = _env_flag("HOMELAB_LIVEBENCH_ENABLED")
-DEEPSWE_ENABLED = _env_flag("HOMELAB_DEEPSWE_ENABLED")
+# BenchLM is the only credentialed source: the data key gates the source at
+# import time and is read again when a request header is built.  The key is
+# never stored on the module, in snapshots, in logs, or in error text.
+BENCHLM_ENABLED = bool(os.environ.get("BENCHLM_DATA_KEY", "").strip())
 
 USER_AGENT = "homelab-ctrl-benchmarks/1.0"
 
@@ -130,14 +168,23 @@ MISSING_NOT_EVALUATED = "not evaluated"
 MISSING_UNMATCHED = "unmatched identity"
 MISSING_UNSUPPORTED = "unsupported modality"
 MISSING_UNAVAILABLE = "source unavailable"
+# Progress order of the per-metric missing reasons: a fallback candidate that
+# fails earlier (e.g. disabled) never masks a primary candidate's deeper reason.
+_MISSING_REASON_ORDER = {
+    MISSING_UNAVAILABLE: 0, MISSING_UNMATCHED: 1, MISSING_NOT_EVALUATED: 2,
+}
 
 # The result's date is never renamed into an evaluation date.  Known values are
 # deliberately narrow and are persisted/revalidated with the entry.
 DATE_KIND_MODEL_RELEASE = "model_release"
 DATE_KIND_BENCHMARK_RELEASE = "benchmark_release"
 DATE_KIND_EVALUATION = "evaluation"
+# Capture date of a source's own published board/snapshot (BenchLM dataAsOf):
+# never an evaluation date, never a model or benchmark release date.
+DATE_KIND_SOURCE_SNAPSHOT = "source_snapshot"
 DATE_KINDS = frozenset({
     DATE_KIND_MODEL_RELEASE, DATE_KIND_BENCHMARK_RELEASE, DATE_KIND_EVALUATION,
+    DATE_KIND_SOURCE_SNAPSHOT,
 })
 
 
@@ -148,6 +195,14 @@ class MetricSpec:
     name: str
     unit: str
     source: str
+    # Secondary sources that may supply rows for this metric when the primary
+    # source does not cover a model (tb4 falls back to BenchLM's TB4 boards).
+    fallback: tuple[str, ...] = ()
+    # How the candidates are merged: "first" keeps the first candidate with
+    # rows (provenance order); "max" evaluates every candidate and keeps the
+    # one whose selected result value is highest (ties keep the earlier
+    # candidate).  Not part of as_dict: the frontend contract is unchanged.
+    merge: str = "first"
 
     def as_dict(self) -> dict:
         return {"key": self.key, "label": self.label, "name": self.name,
@@ -155,7 +210,8 @@ class MetricSpec:
 
 
 METRICS: tuple[MetricSpec, ...] = (
-    MetricSpec("tb4", "TB4", "Terminal-Bench 4.0", "pct", "harbor"),
+    MetricSpec("tb4", "TB4", "Terminal-Bench 4.0", "pct", "harbor",
+               fallback=("benchlm",), merge="max"),
     MetricSpec("livebench_coding", "LB-CODE", "LiveBench Coding", "pct", "livebench"),
     MetricSpec("eci", "ECI", "Epoch Capabilities Index", "index", "epoch"),
     MetricSpec("livebench_long_agentic", "LB-AGENT", "LiveBench Long Agentic", "pct", "livebench"),
@@ -164,7 +220,10 @@ METRICS: tuple[MetricSpec, ...] = (
     MetricSpec("livebench_data_analysis", "LB-DATA", "LiveBench Data Analysis", "pct", "livebench"),
     MetricSpec("livebench_research", "LB-RESEARCH", "LiveBench Research", "pct", "livebench"),
     MetricSpec("livebench_design", "LB-DESIGN", "LiveBench Design", "pct", "livebench"),
-    MetricSpec("deepswe", "DSWE", "DeepSWE pass@1", "pct", "deepswe"),
+    MetricSpec("benchalign_overall", "BAL-ALL", "BenchAlign Overall", "index", "benchlm"),
+    MetricSpec("benchalign_coding", "BAL-CODE", "BenchAlign Coding", "index", "benchlm"),
+    MetricSpec("benchalign_agentic", "BAL-AGENT", "BenchAlign Agentic", "index", "benchlm"),
+    MetricSpec("benchalign_knowledge", "BAL-KNOW", "BenchAlign Knowledge", "index", "benchlm"),
 )
 METRIC_BY_KEY = {spec.key: spec for spec in METRICS}
 LIVEBENCH_COLUMNS = {
@@ -203,180 +262,49 @@ LIVEBENCH_WARNING = (
     "Pinned LiveBench release 20261025. Coding scores can saturate near 100; "
     "research and design involve rubric or visual grading."
 )
-DEEPSWE_WARNING = (
-    f"Datacurve DeepSWE (2026; Wenqi Huang, Charley Lee, Leonard Tng, Serena Ge). "
-    f"Artifact reuse terms are unverified and this source is opt-in. Epoch AI "
-    f"documents grading defects in at least {DEEPSWE_KNOWN_DEFECTIVE_TASKS} of "
-    f"{DEEPSWE_TASKS} tasks (mainly agent/hidden-test collisions); scores are not "
-    f"corrected here. Review: {DEEPSWE_REVIEW_URL}"
-)
 LIVEBENCH_DISABLED_WARNING = (
     "LiveBench 2.0 reuse terms unverified; opt-in after review "
     "(HOMELAB_LIVEBENCH_ENABLED). Cached scores are hidden while disabled."
 )
-DEEPSWE_DISABLED_WARNING = (
-    f"{DEEPSWE_WARNING} Disabled: set HOMELAB_DEEPSWE_ENABLED only after reviewing "
-    "the artifact terms."
+BENCHLM_WARNING = (
+    "BenchLM.ai BenchAlign scores are composite 0-100 point estimates, not "
+    "percentages. BenchLM.ai BenchAlign data, CC BY-NC 4.0; cite BenchLM.ai. "
+    "Dates are the board capture date (source_snapshot), never evaluation "
+    "dates. Terminal-Bench 4.0 shows the highest recorded result across "
+    "Harbor and BenchLM's TB4 boards, so a displayed TB4 row may come from a "
+    "different harness than another model's row."
+)
+BENCHLM_DISABLED_WARNING = (
+    "BenchLM.ai BenchAlign is opt-in: set the BENCHLM_DATA_KEY environment "
+    "variable to enable the source. "
+    "Cached scores are hidden while disabled."
 )
 SOURCE_DISABLED_WARNINGS = {
     "livebench": LIVEBENCH_DISABLED_WARNING,
-    "deepswe": DEEPSWE_DISABLED_WARNING,
+    "benchlm": BENCHLM_DISABLED_WARNING,
 }
 
 SOURCES: dict[str, SourceSpec] = {
     "harbor": SourceSpec("harbor", HARBOR_LEADERBOARD, HARBOR_DOC_URL, HARBOR_WARNING),
     "epoch": SourceSpec("epoch", "eci_scores", EPOCH_PROVENANCE_URL, EPOCH_WARNING),
     "livebench": SourceSpec("livebench", LIVEBENCH_VERSION, LIVEBENCH_CSV_URL, LIVEBENCH_WARNING),
-    "deepswe": SourceSpec("deepswe", DEEPSWE_VERSION, DEEPSWE_URL, DEEPSWE_WARNING),
+    "benchlm": SourceSpec("benchlm", "v1", "https://data.benchlm.ai/", BENCHLM_WARNING),
 }
 SOURCE_NAMES = tuple(SOURCES)
 
-# ── Reviewed exact identities ───────────────────────────────────────────────
-# Keys are provider-stripped LiteLLM upstream IDs (case-insensitive exact
-# lookup); values are the exact identifiers published by that source.  These
-# are curated one-to-one identities, never produced by dropping punctuation,
-# matching prefixes/version ranges, or mapping a rolling "latest" alias.  The
-# LiveBench table publishes exact API-style IDs (for example claude-opus-5.5),
-# so it only needs the reviewed Mistral-hosted ZAI aliases below.
-SOURCE_ALIASES: dict[str, dict[str, str]] = {
-    "harbor": {
-        "claude-fable-5": "Fable 5",
-        "claude-fable-5.1": "Fable 5.1",
-        "glm-5.3": "GLM-5.3",
-        "glm-5.3-flash": "GLM-5.3-Flash",
-        # Mistral publishes these as hosted ZAI API IDs and says the model is
-        # "served without Mistral modifications" (v5.3), reviewed 2026-10-29:
-        # https://docs.mistral.ai/models/zai-glm-5-3
-        # https://docs.mistral.ai/models/zai-glm-5-3-flash
-        "zai-glm-5-3": "GLM-5.3",
-        "zai-glm-5-3-flash": "GLM-5.3-Flash",
-        "gpt-5.6-luna": "GPT-5.6 Luna",
-        "gpt-5.6-sol": "GPT-5.6 Sol",
-        "gpt-5.6-terra": "GPT-5.6 Terra",
-        "gpt-6-astra": "GPT-6 Astra",
-        "gpt-6-luna": "GPT-6 Luna",
-        "gpt-6-sol": "GPT-6 Sol",
-        "gpt-6.1-sol": "GPT-6.1 Sol",
-        "gemini-3.7-flash": "Gemini 3.7 Flash",
-        "gemini-3.8-flash": "Gemini 3.8 Flash",
-        "grok-4.5": "Grok 4.5",
-        "grok-4.6": "Grok 4.6",
-        "grok-4.7": "Grok 4.7",
-        "muse-spark-1.3": "Muse Spark 1.3",
-        # User accepted the variant risk on this contributor route (2026-10-29).
-        "muse-spark-1.3-contributor": "Muse Spark 1.3",
-        "claude-opus-4.8": "Opus 4.8",
-        "claude-opus-5": "Opus 5",
-        "claude-opus-5.5": "Opus 5.5",
-        # Terminal-Bench only evaluated the dated Qwen3.8-Max-0902 snapshot.
-        # User accepted the variant risk on the rolling qwen3.8-max route
-        # (2026-10-29): considered the same model even if the route may serve
-        # a newer snapshot than the 0902 evaluation.
-        "qwen3.8-max": "Qwen3.8-Max-0902",
-        "qwen3.8-max-0902": "Qwen3.8-Max-0902",
-        "claude-sonnet-5": "Sonnet 5",
-        "claude-sonnet-5.5": "Sonnet 5.5",
-    },
-    "epoch": {
-        "claude-fable-5": "Claude Fable 5",
-        "claude-fable-5.1": "Claude Fable 5.1",
-        "glm-5.3": "GLM-5.3",
-        "glm-5.3-flash": "GLM-5.3-Flash",
-        # Mistral's hosted ZAI API IDs, served without Mistral modifications
-        # (v5.3), reviewed 2026-10-29:
-        # https://docs.mistral.ai/models/zai-glm-5-3
-        # https://docs.mistral.ai/models/zai-glm-5-3-flash
-        "zai-glm-5-3": "GLM-5.3",
-        "zai-glm-5-3-flash": "GLM-5.3-Flash",
-        # Mistral Large 4 Public Preview v26.10 (2026-10-06) documents this API
-        # ID; Epoch's row is exactly "Mistral Large 4", reviewed 2026-10-29:
-        # https://docs.mistral.ai/models/mistral-large-4-0
-        "mistral-large-4": "Mistral Large 4",
-        "gpt-5.6-luna": "GPT-5.6 Luna",
-        "gpt-5.6-sol": "GPT-5.6 Sol",
-        "gpt-5.6-terra": "GPT-5.6 Terra",
-        "gpt-6-astra": "GPT-6 Astra",
-        "gpt-6-luna": "GPT-6 Luna",
-        "gpt-6-sol": "GPT-6 Sol",
-        "gpt-6.1-sol": "GPT-6.1 Sol",
-        "gemini-3.7-flash": "Gemini 3.7 Flash",
-        "gemini-3.8-flash": "Gemini 3.8 Flash",
-        "grok-4.5": "Grok 4.5",
-        "grok-4.6": "Grok 4.6",
-        "grok-4.7": "Grok 4.7",
-        "muse-spark-1.3": "Muse Spark 1.3",
-        "claude-opus-4.8": "Claude Opus 4.8",
-        "claude-opus-5": "Claude Opus 5",
-        "claude-opus-5.5": "Claude Opus 5.5",
-        "qwen3.8-max-0902": "Qwen3.8 Max (0902)",
-        "claude-sonnet-5": "Claude Sonnet 5",
-        "claude-sonnet-5.5": "Claude Sonnet 5.5",
-        # Reviewed one-to-one identities (user-approved 2026-10-29): these are
-        # punctuation/spelling-only differences against a single matching row.
-        "kimi-k3": "Kimi K3",
-        "kimi-k2.7-code": "Kimi K2.7 Code",
-        "claude-haiku-5-5": "Claude Haiku 5.5",
-        "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
-        # User accepted the version/variant risk on these rolling, pinned and
-        # local routes (2026-10-29): qwen3.8-max maps to the unsuffixed
-        # "Qwen 3.8 Max" row (2026-08-02), not "Qwen3.8 Max (0902)" — the
-        # route ID carries no date suffix; Mistral's pinned 1017 snapshot maps
-        # to Epoch's single V4.1 Flash row; the local qwen3.8:27b is accepted
-        # as the stock "Qwen 3.8 27B"; the contributor route is accepted as
-        # stock Muse Spark 1.3.
-        "deepseek-v4-1-flash-1017": "DeepSeek V4.1 Flash",
-        "qwen3.8-max": "Qwen 3.8 Max",
-        "qwen3.8:27b": "Qwen 3.8 27B",
-        "muse-spark-1.3-contributor": "Muse Spark 1.3",
-    },
-    # LiveBench's own identifiers are exact API-style IDs.  The entries here
-    # are reviewed one-to-one identities only; there is no punctuation or
-    # version-prefix normalization.
-    "livebench": {
-        "zai-glm-5-3": "glm-5.3",
-        "zai-glm-5-3-flash": "glm-5.3-flash",
-        # Reviewed one-to-one identities (user-approved 2026-10-29), mirroring
-        # the same judgments already approved for the epoch/harbor tables:
-        # - exact Mistral-hosted snapshot ID, punctuation only;
-        # - stock claude-haiku-5-5 == LiveBench's claude-haiku-5.5;
-        # - local qwen3.8:27b == LiveBench's qwen3.8-27b;
-        # - contributor route accepted as stock Muse Spark 1.3.
-        "deepseek-v4-1-flash-1017": "deepseek-v4.1-flash-1017",
-        "claude-haiku-5-5": "claude-haiku-5.5",
-        "qwen3.8:27b": "qwen3.8-27b",
-        "muse-spark-1.3-contributor": "muse-spark-1.3",
-        # User explicitly accepted this rolling -> dated snapshot mapping on
-        # 2026-10-29 during branch review. The route may serve a newer snapshot
-        # than LiveBench's 1017 evaluation; no other rolling alias is inferred.
-        "deepseek-v4.1-flash": "deepseek-v4.1-flash-1017",
-    },
-    "deepswe": {
-        "claude-opus-4.8": "claude-opus-4-8",
-        "glm-5.3": "glm-5-3",
-        "glm-5.3-flash": "glm-5-3-flash",
-        # Mistral-hosted ZAI API IDs -> DeepSWE's published exact keys.
-        "zai-glm-5-3": "glm-5-3",
-        "zai-glm-5-3-flash": "glm-5-3-flash",
-        "gpt-5.6-luna": "gpt-5-6-luna",
-        "gpt-5.6-sol": "gpt-5-6-sol",
-        "gpt-5.6-terra": "gpt-5-6-terra",
-        "gemini-3.7-flash": "gemini-3-7-flash",
-        "gemini-3.8-flash": "gemini-3-8-flash",
-        "grok-4.5": "grok-4-5",
-        "grok-4.6": "grok-4-6",
-    },
-}
-
 # The summary is chosen by explicit date first, then by this published
 # reasoning-effort ordering.  It never ranks by score value, so it cannot pick
-# a per-metric maximum.  Undated evaluations never produce a summary.
+# a per-metric maximum within one source/board.  (The tb4 "max" merge in
+# build_payload applies only across candidate sources, on each candidate's
+# already-selected result, so this rule still holds inside a board.)
+# Undated evaluations never produce a summary.
 EFFORT_PRIORITY = {
     "max": 0, "xhigh": 1, "high": 2, "medium": 3, "low": 4,
     "minimal": 5, "none": 6,
 }
 
-# Modified variants must never inherit a stock model's score, even through an
-# alias table, so these identities are excluded up front.
+# Modified variants must never inherit a stock model's score, even through
+# identity matching, so these identities are excluded up front.
 _MODIFIED_TOKENS = ("abliterated", "uncensored", "lobotomized", "heretic")
 
 _SOURCE_ERROR_NETWORK = "network error"
@@ -529,7 +457,7 @@ def _clean_ci(value) -> dict | None:
 
 _METADATA_KEYS = {
     "n_trials", "rank", "ci_method", "n_runs", "task_count",
-    "status",
+    "status", "board",
 }
 
 
@@ -628,7 +556,10 @@ def _make_entry(metric: str, model: str, value: float, *, evaluator: str,
     # drift (for example a 0-1 pass_at_1 leaking into a percent field).
     if METRIC_BY_KEY[metric].unit == "pct" and not 0.0 <= entry["value"] <= 100.0:
         raise SourceError(_SOURCE_ERROR_SCHEMA)
-    if metric == "eci" and not 0.0 <= entry["value"] <= 1000.0:
+    # Every index metric (ECI, all BenchAlign composites) is bounded to
+    # 0-1000 on every path — including the reload path — so a tampered
+    # cache cannot smuggle an arbitrary value into a persisted snapshot.
+    if METRIC_BY_KEY[metric].unit == "index" and not 0.0 <= entry["value"] <= 1000.0:
         raise SourceError(_SOURCE_ERROR_SCHEMA)
     return entry
 
@@ -658,7 +589,14 @@ def _validated_entries(entries, *, source: str) -> list[dict]:
     for entry in entries:
         item = _sanitize_entry(entry)
         spec = METRIC_BY_KEY[item["metric"]]
-        if spec.source != source or item["version"] != expected_version:
+        # A fallback source may also carry rows for metrics whose primary
+        # source is another feed (BenchLM supplies Terminal-Bench 4.0 rows).
+        if spec.source != source and source not in spec.fallback:
+            raise SourceError(_SOURCE_ERROR_SCHEMA)
+        # BenchLM stamps each capture with its own methodology version, so
+        # its entry versions are validated as sanitized text, not one pin.
+        if (source not in _DYNAMIC_VERSION_SOURCES
+                and item["version"] != expected_version):
             raise SourceError(_SOURCE_ERROR_SCHEMA)
         clean.append(item)
     return clean
@@ -871,9 +809,15 @@ class HttpClient:
     @staticmethod
     def _validate_url(url: str) -> None:
         parts = urlsplit(url)
+        # parts.port raises ValueError on a malformed or out-of-range port;
+        # convert it so this method only ever raises SourceError.
+        try:
+            port = parts.port
+        except ValueError:
+            raise SourceError(_SOURCE_ERROR_SCHEMA) from None
         if (parts.scheme != "https" or parts.hostname not in ALLOWED_HOSTS
                 or parts.username or parts.password
-                or parts.port not in (None, 443)):
+                or port not in (None, 443)):
             raise SourceError(_SOURCE_ERROR_SCHEMA)
 
     async def _sleep_before_retry(self, attempt: int, deadline: Deadline) -> None:
@@ -1014,13 +958,21 @@ def _load_json(body: bytes):
     except UnicodeDecodeError as exc:
         raise SourceError(_SOURCE_ERROR_JSON) from exc
     try:
-        return json.loads(text, parse_constant=_reject_json_constant)
-    except (ValueError, TypeError) as exc:
+        return json.loads(text, parse_constant=_reject_json_constant,
+                          parse_float=_finite_float)
+    except (ValueError, TypeError, RecursionError) as exc:
         raise SourceError(_SOURCE_ERROR_JSON) from exc
 
 
 def _reject_json_constant(value):
     raise ValueError(f"non-finite JSON constant {value}")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite JSON number {text}")
+    return value
 
 
 def _parse_csv(body: bytes, required: tuple[str, ...], *, maximum_rows: int) -> list[dict]:
@@ -1385,84 +1337,266 @@ def fetch_livebench(client: HttpClient, previous: dict | None, deadline: Deadlin
     }
 
 
-# ── DeepSWE (optional) ──────────────────────────────────────────────────────
-def fetch_deepswe(client: HttpClient, previous: dict | None, deadline: Deadline) -> dict:
-    validators = _clean_validators((previous or {}).get("validators"))
-    response = client.request("GET", DEEPSWE_JSON_URL,
-                              headers=_conditional_headers(validators),
-                              deadline=deadline)
-    if response.status_code == 304:
-        return {"not_modified": True}
-    payload = _load_json(response.body)
+# ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
+def _benchlm_request_headers(*, mcp: bool = False) -> dict:
+    """Build the BenchLM request headers.
+
+    The data key is read from the environment here, at request time, and is
+    never stored on the module, in snapshots, in log records, or in exception
+    text; it is sent only to data.benchlm.ai (enforced by ``ALLOWED_HOSTS``).
+    """
+    key = os.environ.get("BENCHLM_DATA_KEY", "").strip()
+    if not key:
+        # Never attach an empty credential; fail before any request goes out.
+        raise SourceError(_SOURCE_ERROR_START)
+    headers = {"Authorization": f"Bearer {key}"}
+    if mcp:
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json, text/event-stream"
+        headers["MCP-Protocol-Version"] = BENCHLM_MCP_PROTOCOL_VERSION
+    else:
+        headers["Accept"] = "application/json"
+    return headers
+
+
+def _benchlm_ci(item: dict) -> dict | None:
+    """Map the 90% score interval when both bounds are valid 0-100 numbers."""
+    low = item.get("scoreInterval90Lower")
+    high = item.get("scoreInterval90Upper")
+    if not (_is_number(low) and _is_number(high)):
+        return None
+    low = float(low)
+    high = float(high)
+    if not (0.0 <= low <= 100.0 and 0.0 <= high <= 100.0 and low <= high):
+        return None
+    return {"low": low, "high": high, "half_width": round((high - low) / 2, 4)}
+
+
+def _benchlm_rankings_page(payload, *, metric: str, offset: int,
+                           seen: set) -> tuple[list[dict], str, str, int | None]:
+    """Parse one rankings page.
+
+    Returns (entries, data_as_of, methodology_version, next_offset).
+    """
     if not isinstance(payload, dict):
         raise SourceError(_SOURCE_ERROR_SCHEMA)
-    task_count = _integer(payload.get("n_tasks_in_set"), minimum=1, maximum=10000)
-    if task_count != DEEPSWE_TASKS:
-        raise SourceError(_SOURCE_ERROR_SCHEMA)  # v1.1 is pinned at 113 tasks
-    generated_at = _date_from_iso(payload.get("generated_at"))
-    if generated_at is None:
+    data_as_of = _date_from_iso(payload.get("dataAsOf"))
+    if data_as_of is None:
         raise SourceError(_SOURCE_ERROR_SCHEMA)
-    rows = payload.get("rows")
-    if not isinstance(rows, list) or not rows:
-        raise SourceError(_SOURCE_ERROR_EMPTY)
-    if len(rows) > MAX_ENTRIES:
+    methodology = payload.get("methodology")
+    if not isinstance(methodology, dict):
         raise SourceError(_SOURCE_ERROR_SCHEMA)
+    version = _text(methodology.get("version"), maximum=64, required=True)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    # Bound the row count before any per-row allocation: a page may never
+    # carry more rows than the advertised page size.
+    if len(items) > BENCHLM_PAGE_SIZE:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    pagination = payload.get("pagination")
+    if not isinstance(pagination, dict):
+        raise SourceError(_SOURCE_ERROR_PAGINATION)
+    if _integer(pagination.get("offset"), minimum=0, maximum=10**7) != offset:
+        raise SourceError(_SOURCE_ERROR_PAGINATION)
+    if _integer(pagination.get("limit"), minimum=1, maximum=1000) != BENCHLM_PAGE_SIZE:
+        raise SourceError(_SOURCE_ERROR_PAGINATION)
+    # nextOffset is embedded into the next request's offset, which is itself
+    # bounded to 0..10**7 — apply the same bound here so one huge value
+    # cannot fail the whole source on the next page.  _integer also rejects
+    # bools; every nextOffset violation stays a pagination error.
+    next_offset = pagination.get("nextOffset")
+    if next_offset is not None:
+        try:
+            next_offset = _integer(next_offset, minimum=0, maximum=10**7)
+        except SourceError:
+            raise SourceError(_SOURCE_ERROR_PAGINATION) from None
     entries = []
-    for row in rows:
-        if not isinstance(row, dict):
+    for item in items:
+        if not isinstance(item, dict):
             raise SourceError(_SOURCE_ERROR_SCHEMA)
-        model = _text(row.get("model"), required=True)
-        harness = _text(row.get("harness"), maximum=100)
-        effort = _text(row.get("reasoning_effort"), maximum=40)
-        config = _text(row.get("config"), maximum=200)
-        # pass_at_1 is a 0..1 attempt pass rate; store/display percent.
-        pass_at_1 = _number(row.get("pass_at_1"), low=0.0, high=1.0) * 100.0
-        low = _optional_number(row.get("ci_lo"), low=0.0, high=1.0)
-        high = _optional_number(row.get("ci_hi"), low=0.0, high=1.0)
-        half = _optional_number(row.get("ci_half"), low=0.0, high=1.0)
-        if low is not None and high is not None and low > high:
-            raise SourceError(_SOURCE_ERROR_SCHEMA)
-        ci = None
-        if low is not None or high is not None or half is not None:
-            ci = {}
-            if low is not None:
-                ci["low"] = round(low * 100.0, 4)
-            if high is not None:
-                ci["high"] = round(high * 100.0, 4)
-            if half is not None:
-                ci["half_width"] = round(half * 100.0, 4)
+        model = _text(item.get("modelKey"), maximum=200, required=True)
+        score = _number(item.get("score"), low=0.0, high=100.0)
         metadata = {}
-        n_runs = row.get("n_runs")
-        if n_runs is not None:
-            metadata["n_runs"] = _integer(n_runs, minimum=1, maximum=10**6)
-        ci_method = _text(row.get("ci_method"), maximum=100)
-        if ci_method:
-            metadata["ci_method"] = ci_method
-        metadata["task_count"] = task_count
-        # The current artifact has no per-row date field.  Only a date the row
-        # actually supplies is used, and it is labelled as an evaluation date;
-        # the feed-wide generated_at is never copied onto rows.
-        row_date = None
-        for key in ("evaluated_at", "eval_date", "date"):
-            if key in row:
-                row_date = _date_from_iso(row.get(key))
-                break
+        rank = item.get("rank")
+        if rank is not None:
+            metadata["rank"] = _integer(rank, minimum=1, maximum=MAX_ENTRIES)
+        key = (metric, model)
+        if key in seen:
+            continue  # repeated row across pages: keep the first occurrence
+        seen.add(key)
         entries.append(_make_entry(
-            "deepswe", model, round(pass_at_1, 4), evaluator="DeepSWE",
-            version=DEEPSWE_VERSION, date=row_date,
-            date_kind=DATE_KIND_EVALUATION if row_date else None,
-            agent=harness, effort=effort, configuration=config,
-            ci=ci, metadata=metadata,
+            metric, model, score, evaluator=BENCHLM_COMPOSITE_EVALUATOR,
+            version=version, date=data_as_of,
+            # BenchLM supplies no per-run dates: the board capture date is
+            # labelled as a source snapshot, never an evaluation date.
+            date_kind=DATE_KIND_SOURCE_SNAPSHOT,
+            ci=_benchlm_ci(item), metadata=metadata,
         ))
+    return entries, data_as_of, version, next_offset
+
+
+def _board_model_key(item: dict) -> str:
+    """Resolve a board row's model identifier to BenchLM's canonical slug.
+
+    The Vals capture publishes no modelKey and only a publisher-prefixed
+    sourceModelId (``alibaba/qwen3.8-max``).  BenchLM's canonical keys carry
+    no vendor prefix, are lowercase, and use ``-`` where the publisher id
+    uses ``.`` or ``_``, so the publisher id is converted to that shape.
+    This is a deterministic format conversion of a known id scheme, not
+    fuzzy matching: it applies only when modelKey is absent, and canonical
+    keys are never rewritten.  Version suffixes (``-1017``, ``-0813``,
+    ``-internal``, dates) name distinct variants and are kept verbatim.
+    """
+    model_key = _text(item.get("modelKey"), maximum=200)
+    if model_key is not None:
+        return model_key  # canonical key: used verbatim, never rewritten
+    source = item.get("sourceModelId")
+    if not isinstance(source, str):
+        # Missing, null, and non-string values are rejected exactly the way
+        # _text rejects them.
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    slug = source.rsplit("/", 1)[-1].lower().replace(".", "-").replace("_", "-")
+    return _text(slug, maximum=200, required=True)
+
+
+def _benchlm_mcp_entries(payload, *, label: str, board_id: str,
+                         tb4: dict) -> str:
+    """Parse one TB4 MCP board response into rows merged into ``tb4``.
+
+    Rows are keyed by model and are deliberately NOT deduped through ``seen``:
+    the same model can appear on more than one board, and the entry with the
+    higher ``value`` wins (an exact tie keeps the earlier board in
+    ``BENCHLM_TB4_BOARDS`` order; a repeated row within one board keeps its
+    first occurrence).  The surviving entry carries the winning board's label
+    as its ``version`` and the board id in ``metadata["board"]``.  Returns the
+    board's own ``dataAsOf``.
+    """
+    if not isinstance(payload, dict):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    content = result.get("content")
+    if not isinstance(content, list) or not content:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    text = None
+    for block in content:
+        if (isinstance(block, dict) and block.get("type") == "text"
+                and isinstance(block.get("text"), str)):
+            text = block["text"]
+            break
+    if text is None:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    inner = _load_json(text.encode("utf-8"))
+    if not isinstance(inner, dict):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    data_as_of = _date_from_iso(inner.get("dataAsOf"))
+    if data_as_of is None:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    items = inner.get("items")
+    if not isinstance(items, list):
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    # Same per-page row bound as the rankings surface, before allocation.
+    if len(items) > BENCHLM_PAGE_SIZE:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    for item in items:
+        if not isinstance(item, dict):
+            raise SourceError(_SOURCE_ERROR_SCHEMA)
+        model = _board_model_key(item)
+        score = _number(item.get("score"), low=0.0, high=100.0)
+        existing = tb4.get(model)
+        if existing is not None:
+            if existing["metadata"].get("board") == board_id:
+                continue  # repeated row within one board: keep the first
+            if score <= existing["value"]:
+                continue  # cross-board: higher value wins, ties keep the
+                # earlier board (already stored)
+        tb4[model] = _make_entry(
+            "tb4", model, score, evaluator=BENCHLM_TB4_EVALUATOR,
+            version=label, date=data_as_of,
+            date_kind=DATE_KIND_SOURCE_SNAPSHOT,
+            metadata={"board": board_id},
+        )
+    return data_as_of
+
+
+def fetch_benchlm(client: HttpClient, previous: dict | None, deadline: Deadline) -> dict:
+    """Read every BenchAlign ranking surface plus every TB4 MCP board.
+
+    Hard read cap: at most ``BENCHLM_MAX_PAGES`` pages per surface (12 GETs
+    across the 4 surfaces) plus one MCP POST per TB4 board (2) — at most 14
+    logical requests; each may be retried up to ``HTTP_ATTEMPTS`` times by
+    the shared client, so the wire worst case is 42.  Pagination stops when
+    ``nextOffset`` is null, when a page is empty, or at the cap; hitting the
+    cap never raises, it just stops reading.  The TB4 boards are merged per
+    model, keeping the higher recorded value (see ``_benchlm_mcp_entries``).
+    """
+    entries: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    tb4: dict[str, dict] = {}
+    requests = 0
+    pages = 0
+    data_as_of: str | None = None
+    version: str | None = None
+    for metric, surface in BENCHLM_SURFACES:
+        offset = 0
+        for _page in range(BENCHLM_MAX_PAGES):
+            if requests >= BENCHLM_MAX_REQUESTS:
+                break  # hard cap reached: stop, never raise
+            url = (f"{BENCHLM_RANKINGS_URL}?surface={surface}"
+                   f"&limit={BENCHLM_PAGE_SIZE}&offset={offset}")
+            response = client.request(
+                "GET", url, headers=_benchlm_request_headers(), deadline=deadline)
+            requests += 1
+            payload = _load_json(response.body)
+            page_entries, page_date, page_version, next_offset = (
+                _benchlm_rankings_page(payload, metric=metric, offset=offset,
+                                       seen=seen))
+            entries.extend(page_entries)
+            pages += 1
+            # Enforce the shared entry cap after every page, not once at the
+            # end: a multi-page refresh must never accumulate past
+            # MAX_ENTRIES before the final check runs.
+            if len(entries) > MAX_ENTRIES:
+                raise SourceError(_SOURCE_ERROR_SCHEMA)
+            if data_as_of is None:
+                data_as_of = page_date
+            if version is None:
+                version = page_version
+            if not payload.get("items") or next_offset is None:
+                break  # empty page or no further page
+            offset = next_offset
+    for label, board_id in BENCHLM_TB4_BOARDS:
+        if requests >= BENCHLM_MAX_REQUESTS:
+            break  # hard cap reached: stop, never raise
+        mcp_body = {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": BENCHLM_MCP_TOOL,
+                       "arguments": {"boardId": board_id,
+                                     "limit": BENCHLM_PAGE_SIZE}},
+        }
+        response = client.request(
+            "POST", BENCHLM_MCP_URL, json_body=mcp_body,
+            headers=_benchlm_request_headers(mcp=True), deadline=deadline)
+        requests += 1
+        board_date = _benchlm_mcp_entries(
+            _load_json(response.body), label=label, board_id=board_id, tb4=tb4)
+        if data_as_of is None:
+            data_as_of = board_date
+    entries.extend(tb4.values())
+    if len(entries) > MAX_ENTRIES:
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    if not entries:
+        raise SourceError(_SOURCE_ERROR_EMPTY)
     return {
         "entries": entries,
-        "version": DEEPSWE_VERSION,
-        # generated_at describes when the artifact was produced, not a per-row
-        # evaluation date; rows carry no eval date, so results stay undated.
-        "source_updated": generated_at,
-        "validators": _validators_from(response),
-        "meta": {"rows": len(entries), "task_count": task_count,
-                 "known_defective_tasks": DEEPSWE_KNOWN_DEFECTIVE_TASKS},
+        "version": version or BENCHLM_TB4_BOARDS[0][0],
+        # dataAsOf is the board capture date: feed mutation metadata, never
+        # a model-release or evaluation date.
+        "source_updated": data_as_of,
+        "validators": {},
+        "meta": {"pages": pages, "rows": len(entries)},
     }
 
 
@@ -1470,7 +1604,7 @@ FETCHERS = {
     "harbor": fetch_harbor,
     "epoch": fetch_epoch,
     "livebench": fetch_livebench,
-    "deepswe": fetch_deepswe,
+    "benchlm": fetch_benchlm,
 }
 
 
@@ -1561,7 +1695,8 @@ def _sanitize_source_record(name: str, record) -> dict | None:
         state["last_checked"] = _sanitize_timestamp(record.get("last_checked"))
         state["last_success"] = _sanitize_timestamp(record.get("last_success"))
         version = _text(record.get("version"), maximum=64)
-        if version != SOURCES[name].version:
+        if version is None or (name not in _DYNAMIC_VERSION_SOURCES
+                               and version != SOURCES[name].version):
             return None
         state["version"] = version
         state["source_updated"] = _date_from_iso(record.get("source_updated"))
@@ -1710,6 +1845,17 @@ class BenchmarkStore:
                 handle = None
                 os.replace(temporary, self.path)
                 temporary = None
+                # The rename is not durable until the directory entry is
+                # fsynced; best-effort only — a successful write must never
+                # turn into a storage failure here.
+                try:
+                    directory_fd = os.open(directory, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                except OSError:
+                    pass
                 return True
             except OSError as exc:
                 _log.warning("benchmark cache write failed (%s)", type(exc).__name__)
@@ -1816,7 +1962,8 @@ class BenchmarkStore:
                     return True
                 entries = _validated_entries(snapshot.get("entries"), source=name)
                 version = _text(snapshot.get("version"), maximum=64)
-                if version != SOURCES[name].version:
+                if version is None or (name not in _DYNAMIC_VERSION_SOURCES
+                                       and version != SOURCES[name].version):
                     raise SourceError(_SOURCE_ERROR_SCHEMA)
                 source_updated = _date_from_iso(snapshot.get("source_updated"))
                 validators = _clean_validators_any(snapshot.get("validators"))
@@ -1844,9 +1991,11 @@ class BenchmarkStore:
                 return True
             except SourceError as exc:
                 self._record_failure(name, self._clock(), str(exc))
-            except Exception:
+            except Exception as exc:
                 # Never propagate exception text: it can contain a URL or
-                # credentials from an underlying transport.
+                # credentials from an underlying transport.  Log the type
+                # only, so a persistent failure leaves a trace.
+                _log.warning("benchmark refresh failed (%s)", type(exc).__name__)
                 self._record_failure(name, self._clock(), _SOURCE_ERROR_NETWORK)
             self._persist()
             return False
@@ -2017,23 +2166,104 @@ def refresh_policy() -> dict:
 
 
 # ── Payload assembly ───────────────────────────────────────────────────────
-def _source_enabled(name: str, *, deepswe_enabled: bool | None = None,
-                    livebench_enabled: bool | None = None) -> bool:
+def _source_enabled(name: str, *, livebench_enabled: bool | None = None,
+                    benchlm_enabled: bool | None = None) -> bool:
     if name == "harbor" or name == "epoch":
         return True
     if name == "livebench":
         return LIVEBENCH_ENABLED if livebench_enabled is None else livebench_enabled
-    if name == "deepswe":
-        return DEEPSWE_ENABLED if deepswe_enabled is None else deepswe_enabled
+    if name == "benchlm":
+        return BENCHLM_ENABLED if benchlm_enabled is None else benchlm_enabled
     return False
 
 
-def _enabled_metrics(deepswe_enabled: bool | None = None) -> list[MetricSpec]:
+def _enabled_metrics() -> list[MetricSpec]:
     # Keep LiveBench definitions in the API contract even while disabled;
     # clients use sources.livebench.disabled to omit them from the dropdown.
-    # DeepSWE is fully optional and only appears once enabled.
-    enabled = DEEPSWE_ENABLED if deepswe_enabled is None else deepswe_enabled
-    return [spec for spec in METRICS if spec.source != "deepswe" or enabled]
+    return list(METRICS)
+
+
+# ── Rule-based model identity matching ──────────────────────────────────────
+# An inventory row's identity is resolved against each source's published
+# model keys by a fixed rule cascade — there is no alias table anymore.  The
+# rules only ever compare whole, canonicalized identifiers: no fuzzy/edit-
+# distance matching, no token-subsequence matching, no vendor allow-list, and
+# no k3↔3 / v4↔4 version equivalence (each measured to add ambiguity without
+# gaining a match).
+
+def _is_letter_digit_boundary(left: str, right: str) -> bool:
+    return (left.isalpha() and right.isdigit()) or (left.isdigit() and right.isalpha())
+
+
+def _canonical_tokens(identifier: str) -> tuple[str, ...]:
+    """Canonical token form of a model identifier.
+
+    NFKC + casefold, every non-alphanumeric character becomes ``-``, a ``-``
+    is inserted at every letter<->digit boundary, and empty tokens are
+    dropped.  This is what makes ``qwen3.8-max`` ≡ ``Qwen 3.8 Max`` and
+    ``qwen3.8:27b`` ≡ ``qwen3-8-27b``, while ``kimi-k3`` ≠ ``kimi-3``
+    (the ``k`` and ``3`` are separate tokens) and ``27B`` ≡ ``27b``.
+    """
+    text = unicodedata.normalize("NFKC", identifier).casefold()
+    chars = [ch if ch.isalnum() else "-" for ch in text]
+    spaced: list[str] = []
+    previous = ""
+    for ch in chars:
+        if previous and _is_letter_digit_boundary(previous, ch):
+            spaced.append("-")
+        spaced.append(ch)
+        previous = ch
+    return tuple(token for token in "".join(spaced).split("-") if token)
+
+
+def _canonical_key(tokens) -> str:
+    """Join canonical tokens into the index key form."""
+    return "-".join(tokens)
+
+
+def _valid_calendar_date(year: str, month: str, day: str) -> bool:
+    try:
+        _date(int(year), int(month), int(day))
+    except ValueError:
+        return False
+    return True
+
+
+def _date_suffix_length(tokens: tuple[str, ...]) -> int:
+    """Length of a trailing valid date suffix in canonical tokens (0, 1, 3).
+
+    Valid suffixes: ``MMDD`` (4 digits, a real calendar date in year 2000 —
+    1017, 0902, 0731, 0813, 0229), ``YYYYMMDD`` (8 digits, a real calendar
+    date), and
+    ``YYYY-MM-DD`` (three canonical tokens, e.g. ``2026-03-17``).  Nothing
+    else is ever a date and never stripped: ``nvfp4``, ``internal``,
+    ``next``, ``preview``, ``0``, ``128b``, ``2025``, ``1-pro``, ``max``,
+    ``thinking`` all describe the model artifact, not a snapshot date.
+    """
+    if not tokens:
+        return 0
+    last = tokens[-1]
+    if len(last) == 4 and last.isdigit():
+        # Year 2000 is a leap year: 0229 is a real date, 0231/1131/0631 are not.
+        if _valid_calendar_date("2000", last[:2], last[2:]):
+            return 1
+    if len(last) == 8 and last.isdigit():
+        if _valid_calendar_date(last[:4], last[4:6], last[6:8]):
+            return 1
+    if len(tokens) >= 3:
+        year, month, day = tokens[-3], tokens[-2], tokens[-1]
+        if (len(year) == 4 and year.isdigit() and len(month) == 2
+                and month.isdigit() and len(day) == 2 and day.isdigit()
+                and _valid_calendar_date(year, month, day)):
+            return 3
+    return 0
+
+
+# The only qualifier token that may ever be stripped from a candidate: it
+# names the publishing contributor, not the model artifact.  ``preview``,
+# ``exp``, ``latest``, ``internal``, ``nvfp4``, ``max``, ``thinking``,
+# ``reasoning`` etc. describe the artifact and are never stripped.
+_QUALIFIER_TOKENS = frozenset({"contributor"})
 
 
 def _build_index(source_state: dict | None) -> dict:
@@ -2045,28 +2275,152 @@ def _build_index(source_state: dict | None) -> dict:
         by_metric.setdefault(entry["metric"], {}).setdefault(model, []).append(entry)
         models.add(model)
     lower: dict[str, str | None] = {}
+    canon: dict[str, str | None] = {}
+    dated: dict[str, list[str]] = {}
     for model in models:
-        key = model.lower()
-        lower[key] = model if key not in lower else None  # ambiguous case fold
-    return {"by_metric": by_metric, "models": models, "lower": lower}
+        folded = model.casefold()
+        lower[folded] = model if folded not in lower else None  # ambiguous case fold
+        tokens = _canonical_tokens(model)
+        key = _canonical_key(tokens)
+        # Ambiguity guard: two distinct published models sharing one
+        # canonical form make that form unmatchable.
+        canon[key] = model if key not in canon else None
+        suffix = _date_suffix_length(tokens)
+        stripped = _canonical_key(tokens[: len(tokens) - suffix]) if suffix else key
+        dated.setdefault(stripped, []).append(model)
+    return {"by_metric": by_metric, "models": models, "lower": lower,
+            "canon": canon, "dated": dated}
 
 
 def _identity_candidates(row: dict) -> list[str]:
-    upstream = row.get("upstream_model") or ""
+    """Every ``/``-suffix of the upstream id, full id first.
+
+    ``mistral/zai-glm-5-3`` -> [full, ``zai-glm-5-3``];
+    ``openai/responses/gpt-5.6-luna`` -> [full, ``responses/gpt-5.6-luna``,
+    ``gpt-5.6-luna``].  Trailing slashes are stripped first, so
+    ``mistral/glm-5.3/`` -> [``mistral/glm-5.3``, ``glm-5.3``].  No published
+    source model contains ``/``, so a slashed candidate can only ever match
+    exactly; the first matching candidate wins.
+    """
+    upstream = (row.get("upstream_model") or "").rstrip("/")
     candidates = [upstream]
-    if "/" in upstream:
-        remainder = upstream.split("/", 1)[1]
-        if remainder and remainder != upstream:
-            candidates.append(remainder)
-            # LiteLLM gateway routes may sit behind the Responses-API pseudo
-            # provider (openai/responses/<model>); the model identity is below
-            # it. Only this exact segment is stripped — every other spelling
-            # stays verbatim so no punctuation normalization can sneak in.
-            if remainder.startswith("responses/"):
-                inner = remainder.split("/", 1)[1]
-                if inner and inner != remainder:
-                    candidates.append(inner)
+    parts = upstream.split("/")
+    for start in range(1, len(parts)):
+        suffix = "/".join(parts[start:])
+        if suffix and suffix != upstream and suffix not in candidates:
+            candidates.append(suffix)
     return candidates
+
+
+def _match_candidate_tokens(tokens: tuple[str, ...],
+                            index: dict) -> tuple[str | None, bool]:
+    """Rules R2-R5 for one ``/``-free candidate.
+
+    Returns ``(model, fail_closed)``.  ``fail_closed`` is True when the
+    dated extension is ambiguous (two or more published snapshots share the
+    date-stripped canonical form), so the identity must not be guessed.
+    """
+    key = _canonical_key(tokens)
+    # R2 canonical: the candidate's canonical form is a published model.
+    model = index["canon"].get(key)
+    if model is not None:
+        return model, False
+    # R3 dated extension: the candidate carries no date suffix and exactly
+    # one published snapshot is the candidate plus a date suffix.
+    if _date_suffix_length(tokens) == 0:
+        matches = index["dated"].get(key, [])
+        if len(matches) == 1:
+            return matches[0], False
+        if len(matches) > 1:
+            return None, True  # fail closed
+    # R4 qualifier strip: recurse R2/R3 without a trailing qualifier token.
+    if len(tokens) >= 2 and tokens[-1] in _QUALIFIER_TOKENS:
+        sub = tokens[:-1]
+        sub_key = _canonical_key(sub)
+        model = index["canon"].get(sub_key)
+        if model is not None:
+            return model, False
+        if _date_suffix_length(sub) == 0:
+            matches = index["dated"].get(sub_key, [])
+            if len(matches) == 1:
+                return matches[0], False
+            if len(matches) > 1:
+                return None, True  # fail closed
+    # R5 head drop: the candidate minus its first token is a published model.
+    # This is the only subsequence rule, and its overmatch is known and
+    # accepted: an unpublished id whose tail names a published model — e.g.
+    # "tiny-llama-7b" -> "LLaMA-7B", "pro-gpt-5.4" -> "GPT-5.4" — resolves to
+    # that published row.  The alternative (requiring the head to prefix at
+    # least two published ids) was rejected because it makes resolution
+    # depend on inventory breadth: removing one route would silently drop
+    # another model's scores.
+    if len(tokens) >= 2:
+        model = index["canon"].get(_canonical_key(tokens[1:]))
+        if model is not None:
+            return model, False
+    return None, False
+
+
+def _resolve_identity(row: dict, source: str, index: dict) -> str | None:
+    """Resolve one inventory row to a published model key by the cascade.
+
+    Per candidate, in order: R1 exact then case-folded exact; for
+    ``/``-free candidates additionally R2 canonical, R3 unique dated
+    extension (fail closed on ambiguity), R4 qualifier strip, R5 head
+    drop.  The first matching candidate wins; full-candidate rules always
+    run before suffix-drop rules.
+    """
+    for candidate in _identity_candidates(row):
+        # R1 exact, then case-folded exact.
+        if candidate in index["models"]:
+            return candidate
+        folded = index["lower"].get(candidate.casefold())
+        if folded is not None:
+            return folded
+        if "/" in candidate:
+            continue  # token rules never apply to provider-prefixed ids
+        tokens = _canonical_tokens(candidate)
+        if not tokens:
+            continue
+        model, fail_closed = _match_candidate_tokens(tokens, index)
+        if fail_closed:
+            return None
+        if model is not None:
+            return model
+    return None
+
+
+def _dated_base_model(index: dict, identity: str) -> str | None:
+    """The date-stripped base model of a dated resolved key, if published."""
+    tokens = _canonical_tokens(identity)
+    suffix = _date_suffix_length(tokens)
+    if not suffix:
+        return None
+    return index["canon"].get(_canonical_key(tokens[: len(tokens) - suffix]))
+
+
+def _identity_entry_keys(index: dict, identity: str) -> list[str]:
+    """Metric lookup order for a resolved identity.
+
+    A resolved key that carries a valid date suffix is tried first; the
+    date-stripped base key is only a per-metric fallback.  The two are
+    never merged or maxed together.
+    """
+    keys = [identity]
+    base = _dated_base_model(index, identity)
+    if base is not None and base != identity:
+        keys.append(base)
+    return keys
+
+
+def _metric_entries(index: dict, metric: str, identity: str) -> list[dict]:
+    """Entries for one metric under a resolved identity, dated key first."""
+    by_model = index["by_metric"].get(metric, {})
+    for key in _identity_entry_keys(index, identity):
+        entries = by_model.get(key, [])
+        if entries:
+            return entries
+    return []
 
 
 def _is_modified_variant(row: dict) -> bool:
@@ -2088,21 +2442,6 @@ def _is_modified_variant(row: dict) -> bool:
                 values.append(route["name"])
     haystack = " ".join(values).lower()
     return any(token in haystack for token in _MODIFIED_TOKENS)
-
-
-def _resolve_identity(row: dict, source: str, index: dict) -> str | None:
-    aliases = SOURCE_ALIASES.get(source, {})
-    for candidate in _identity_candidates(row):
-        for key in (candidate, candidate.lower()):
-            target = aliases.get(key)
-            if target is not None and target in index["models"]:
-                return target
-            if key in index["models"]:
-                return key
-        folded = candidate.lower()
-        if index["lower"].get(folded):
-            return index["lower"][folded]
-    return None
 
 
 def _result(entry: dict, source: str, *, selected: bool = False) -> dict:
@@ -2165,12 +2504,12 @@ def _select_latest(results: list[dict]) -> int | None:
 
 
 def build_payload(inventory: list[dict], state: dict, *,
-                  deepswe_enabled: bool | None = None,
+                  benchlm_enabled: bool | None = None,
                   include_sources: bool = True) -> dict:
     """Assemble the AI Services contract from inventory rows and cache state."""
-    metrics = _enabled_metrics(deepswe_enabled)
+    metrics = _enabled_metrics()
     enabled_sources = {source for source in SOURCE_NAMES
-                       if _source_enabled(source, deepswe_enabled=deepswe_enabled)}
+                       if _source_enabled(source, benchlm_enabled=benchlm_enabled)}
     # Disabled sources never contribute cached rows, even if an earlier run
     # (or another deployment) left data in the cache file.
     indexes = {
@@ -2210,18 +2549,88 @@ def build_payload(inventory: list[dict], state: dict, *,
             if blocked:
                 model["missing"][spec.key] = MISSING_UNMATCHED
                 continue
-            source = spec.source
-            if not source_has_data.get(source):
-                model["missing"][spec.key] = MISSING_UNAVAILABLE
+            # The primary source wins; each fallback source (BenchLM for tb4)
+            # is tried in order and the FIRST one that is enabled, has cached
+            # data, resolves an identity, and has entries for this metric
+            # supplies the rows — unless the metric's merge policy is "max"
+            # (tb4): then every such candidate is evaluated and the one whose
+            # selected result value is highest supplies the rows (ties keep
+            # the earlier candidate, so the primary stays the provenance).
+            # When every candidate fails, the reason of the candidate that
+            # got furthest is reported (unavailable < unmatched < not
+            # evaluated), so a disabled fallback never masks the primary
+            # source's own unmatched/not-evaluated reason — except when the
+            # primary itself is unavailable: a primary-source outage is
+            # always reported as "source unavailable", never as a deeper
+            # fallback reason such as "not evaluated".
+            chosen: tuple[str, list[dict]] | None = None
+            # merge="max" bookkeeping: (source, entries, results, selected
+            # index, selected value) of the best candidate so far.  The max
+            # is taken across candidates only, on each candidate's
+            # already-selected result; _select_latest still picks within a
+            # candidate, so it never becomes a per-board maximum.
+            max_pick: tuple[str, list[dict], list[dict], int, float] | None = None
+            # First candidate with rows, used by merge="max" only when no
+            # candidate yields a numeric selected value: the selection then
+            # falls through to the "first" behaviour unchanged.
+            first_with_entries: tuple[str, list[dict]] | None = None
+            reason = MISSING_UNAVAILABLE
+            reason_rank = -1
+            primary_reason = None
+            for position, source in enumerate((spec.source, *spec.fallback)):
+                if not source_has_data.get(source):
+                    candidate_reason = MISSING_UNAVAILABLE
+                else:
+                    identity = resolved.get(source)
+                    if identity is None:
+                        candidate_reason = MISSING_UNMATCHED
+                    else:
+                        # A resolved key with a valid date suffix is tried
+                        # first; the date-stripped base key only supplies
+                        # metrics the dated key does not have (never merged).
+                        entries = _metric_entries(indexes[source], spec.key, identity)
+                        if not entries:
+                            candidate_reason = MISSING_NOT_EVALUATED
+                        else:
+                            if first_with_entries is None:
+                                first_with_entries = (source, entries)
+                            if spec.merge == "max":
+                                # Do not break: evaluate every candidate and
+                                # keep the highest selected value (strictly
+                                # greater replaces, so an exact tie keeps the
+                                # earlier candidate).
+                                results = [_result(entry, source) for entry in entries]
+                                selected_index = _select_latest(results)
+                                if selected_index is not None:
+                                    value = results[selected_index]["value"]
+                                    if max_pick is None or value > max_pick[4]:
+                                        max_pick = (source, entries, results,
+                                                    selected_index, value)
+                                candidate_reason = MISSING_NOT_EVALUATED
+                            else:
+                                chosen = (source, entries)
+                                break
+                if position == 0:
+                    primary_reason = candidate_reason
+                rank = _MISSING_REASON_ORDER[candidate_reason]
+                if rank > reason_rank:
+                    reason, reason_rank = candidate_reason, rank
+            if primary_reason == MISSING_UNAVAILABLE:
+                # The primary source is enabled but has no data: report its
+                # outage regardless of how far the fallback got.
+                reason = MISSING_UNAVAILABLE
+            if spec.merge == "max":
+                if max_pick is not None:
+                    chosen = (max_pick[0], max_pick[1])
+                elif first_with_entries is not None:
+                    # No candidate yielded a numeric selected value: fall
+                    # through to the existing (first-candidate) behaviour,
+                    # including its results emission and missing reason.
+                    chosen = first_with_entries
+            if chosen is None:
+                model["missing"][spec.key] = reason
                 continue
-            identity = resolved.get(source)
-            if identity is None:
-                model["missing"][spec.key] = MISSING_UNMATCHED
-                continue
-            entries = indexes[source]["by_metric"].get(spec.key, {}).get(identity, [])
-            if not entries:
-                model["missing"][spec.key] = MISSING_NOT_EVALUATED
-                continue
+            source, entries = chosen
             results = [_result(entry, source) for entry in entries]
             selected_index = _select_latest(results)
             if selected_index is None:
@@ -2259,8 +2668,8 @@ def build_payload(inventory: list[dict], state: dict, *,
     return payload
 
 
-def metrics_metadata(deepswe_enabled: bool | None = None) -> list[dict]:
-    return [spec.as_dict() for spec in _enabled_metrics(deepswe_enabled)]
+def metrics_metadata() -> list[dict]:
+    return [spec.as_dict() for spec in _enabled_metrics()]
 
 
 def last_success(state: dict) -> float | None:
@@ -2274,7 +2683,7 @@ def last_success(state: dict) -> float | None:
 
 __all__ = [
     "BenchmarkStore", "Deadline", "HttpClient", "METRICS", "SOURCES",
-    "SOURCE_ALIASES", "DEEPSWE_ENABLED", "DEEPSWE_WARNING", "DEEPSWE_REVIEW_URL",
+    "BENCHLM_ENABLED", "BENCHLM_WARNING",
     "build_payload", "ensure_refresh_scheduled", "get_store", "is_refreshing",
     "last_success", "metrics_metadata", "read_state", "request_refresh", "refresh_policy",
 ]

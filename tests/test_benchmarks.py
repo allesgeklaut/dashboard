@@ -1,5 +1,6 @@
 """Offline tests for benchmark adapters, snapshots, identities and the API contract."""
 import asyncio
+import contextlib
 import http.server
 import json
 import math
@@ -120,21 +121,156 @@ def livebench_categories_response(categories=None):
     return benchmarks.Response(200, {}, json.dumps(categories or livebench_categories()).encode())
 
 
-def deepswe_response(rows=None, *, task_count=113, generated_at="2026-09-22T06:27:15.860279+00:00"):
-    rows = rows if rows is not None else [
-        {"model": "gpt-6-astra", "harness": "mini-swe-agent", "reasoning_effort": "xhigh",
-         "config": "mini_swe_agent_gpt_6_astra_xhigh", "pass_at_1": 0.74115,
-         "pass_at_4": 0.8053, "ci_lo": 0.7125, "ci_hi": 0.7698, "ci_half": 0.0287,
-         "n_runs": 4, "ci_method": "fixture"},
-        {"model": "gpt-6-astra", "harness": "mini-swe-agent", "reasoning_effort": "max",
-         "config": "mini_swe_agent_gpt_6_astra_max", "pass_at_1": 0.7323,
-         "ci_lo": 0.70, "ci_hi": 0.76, "ci_half": 0.03, "n_runs": 4, "ci_method": "fixture"},
-    ]
-    payload = {"scope": "fixture", "unit": "pass@1", "generated_at": generated_at,
-               "n_tasks_in_set": task_count,
-               "latest_job": {"name": "fixture", "finished_at": "2026-09-01T07:35:13Z"},
-               "rows": rows}
+# ── BenchLM fixtures ────────────────────────────────────────────────────────
+# Test-only sentinel credential; never a real key.
+BENCHLM_TEST_KEY = "benchlm-test-sentinel-0000notarealkey"
+
+
+@contextlib.contextmanager
+def benchlm_env(key):
+    """Set BENCHLM_DATA_KEY for one test (key=None removes it); always restored."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("BENCHLM_DATA_KEY", None)
+        if key is not None:
+            os.environ["BENCHLM_DATA_KEY"] = key
+        yield
+
+
+def benchlm_item(model, score, *, rank=None, interval=None, source_model_id=None):
+    item = {"modelKey": model, "score": score}
+    if source_model_id is not None:
+        # Vals-capture row shape: the board publishes no modelKey, only a
+        # publisher-prefixed sourceModelId.
+        item["sourceModelId"] = source_model_id
+    if rank is not None:
+        item["rank"] = rank
+    if interval is not None:
+        item["scoreInterval90Lower"], item["scoreInterval90Upper"] = interval
+    return item
+
+
+def benchlm_page_dict(items, *, offset=0, next_offset=None, **overrides):
+    payload = {
+        "dataAsOf": "2026-10-28T09:15:00Z",
+        "methodology": {"version": "benchalign-2026.10.28"},
+        "items": items,
+        "pagination": {"offset": offset, "limit": benchmarks.BENCHLM_PAGE_SIZE,
+                       "nextOffset": next_offset},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def benchlm_raw_response(payload):
     return benchmarks.Response(200, {}, json.dumps(payload).encode())
+
+
+def benchlm_page(items, **overrides):
+    return benchlm_raw_response(benchlm_page_dict(items, **overrides))
+
+
+def benchlm_mcp_envelope(text, **overrides):
+    envelope = {"jsonrpc": "2.0", "id": 1,
+                "result": {"content": [{"type": "text", "text": text}]}}
+    envelope.update(overrides)
+    return benchmarks.Response(200, {}, json.dumps(envelope).encode())
+
+
+def benchlm_mcp_response(items, *, data_as_of="2026-10-28T09:15:00Z"):
+    return benchlm_mcp_envelope(
+        json.dumps({"dataAsOf": data_as_of, "items": items}))
+
+
+def benchlm_standard_responses():
+    """One page per ranking surface plus one MCP response per TB4 board."""
+    overall = [benchlm_item("gpt-6-1-sol", 91.5, rank=1, interval=(89.0, 94.0)),
+               benchlm_item("glm-5-3", 80.25, rank=2)]
+    coding = [benchlm_item("gpt-6-1-sol", 88.0, rank=1)]
+    agentic = [benchlm_item("kimi-k2-7-code", 76.5, rank=1)]
+    knowledge = [benchlm_item("mimo-v2-6-pro", 68.0, rank=1)]
+    # Both TB4 boards cover gpt-6-1-sol; the higher value (vals-capture) wins.
+    tb4_recorded = [benchlm_item("gpt-6-1-sol", 55.5)]
+    tb4_vals = [benchlm_item("gpt-6-1-sol", 61.25)]
+    return [benchlm_page(overall), benchlm_page(coding), benchlm_page(agentic),
+            benchlm_page(knowledge),
+            benchlm_mcp_response(tb4_recorded),
+            benchlm_mcp_response(tb4_vals)]
+
+
+# Snapshot of every sourceModelId the Vals TB4 board published on 2026-10-29
+# (all 57 rows; that board carries no modelKey).  Pinned so the board-row
+# conversion is exercised against the real identifier shapes — vendor
+# prefixes, dots, uppercase, underscores, version suffixes — instead of a
+# hand-picked sample; refresh deliberately if the board's ids ever change.
+BENCHLM_VALS_SOURCE_MODEL_IDS = (
+    "alibaba/qwen3.8-max",
+    "alibaba/qwen3.8-max-internal",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-fable-5-1",
+    "anthropic/claude-haiku-5-5",
+    "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-5",
+    "anthropic/claude-opus-5-5",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-sonnet-5-5",
+    "deepseek/deepseek-v4-flash-0731",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-pro-0813",
+    "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4.1-flash-1017",
+    "fireworks/ember-1",
+    "google/gemini-3.1-pro-preview",
+    "google/gemini-3.5-flash",
+    "google/gemini-3.7-flash",
+    "google/gemini-3.8-flash",
+    "google/gemini-4-argon",
+    "google/gemini-4-carbon",
+    "grok/grok-4.5",
+    "grok/grok-4.6",
+    "grok/grok-4.7",
+    "inception/mercury-2.5",
+    "inception/mercury-3",
+    "kimi/kimi-k3",
+    "kimi/kimi-k3.1-pro",
+    "meta/muse-spark-open",
+    "meta/muse-wonder",
+    "meta/muse-wonder-full",
+    "meta/muse_spark_1_2",
+    "meta/muse_spark_1_3",
+    "meta/muse_spark_1_3_max",
+    "minimax/MiniMax-M3",
+    "minimax/MiniMax-M3.1-flash",
+    "mistralai/mistral-large-4",
+    "openai/gpt-5.4-mini-2026-03-17",
+    "openai/gpt-5.6-luna",
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.6-terra",
+    "openai/gpt-6-astra",
+    "openai/gpt-6-luna",
+    "openai/gpt-6-sol",
+    "openai/gpt-6.1-sol",
+    "openai/gpt-6.1-terra",
+    "reflection/Beam-1.0",
+    "stepfun/step-5-preview",
+    "tencent/hy4-preview",
+    "thinkingmachines/inkling",
+    "thinkingmachines/inkling-small",
+    "xiaomi/mimo-v2.5-pro",
+    "xiaomi/mimo-v2.6-flash",
+    "xiaomi/mimo-v2.6-pro",
+    "zai/glm-5.3",
+    "zai/glm-5.3-flash",
+)
+
+
+def benchlm_tb4_responses(recorded_items, vals_items):
+    """One ranking page per surface plus one MCP response per TB4 board."""
+    return [benchlm_page([benchlm_item("m", 90.0)]),
+            benchlm_page([benchlm_item("c", 80.0)]),
+            benchlm_page([benchlm_item("a", 70.0)]),
+            benchlm_page([benchlm_item("k", 60.0)]),
+            benchlm_mcp_response(list(recorded_items)),
+            benchlm_mcp_response(list(vals_items))]
 
 
 class StubClient:
@@ -162,19 +298,24 @@ _UNSET = object()
 
 def entry(metric, model, value, *, date=_UNSET, source=None, **kwargs):
     spec = benchmarks.METRIC_BY_KEY[metric]
-    assert source is None or spec.source == source
+    # An explicit source may also be one of the metric's fallback sources:
+    # BenchLM supplies tb4 rows although Harbor stays the primary source.
+    assert source is None or source in (spec.source, *spec.fallback)
+    resolved_source = source or spec.source
     if date is _UNSET:
-        # DeepSWE carries no eval date; other sources default to a dated fixture.
-        date = None if spec.source == "deepswe" else "2026-09-01"
+        date = "2026-09-01"
     date_kind = kwargs.pop("date_kind", None)
     if date is not None and date_kind is None:
         if spec.source == "livebench":
             date_kind = benchmarks.DATE_KIND_BENCHMARK_RELEASE
+        elif resolved_source == "benchlm":
+            # BenchLM dates are board capture dates, never eval dates.
+            date_kind = benchmarks.DATE_KIND_SOURCE_SNAPSHOT
         elif spec.source in ("harbor", "epoch"):
             date_kind = benchmarks.DATE_KIND_MODEL_RELEASE
     return benchmarks._make_entry(
         metric, model, value, evaluator=kwargs.pop("evaluator", "Fixture"),
-        version=kwargs.pop("version", benchmarks.SOURCES[spec.source].version),
+        version=kwargs.pop("version", benchmarks.SOURCES[resolved_source].version),
         date=date, date_kind=date_kind,
         agent=kwargs.pop("agent", None), effort=kwargs.pop("effort", None),
         configuration=kwargs.pop("configuration", None),
@@ -537,54 +678,866 @@ class LiveBenchAdapterTests(unittest.TestCase):
         self.assertIn("livebench_reasoning", metrics)
 
 
-# ── DeepSWE ─────────────────────────────────────────────────────────────────
-class DeepSweAdapterTests(unittest.TestCase):
-    def test_pass_at_1_is_converted_to_percent_and_configs_are_retained(self):
-        response = deepswe_response()
-        response = benchmarks.Response(200, {"etag": 'W/"d"'}, response.body)
-        result = benchmarks.fetch_deepswe(StubClient([response]), None, deadline())
-        self.assertEqual(len(result["entries"]), 2)
-        self.assertEqual(result["entries"][0]["value"], 74.115)
-        self.assertEqual(result["entries"][0]["ci"]["low"], 71.25)
-        self.assertIsNone(result["entries"][0]["date"])
-        self.assertIsNone(result["entries"][0]["date_kind"])
-        self.assertEqual(result["source_updated"], "2026-09-22")
-        self.assertEqual(result["entries"][0]["metadata"]["task_count"], 113)
-        self.assertIn("23 of 113", benchmarks.DEEPSWE_WARNING)
-        self.assertIn(benchmarks.DEEPSWE_REVIEW_URL, benchmarks.DEEPSWE_WARNING)
+# ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
+class BenchLMAdapterTests(unittest.TestCase):
+    def test_happy_path_reads_all_four_surfaces_then_both_mcp_boards(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(benchlm_standard_responses())
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual([call["method"] for call in client.calls],
+                         ["GET", "GET", "GET", "GET", "POST", "POST"])
+        for index, surface in enumerate(
+                surface for _metric, surface in benchmarks.BENCHLM_SURFACES):
+            self.assertEqual(client.calls[index]["url"],
+                             f"{benchmarks.BENCHLM_RANKINGS_URL}?surface={surface}"
+                             f"&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0")
+        for board_index, (_label, board_id) in enumerate(benchmarks.BENCHLM_TB4_BOARDS):
+            post = client.calls[4 + board_index]
+            self.assertEqual(post["url"], benchmarks.BENCHLM_MCP_URL)
+            self.assertEqual(post["json"], {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": benchmarks.BENCHLM_MCP_TOOL,
+                           "arguments": {"boardId": board_id,
+                                         "limit": benchmarks.BENCHLM_PAGE_SIZE}},
+            })
+        entries = {(item["metric"], item["model"]): item
+                   for item in result["entries"]}
+        self.assertEqual(set(entries), {
+            ("benchalign_overall", "gpt-6-1-sol"),
+            ("benchalign_overall", "glm-5-3"),
+            ("benchalign_coding", "gpt-6-1-sol"),
+            ("benchalign_agentic", "kimi-k2-7-code"),
+            ("benchalign_knowledge", "mimo-v2-6-pro"),
+            ("tb4", "gpt-6-1-sol"),
+        })
+        overall = entries[("benchalign_overall", "gpt-6-1-sol")]
+        self.assertEqual(overall["value"], 91.5)
+        self.assertEqual(overall["ci"], {"low": 89.0, "high": 94.0, "half_width": 2.5})
+        self.assertEqual(overall["date"], "2026-10-28")
+        self.assertEqual(overall["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        self.assertEqual(overall["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        self.assertEqual(overall["version"], "benchalign-2026.10.28")
+        self.assertEqual(overall["metadata"], {"rank": 1})
+        coding = entries[("benchalign_coding", "gpt-6-1-sol")]
+        self.assertEqual(coding["value"], 88.0)
+        self.assertIsNone(coding["ci"])
+        self.assertEqual(coding["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        agentic = entries[("benchalign_agentic", "kimi-k2-7-code")]
+        self.assertEqual(agentic["value"], 76.5)
+        self.assertEqual(agentic["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        knowledge = entries[("benchalign_knowledge", "mimo-v2-6-pro")]
+        self.assertEqual(knowledge["value"], 68.0)
+        self.assertEqual(knowledge["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        tb4 = entries[("tb4", "gpt-6-1-sol")]
+        # The model is on both boards; the higher vals-capture value wins and
+        # the entry carries the winning board's label and board id.
+        self.assertEqual(tb4["value"], 61.25)
+        self.assertEqual(tb4["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
+        self.assertEqual(tb4["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(tb4["metadata"], {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+        self.assertEqual(tb4["date"], "2026-10-28")
+        self.assertEqual(tb4["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        self.assertEqual(result["version"], "benchalign-2026.10.28")
+        self.assertEqual(result["source_updated"], "2026-10-28")
+        self.assertEqual(result["validators"], {})
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 6})
+        # The whole result also passes the store's per-source validation.
+        self.assertEqual(
+            benchmarks._validated_entries(result["entries"], source="benchlm"),
+            result["entries"])
 
-    def test_actual_row_eval_date_is_used_when_the_row_supplies_one(self):
-        rows = [{
-            "model": "gpt-6-astra", "harness": "mini-swe-agent",
-            "reasoning_effort": "max", "config": "fixture",
-            "pass_at_1": 0.5, "evaluated_at": "2026-09-05T10:11:12Z",
-        }]
-        result = benchmarks.fetch_deepswe(
-            StubClient([deepswe_response(rows)]), None, deadline())
-        self.assertEqual(result["entries"][0]["date"], "2026-09-05")
-        self.assertEqual(result["entries"][0]["date_kind"],
-                         benchmarks.DATE_KIND_EVALUATION)
-
-    def test_ranges_tasks_and_timestamps_are_validated(self):
-        bad = [
-            deepswe_response(task_count=112),
-            deepswe_response(generated_at="not-a-date"),
-            deepswe_response([{"model": "x", "pass_at_1": 1.1}]),
-            deepswe_response([{"model": "x", "pass_at_1": 0.5, "ci_lo": 0.8, "ci_hi": 0.2}]),
-            deepswe_response([]),
+    def test_pagination_follows_next_offset_and_second_page_carries_offset_100(self):
+        overall_p1 = [benchlm_item("model-a", 90.0)]
+        overall_p2 = [benchlm_item("model-a", 89.0),  # duplicate row: skipped
+                      benchlm_item("model-b", 85.0)]
+        coding_p1 = [benchlm_item("model-a", 80.0)]
+        coding_p2 = [benchlm_item("model-c", 70.0)]
+        agentic_p1 = [benchlm_item("model-a", 75.0)]
+        agentic_p2 = [benchlm_item("model-d", 65.0)]
+        knowledge_p1 = [benchlm_item("model-a", 72.0)]
+        knowledge_p2 = [benchlm_item("model-e", 62.0)]
+        responses = [
+            benchlm_page(overall_p1, offset=0, next_offset=100),
+            benchlm_page(overall_p2, offset=100, next_offset=None),
+            benchlm_page(coding_p1, offset=0, next_offset=100),
+            benchlm_page(coding_p2, offset=100, next_offset=None),
+            benchlm_page(agentic_p1, offset=0, next_offset=100),
+            benchlm_page(agentic_p2, offset=100, next_offset=None),
+            benchlm_page(knowledge_p1, offset=0, next_offset=100),
+            benchlm_page(knowledge_p2, offset=100, next_offset=None),
+            benchlm_mcp_response([benchlm_item("model-a", 60.0)]),
+            # Second board repeats model-a with a higher value: it wins.
+            benchlm_mcp_response([benchlm_item("model-a", 65.0)]),
         ]
-        for response in bad:
-            with self.subTest(body=response.body[:80]):
-                with self.assertRaises(benchmarks.SourceError):
-                    benchmarks.fetch_deepswe(StubClient([response]), None, deadline())
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(len(client.calls), 10)
+        self.assertIn("surface=overall&limit=100&offset=0", client.calls[0]["url"])
+        self.assertIn("surface=overall&limit=100&offset=100", client.calls[1]["url"])
+        self.assertIn("surface=coding&limit=100&offset=0", client.calls[2]["url"])
+        self.assertIn("surface=coding&limit=100&offset=100", client.calls[3]["url"])
+        self.assertIn("surface=agentic&limit=100&offset=0", client.calls[4]["url"])
+        self.assertIn("surface=agentic&limit=100&offset=100", client.calls[5]["url"])
+        self.assertIn("surface=knowledge&limit=100&offset=0", client.calls[6]["url"])
+        self.assertIn("surface=knowledge&limit=100&offset=100", client.calls[7]["url"])
+        seen = {(item["metric"], item["model"]): item for item in result["entries"]}
+        self.assertEqual(set(seen), {
+            ("benchalign_overall", "model-a"), ("benchalign_overall", "model-b"),
+            ("benchalign_coding", "model-a"), ("benchalign_coding", "model-c"),
+            ("benchalign_agentic", "model-a"), ("benchalign_agentic", "model-d"),
+            ("benchalign_knowledge", "model-a"), ("benchalign_knowledge", "model-e"),
+            ("tb4", "model-a"),
+        })
+        # The repeated (overall, model-a) row kept its first occurrence.
+        self.assertEqual(seen[("benchalign_overall", "model-a")]["value"], 90.0)
+        # The tb4 row present on both boards kept the higher second-board value
+        # and the winning board's provenance.
+        self.assertEqual(seen[("tb4", "model-a")]["value"], 65.0)
+        self.assertEqual(seen[("tb4", "model-a")]["version"],
+                         benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(seen[("tb4", "model-a")]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+        self.assertEqual(result["meta"], {"pages": 8, "rows": 9})
 
-    def test_conditional_request_and_304(self):
-        previous = {"validators": {"last_modified": "Mon, 26 Oct 2026 08:25:02 GMT"}}
-        client = StubClient([benchmarks.Response(304, {}, b"")])
-        result = benchmarks.fetch_deepswe(client, previous, deadline())
-        self.assertTrue(result["not_modified"])
-        self.assertEqual(client.calls[0]["headers"]["If-Modified-Since"],
-                         "Mon, 26 Oct 2026 08:25:02 GMT")
+    def test_read_cap_is_derived_from_the_surface_and_board_count(self):
+        # Regression guard: the cap must scale with both BENCHLM_SURFACES and
+        # BENCHLM_TB4_BOARDS so every surface and every TB4 board is always
+        # reachable (2 surfaces hardcoded here once starved the remaining
+        # surfaces of reads).
+        self.assertEqual(
+            benchmarks.BENCHLM_MAX_REQUESTS,
+            len(benchmarks.BENCHLM_SURFACES) * benchmarks.BENCHLM_MAX_PAGES
+            + len(benchmarks.BENCHLM_TB4_BOARDS))
+        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 14)
+
+    def test_each_surface_is_requested_once_in_order_and_yields_its_metric(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(benchlm_standard_responses())
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        gets = [call for call in client.calls if call["method"] == "GET"]
+        surfaces = [urlsplit(call["url"]).query for call in gets]
+        expected = [f"surface={surface}&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0"
+                    for _metric, surface in benchmarks.BENCHLM_SURFACES]
+        self.assertEqual(surfaces, expected)
+        metric_keys = {item["metric"] for item in result["entries"]}
+        for metric, _surface in benchmarks.BENCHLM_SURFACES:
+            self.assertIn(metric, metric_keys)
+
+    def test_read_cap_yields_exactly_fourteen_requests_and_never_raises(self):
+        responses = []
+        for surface_index in range(len(benchmarks.BENCHLM_SURFACES)):
+            for page_index in range(benchmarks.BENCHLM_MAX_PAGES):
+                offset = page_index * benchmarks.BENCHLM_PAGE_SIZE
+                responses.append(benchlm_page(
+                    [benchlm_item(f"model-{surface_index}-{page_index}",
+                                  50.0 + page_index)],
+                    offset=offset,
+                    next_offset=offset + benchmarks.BENCHLM_PAGE_SIZE))
+        responses.append(benchlm_mcp_response([benchlm_item("mcp-model", 42.0)]))
+        responses.append(benchlm_mcp_response([benchlm_item("mcp-model", 43.0)]))
+        responses.append(benchlm_page([benchlm_item("never-fetched", 1.0)]))
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            # An always-advancing nextOffset must not raise and must stop at
+            # the hard cap: 12 GETs + 2 POSTs, no more.
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(len(client.calls), benchmarks.BENCHLM_MAX_REQUESTS)
+        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 14)
+        self.assertEqual(sum(call["method"] == "GET" for call in client.calls), 12)
+        self.assertEqual(sum(call["method"] == "POST" for call in client.calls), 2)
+        self.assertEqual([call["json"]["params"]["arguments"]["boardId"]
+                          for call in client.calls if call["method"] == "POST"],
+                         [board_id for _label, board_id in benchmarks.BENCHLM_TB4_BOARDS])
+        self.assertEqual(result["meta"], {"pages": 12, "rows": 13})
+        self.assertEqual(len(result["entries"]), 13)
+        tb4 = [item for item in result["entries"] if item["metric"] == "tb4"]
+        self.assertEqual(len(tb4), 1)
+        self.assertEqual(tb4[0]["value"], 43.0)  # higher second-board value won
+        self.assertEqual(tb4[0]["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+
+    def test_hitting_the_cap_mid_pagination_stops_reads_and_skips_the_mcp_posts(self):
+        responses = [benchlm_page([benchlm_item(f"m{i}", 10.0 + i)],
+                                  offset=i * 100, next_offset=(i + 1) * 100)
+                     for i in range(4)]
+        responses.append(benchlm_mcp_response([benchlm_item("mcp", 1.0)]))
+        responses.append(benchlm_mcp_response([benchlm_item("mcp2", 2.0)]))
+        with benchlm_env(BENCHLM_TEST_KEY), \
+                patch.object(benchmarks, "BENCHLM_MAX_REQUESTS", 3):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(len(client.calls), 3)  # cap reached: stop, never raise
+        self.assertTrue(all(call["method"] == "GET" for call in client.calls))
+        self.assertEqual(len(result["entries"]), 3)
+
+    def test_tb4_row_on_both_boards_keeps_the_higher_value_and_winning_board(self):
+        recorded = [benchlm_item("shared", 42.3), benchlm_item("tie", 50.0),
+                    benchlm_item("recorded-only", 10.0)]
+        vals = [benchlm_item("shared", 19.7), benchlm_item("tie", 50.0),
+                benchlm_item("vals-only", 88.0)]
+        responses = [benchlm_page([benchlm_item("m", 90.0)]),
+                     benchlm_page([benchlm_item("c", 80.0)]),
+                     benchlm_page([benchlm_item("a", 70.0)]),
+                     benchlm_page([benchlm_item("k", 60.0)]),
+                     benchlm_mcp_response(recorded),
+                     benchlm_mcp_response(vals)]
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        posts = [call for call in client.calls if call["method"] == "POST"]
+        self.assertEqual([call["json"]["params"]["arguments"]["boardId"]
+                          for call in posts],
+                         [board_id for _label, board_id in benchmarks.BENCHLM_TB4_BOARDS])
+        tb4 = {item["model"]: item for item in result["entries"]
+               if item["metric"] == "tb4"}
+        self.assertEqual(set(tb4), {"shared", "tie", "recorded-only", "vals-only"})
+        # Higher value wins and carries the winning board's version/metadata.
+        self.assertEqual(tb4["shared"]["value"], 42.3)
+        self.assertEqual(tb4["shared"]["version"], benchmarks.BENCHLM_TB4_BOARDS[0][0])
+        self.assertEqual(tb4["shared"]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
+        # An exact tie keeps the earlier board in tuple order.
+        self.assertEqual(tb4["tie"]["value"], 50.0)
+        self.assertEqual(tb4["tie"]["version"], benchmarks.BENCHLM_TB4_BOARDS[0][0])
+        self.assertEqual(tb4["tie"]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
+        self.assertEqual(tb4["recorded-only"]["value"], 10.0)
+        self.assertEqual(tb4["recorded-only"]["version"],
+                         benchmarks.BENCHLM_TB4_BOARDS[0][0])
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 8})
+
+    def test_tb4_row_only_on_the_second_board_is_still_returned(self):
+        responses = [benchlm_page([benchlm_item("m", 90.0)]),
+                     benchlm_page([benchlm_item("c", 80.0)]),
+                     benchlm_page([benchlm_item("a", 70.0)]),
+                     benchlm_page([benchlm_item("k", 60.0)]),
+                     benchlm_mcp_response([benchlm_item("first-only", 30.0)]),
+                     benchlm_mcp_response([benchlm_item("vals-only", 88.0)])]
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        tb4 = {item["model"]: item for item in result["entries"]
+               if item["metric"] == "tb4"}
+        self.assertEqual(set(tb4), {"first-only", "vals-only"})
+        self.assertEqual(tb4["vals-only"]["value"], 88.0)
+        self.assertEqual(tb4["vals-only"]["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(tb4["vals-only"]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+        self.assertEqual(tb4["vals-only"]["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 6})
+
+    def test_mcp_row_without_model_key_converts_source_model_id_to_canonical_slug(self):
+        # The Vals board publishes no modelKey, only a publisher-prefixed
+        # sourceModelId; the board parser converts it to BenchLM's canonical
+        # slug (vendor prefix dropped, lowercased, "." and "_" -> "-").
+        cases = [
+            ("alibaba/qwen3.8-max", "qwen3-8-max"),
+            ("mistralai/mistral-large-4", "mistral-large-4"),
+            ("minimax/MiniMax-M3", "minimax-m3"),
+            ("meta/muse_spark_1_3", "muse-spark-1-3"),
+            ("reflection/Beam-1.0", "beam-1-0"),
+            # Version suffixes name distinct variants: kept, never collapsed.
+            ("deepseek/deepseek-v4.1-flash-1017", "deepseek-v4-1-flash-1017"),
+            ("zai/glm-5.3", "glm-5-3"),
+            ("xiaomi/mimo-v2.6-flash", "mimo-v2-6-flash"),
+        ]
+        for source_model_id, expected in cases:
+            with self.subTest(source_model_id=source_model_id):
+                responses = benchlm_tb4_responses(
+                    [], [benchlm_item(None, 27.5, source_model_id=source_model_id)])
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient(responses)
+                    result = benchmarks.fetch_benchlm(client, None, deadline())
+                tb4 = {item["model"]: item for item in result["entries"]
+                       if item["metric"] == "tb4"}
+                self.assertEqual(set(tb4), {expected})
+                self.assertEqual(tb4[expected]["value"], 27.5)
+                self.assertEqual(tb4[expected]["version"],
+                                 benchmarks.BENCHLM_TB4_BOARDS[1][0])
+                self.assertEqual(tb4[expected]["metadata"],
+                                 {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+
+    def test_cross_board_rows_with_mixed_identifier_styles_merge_into_one_entry(self):
+        # The recorded board keys the row canonically (qwen3-8-max) while the
+        # Vals row only carries the publisher id (alibaba/qwen3.8-max); after
+        # conversion both name the same model, so they merge into one entry
+        # and the higher value wins with the winning board's provenance.
+        responses = benchlm_tb4_responses(
+            [benchlm_item("qwen3-8-max", 30.0)],
+            [benchlm_item(None, 34.343, source_model_id="alibaba/qwen3.8-max")])
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        tb4 = [item for item in result["entries"] if item["metric"] == "tb4"]
+        self.assertEqual(len(tb4), 1)
+        self.assertEqual(tb4[0]["model"], "qwen3-8-max")
+        self.assertEqual(tb4[0]["value"], 34.343)
+        self.assertEqual(tb4[0]["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(tb4[0]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+
+    def test_mcp_row_with_both_identifier_fields_null_is_rejected(self):
+        rows = [
+            ("modelKey null and sourceModelId null",
+             {"modelKey": None, "sourceModelId": None, "score": 1.0}),
+            ("modelKey null, sourceModelId absent", benchlm_item(None, 1.0)),
+            ("modelKey blank, sourceModelId null",
+             {"modelKey": "   ", "sourceModelId": None, "score": 1.0}),
+        ]
+        for label, row in rows:
+            with self.subTest(label=label):
+                responses = benchlm_tb4_responses([benchlm_item("r", 10.0)], [row])
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient(responses)
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), "invalid response schema")
+                self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_mcp_row_with_non_string_identifier_values_is_rejected(self):
+        rows = [
+            ("non-string sourceModelId (int)",
+             benchlm_item(None, 1.0, source_model_id=123)),
+            ("non-string sourceModelId (list)",
+             benchlm_item(None, 1.0, source_model_id=["alibaba/qwen3.8-max"])),
+            ("non-string modelKey", {"modelKey": 7, "score": 1.0}),
+        ]
+        for label, row in rows:
+            with self.subTest(label=label):
+                responses = benchlm_tb4_responses([benchlm_item("r", 10.0)], [row])
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient(responses)
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), "invalid response schema")
+
+    def test_canonical_model_key_is_used_verbatim_and_never_rewritten(self):
+        # A present, non-empty modelKey is canonical already: dots, case, and
+        # underscores survive untouched; only the sourceModelId fallback is
+        # normalized.
+        responses = benchlm_tb4_responses(
+            [], [benchlm_item("some.model", 12.0),
+                 benchlm_item("UPPER_Case.Key", 13.0)])
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        tb4 = {item["model"] for item in result["entries"] if item["metric"] == "tb4"}
+        self.assertEqual(tb4, {"some.model", "UPPER_Case.Key"})
+
+    def test_board_model_key_covers_every_real_vals_identifier(self):
+        # Every sourceModelId the Vals TB4 board actually published must
+        # convert to a canonical slug: lowercase alphanumeric segments joined
+        # by single hyphens, with no two distinct ids colliding.
+        ids = BENCHLM_VALS_SOURCE_MODEL_IDS
+        self.assertEqual(len(ids), 57)
+        converted = {}
+        for ident in ids:
+            with self.subTest(source_model_id=ident):
+                key = benchmarks._board_model_key({"sourceModelId": ident})
+                self.assertIsNotNone(key)
+                self.assertRegex(key, r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+            converted[ident] = key
+        # No two distinct publisher ids collapse onto one canonical key.
+        self.assertEqual(len(set(converted.values())), len(ids))
+        # Representative shapes, pinned one-to-one.
+        expected = {
+            "alibaba/qwen3.8-max": "qwen3-8-max",
+            "mistralai/mistral-large-4": "mistral-large-4",
+            "minimax/MiniMax-M3": "minimax-m3",       # uppercase
+            "meta/muse_spark_1_3": "muse-spark-1-3",   # underscores
+            "reflection/Beam-1.0": "beam-1-0",         # uppercase + dot + digits
+            # Version suffix preserved, never collapsed to the base key.
+            "deepseek/deepseek-v4.1-flash-1017": "deepseek-v4-1-flash-1017",
+        }
+        for ident, key in expected.items():
+            self.assertEqual(converted[ident], key)
+        # Version-suffixed variants stay distinct from their base keys.
+        self.assertNotEqual(converted["deepseek/deepseek-v4.1-flash-1017"],
+                            converted["deepseek/deepseek-v4.1-flash"])
+        self.assertNotEqual(converted["kimi/kimi-k3.1-pro"],
+                            converted["kimi/kimi-k3"])
+
+    def test_every_real_vals_identifier_round_trips_through_identity_rules(self):
+        # Build a real index from the 57 converted board keys, then resolve
+        # each publisher id through the cascade: the vendor-prefixed full
+        # candidate never matches, so the bare suffix must resolve (R2
+        # canonical in practice) to exactly the converted key.  All 57 ids
+        # round-trip; none is an exception.
+        ids = BENCHLM_VALS_SOURCE_MODEL_IDS
+        converted = {ident: benchmarks._board_model_key({"sourceModelId": ident})
+                     for ident in ids}
+        entries = [{"metric": "tb4", "model": key} for key in converted.values()]
+        index = benchmarks._build_index({"data": {"entries": entries}})
+        for ident in ids:
+            with self.subTest(source_model_id=ident):
+                self.assertEqual(
+                    benchmarks._resolve_identity(
+                        {"upstream_model": ident}, "benchlm", index),
+                    converted[ident])
+
+    def test_oversized_items_lists_are_rejected_before_row_allocation(self):
+        too_many = [benchlm_item(f"model-{i}", 50.0)
+                    for i in range(benchmarks.BENCHLM_PAGE_SIZE + 1)]
+        cases = [
+            ("rankings page", [benchlm_page(too_many)], 1),
+            ("mcp inner items", [
+                benchlm_page([benchlm_item("m", 90.0)]),
+                benchlm_page([benchlm_item("c", 80.0)]),
+                benchlm_page([benchlm_item("a", 70.0)]),
+                benchlm_page([benchlm_item("k", 60.0)]),
+                benchlm_mcp_response(too_many),
+                benchlm_mcp_response([benchlm_item("t", 50.0)]),
+            ], 5),
+        ]
+        for label, responses, expected_calls in cases:
+            with self.subTest(label=label):
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient(responses)
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), "invalid response schema")
+                self.assertEqual(len(client.calls), expected_calls)
+                self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_max_entries_is_enforced_after_each_page_not_once_at_the_end(self):
+        def page(offset):
+            items = [benchlm_item(f"model-{offset}-{i}", 50.0)
+                     for i in range(benchmarks.BENCHLM_PAGE_SIZE)]
+            return benchlm_page(items, offset=offset,
+                                next_offset=offset + benchmarks.BENCHLM_PAGE_SIZE)
+
+        with benchlm_env(BENCHLM_TEST_KEY), \
+                patch.object(benchmarks, "MAX_ENTRIES", 150):
+            client = StubClient([page(0), page(100), page(200)])
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(str(caught.exception), "invalid response schema")
+        # The per-page cap fired after the second page (100 + 100 > 150), so
+        # the third request was never made.
+        self.assertEqual(len(client.calls), 2)
+        self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_every_request_carries_the_bearer_key_and_mcp_protocol_headers(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(benchlm_standard_responses())
+            benchmarks.fetch_benchlm(client, None, deadline())
+            for call in client.calls:
+                self.assertEqual(call["headers"]["Authorization"],
+                                 f"Bearer {BENCHLM_TEST_KEY}")
+            get_headers = client.calls[0]["headers"]
+            self.assertEqual(get_headers["Accept"], "application/json")
+            self.assertNotIn("MCP-Protocol-Version", get_headers)
+            self.assertNotIn("Content-Type", get_headers)
+            mcp_headers = client.calls[-1]["headers"]
+            self.assertEqual(mcp_headers["Content-Type"], "application/json")
+            self.assertEqual(mcp_headers["Accept"],
+                             "application/json, text/event-stream")
+            self.assertEqual(mcp_headers["MCP-Protocol-Version"],
+                             benchmarks.BENCHLM_MCP_PROTOCOL_VERSION)
+            # Direct header construction reads the key at request time only.
+            self.assertEqual(benchmarks._benchlm_request_headers(), {
+                "Authorization": f"Bearer {BENCHLM_TEST_KEY}",
+                "Accept": "application/json",
+            })
+            mcp = benchmarks._benchlm_request_headers(mcp=True)
+            self.assertEqual(mcp["Authorization"], f"Bearer {BENCHLM_TEST_KEY}")
+            self.assertEqual(mcp["MCP-Protocol-Version"],
+                             benchmarks.BENCHLM_MCP_PROTOCOL_VERSION)
+
+    def test_missing_or_blank_key_fails_before_any_request(self):
+        for key in (None, "", "   "):
+            with self.subTest(key=key):
+                with benchlm_env(key):
+                    client = StubClient(benchlm_standard_responses())
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), "unable to start refresh")
+                self.assertEqual(client.calls, [])  # zero requests recorded
+
+    def test_http_401_is_sanitized_and_never_echoes_the_data_key(self):
+        def responder(handler, _server):
+            # A hostile upstream that echoes the credential back in the 401
+            # body: the sanitized error must still be exactly "HTTP 401".
+            echoed = handler.headers.get("Authorization", "")
+            _write_response(handler, json.dumps({"detail": echoed}).encode(),
+                            status=401)
+
+        client = _LocalHttpClient(sleep=lambda _seconds: None)
+        with _LocalFeedServer(responder) as server, \
+                benchlm_env(BENCHLM_TEST_KEY), \
+                patch.object(benchmarks, "BENCHLM_RANKINGS_URL",
+                             server.base_url + "/v1/rankings/current"):
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(str(caught.exception), "HTTP 401")
+        self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+        self.assertEqual(len(server.seen), 1)  # 401 is not retried
+        self.assertEqual(server.seen[0]["headers"]["authorization"],
+                         f"Bearer {BENCHLM_TEST_KEY}")
+
+    def test_rankings_schema_failures_raise_sanitized_errors(self):
+        good = [benchlm_item("gpt-6-1-sol", 91.5)]
+        missing_as_of = benchlm_page_dict(good)
+        del missing_as_of["dataAsOf"]
+        schema = "invalid response schema"
+        pagination = "invalid pagination"
+        cases = [
+            ("missing dataAsOf", benchlm_raw_response(missing_as_of), schema),
+            ("null dataAsOf", benchlm_page(good, dataAsOf=None), schema),
+            ("invalid dataAsOf", benchlm_page(good, dataAsOf="2026-13-40"), schema),
+            ("short dataAsOf", benchlm_page(good, dataAsOf="2026-1-1"), schema),
+            ("payload not a dict", benchmarks.Response(200, {}, b"[1,2]"), schema),
+            ("methodology not a dict", benchlm_page(good, methodology=None), schema),
+            ("version missing", benchlm_page(good, methodology={}), schema),
+            ("items not a list", benchlm_page({"modelKey": "m"}), schema),
+            ("item not a dict", benchlm_page([3]), schema),
+            ("modelKey missing", benchlm_page([{"score": 50.0}]), schema),
+            ("text score", benchlm_page([benchlm_item("m", "high")]), schema),
+            ("bool score", benchlm_page([{"modelKey": "m", "score": True}]), schema),
+            ("score above 100", benchlm_page([benchlm_item("m", 100.5)]), schema),
+            ("negative score", benchlm_page([benchlm_item("m", -0.5)]), schema),
+            ("rank zero", benchlm_page([benchlm_item("m", 50.0, rank=0)]), schema),
+            ("wrong offset", benchlm_page(good, pagination={
+                "offset": 7, "limit": 100, "nextOffset": None}), pagination),
+            ("wrong limit", benchlm_page(good, pagination={
+                "offset": 0, "limit": 50, "nextOffset": None}), pagination),
+            ("offset not an int", benchlm_page(good, pagination={
+                "offset": "0", "limit": 100, "nextOffset": None}), schema),
+            ("negative nextOffset", benchlm_page(good, pagination={
+                "offset": 0, "limit": 100, "nextOffset": -1}), pagination),
+            ("bool nextOffset", benchlm_page(good, pagination={
+                "offset": 0, "limit": 100, "nextOffset": True}), pagination),
+        ]
+        for label, response, message in cases:
+            with self.subTest(label=label):
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient([response])
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), message)
+                self.assertEqual(len(client.calls), 1)
+                self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_next_offset_above_the_offset_bound_is_rejected(self):
+        # nextOffset is embedded into the next request's offset, which is
+        # itself bounded to 0..10**7: one huge value must be rejected here
+        # instead of failing the whole source on the following page.
+        good = [benchlm_item("gpt-6-1-sol", 91.5)]
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient([benchlm_page(good, pagination={
+                "offset": 0, "limit": 100, "nextOffset": 10**8})])
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(str(caught.exception), "invalid pagination")
+        self.assertEqual(len(client.calls), 1)
+        self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_malformed_mcp_envelopes_raise_sanitized_errors(self):
+        schema = "invalid response schema"
+        cases = [
+            ("no result", {"jsonrpc": "2.0", "id": 1}, schema),
+            ("result not a dict", {"result": []}, schema),
+            ("no content", {"result": {}}, schema),
+            ("empty content", {"result": {"content": []}}, schema),
+            ("no text block",
+             {"result": {"content": [{"type": "image", "data": "x"}]}}, schema),
+            ("non-JSON text", benchlm_mcp_envelope("not json"),
+             "invalid JSON response"),
+            ("inner not a dict", benchlm_mcp_envelope("[1,2]"), schema),
+            ("inner missing dataAsOf",
+             benchlm_mcp_envelope(json.dumps({"items": []})), schema),
+            ("inner items not a list",
+             benchlm_mcp_envelope(json.dumps(
+                 {"dataAsOf": "2026-10-28", "items": {}})), schema),
+            ("inner bad score",
+             benchlm_mcp_envelope(json.dumps(
+                 {"dataAsOf": "2026-10-28",
+                  "items": [{"modelKey": "m", "score": 200.0}]})), schema),
+        ]
+        for label, envelope, message in cases:
+            with self.subTest(label=label):
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient([
+                        benchlm_page([benchlm_item("m", 90.0)]),
+                        benchlm_page([benchlm_item("c", 80.0)]),
+                        benchlm_page([benchlm_item("a", 70.0)]),
+                        benchlm_page([benchlm_item("k", 60.0)]),
+                        envelope if isinstance(envelope, benchmarks.Response)
+                        else benchlm_raw_response(envelope),
+                        benchlm_mcp_response([benchlm_item("t", 50.0)]),
+                    ])
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), message)
+                self.assertEqual(len(client.calls), 5)  # 4 GETs then the first POST
+                self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_empty_surfaces_and_empty_boards_raise_empty_feed(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient([benchlm_page([]), benchlm_page([]),
+                                 benchlm_page([]), benchlm_page([]),
+                                 benchlm_mcp_response([]),
+                                 benchlm_mcp_response([])])
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(str(caught.exception), "empty feed")
+        self.assertEqual(len(client.calls), 6)
+
+    def test_empty_ranking_surfaces_still_contribute_the_mcp_boards(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient([
+                benchlm_page([]),
+                benchlm_page([]),
+                benchlm_page([]),
+                benchlm_page([]),
+                benchlm_mcp_response([benchlm_item("mcp-model", 42.0)]),
+                benchlm_mcp_response([benchlm_item("vals-model", 40.0)]),
+            ])
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual([(item["metric"], item["model"], item["value"])
+                          for item in result["entries"]],
+                         [("tb4", "mcp-model", 42.0), ("tb4", "vals-model", 40.0)])
+        self.assertEqual(result["source_updated"], "2026-10-28")
+        self.assertEqual(result["version"], "benchalign-2026.10.28")
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 2})
+
+    def test_ci_interval_mapping(self):
+        cases = [
+            ((89.0, 94.0), {"low": 89.0, "high": 94.0, "half_width": 2.5}),
+            ((0, 100), {"low": 0.0, "high": 100.0, "half_width": 50.0}),
+            ((50, 50), {"low": 50.0, "high": 50.0, "half_width": 0.0}),
+            ((94.0, 89.0), None),   # inverted bounds
+            ((-1.0, 50.0), None),   # below range
+            ((50.0, 101.0), None),  # above range
+            (("89", "94"), None),   # non-numeric
+            ((None, 94.0), None),   # partial
+            ((True, 94.0), None),   # bool is not a number
+        ]
+        for interval, expected in cases:
+            with self.subTest(interval=interval):
+                item = benchlm_item("m", 90.0)
+                item["scoreInterval90Lower"], item["scoreInterval90Upper"] = interval
+                self.assertEqual(benchmarks._benchlm_ci(item), expected)
+        self.assertIsNone(benchmarks._benchlm_ci({"modelKey": "m", "score": 90.0}))
+        # Integration: a page row's interval lands on the entry's ci.
+        with benchlm_env(BENCHLM_TEST_KEY):
+            result = benchmarks.fetch_benchlm(StubClient([
+                benchlm_page([benchlm_item("m", 90.0, interval=(88.0, 92.0))]),
+                benchlm_page([benchlm_item("c", 80.0)]),
+                benchlm_page([benchlm_item("a", 70.0)]),
+                benchlm_page([benchlm_item("k", 60.0)]),
+                benchlm_mcp_response([benchlm_item("t", 50.0)]),
+                benchlm_mcp_response([benchlm_item("t", 51.0)]),
+            ]), None, deadline())
+        self.assertEqual(result["entries"][0]["ci"],
+                         {"low": 88.0, "high": 92.0, "half_width": 2.0})
+        self.assertIsNone(result["entries"][1]["ci"])
+        # Both TB4 boards were read; "t" is merged to the higher second-board
+        # value and carries that board's provenance.
+        tb4 = [item for item in result["entries"] if item["metric"] == "tb4"]
+        self.assertEqual(len(tb4), 1)
+        self.assertEqual(tb4[0]["value"], 51.0)
+        self.assertEqual(tb4[0]["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(tb4[0]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+
+    def test_validated_entries_accepts_benchlm_rows_and_rejects_foreign_metrics(self):
+        tb4_row = entry("tb4", "gpt-6-1-sol", 55.5, source="benchlm",
+                        evaluator=benchmarks.BENCHLM_TB4_EVALUATOR,
+                        version=benchmarks.BENCHLM_TB4_BOARDS[0][0],
+                        date="2026-10-28",
+                        metadata={"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
+        self.assertEqual(tb4_row["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        overall = entry("benchalign_overall", "gpt-6-1-sol", 91.5, source="benchlm",
+                        evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                        version="benchalign-2026.10.28", date="2026-10-28")
+        coding = entry("benchalign_coding", "glm-5-3", 77.0, source="benchlm",
+                       evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                       version="benchalign-2026.10.28", date="2026-10-28")
+        agentic = entry("benchalign_agentic", "glm-5-3", 66.0, source="benchlm",
+                        evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                        version="benchalign-2026.10.28", date="2026-10-28")
+        knowledge = entry("benchalign_knowledge", "glm-5-3", 61.0, source="benchlm",
+                          evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                          version="benchalign-2026.10.28", date="2026-10-28")
+        cleaned = benchmarks._validated_entries(
+            [tb4_row, overall, coding, agentic, knowledge], source="benchlm")
+        self.assertEqual([item["metric"] for item in cleaned],
+                         ["tb4", "benchalign_overall", "benchalign_coding",
+                          "benchalign_agentic", "benchalign_knowledge"])
+        # A benchlm row for a metric it neither owns nor falls back for (eci,
+        # livebench_*) is rejected.
+        for foreign in (entry("eci", "Model", 100.0),
+                        entry("livebench_coding", "model", 80.0)):
+            with self.subTest(metric=foreign["metric"]):
+                with self.assertRaises(benchmarks.SourceError):
+                    benchmarks._validated_entries([foreign], source="benchlm")
+
+    def test_validated_entries_rejects_benchalign_rows_under_harbor(self):
+        # The reverse masquerade direction: a benchalign row even wearing
+        # Harbor's own pinned version must be rejected when the snapshot is
+        # validated as a harbor one.
+        row = benchmarks._make_entry(
+            "benchalign_overall", "gpt-6-1-sol", 91.5,
+            evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+            version=benchmarks.SOURCES["harbor"].version,
+            date="2026-09-01", date_kind=benchmarks.DATE_KIND_MODEL_RELEASE)
+        with self.assertRaises(benchmarks.SourceError) as caught:
+            benchmarks._validated_entries([row], source="harbor")
+        self.assertEqual(str(caught.exception), "invalid response schema")
+
+    def test_index_metric_range_is_enforced_on_the_reload_path(self):
+        good = entry("benchalign_overall", "gpt-6-1-sol", 91.5, source="benchlm",
+                     evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                     version="benchalign-2026.10.28", date="2026-10-28")
+        # A tampered cache cannot smuggle an out-of-range index value through
+        # _sanitize_entry/_validated_entries (the fetch path already enforces
+        # 0-100 on BenchLM scores).
+        for bad_value in (5000.0, 1000.5, -1.0):
+            with self.subTest(value=bad_value):
+                tampered = dict(good, value=bad_value)
+                with self.assertRaises(benchmarks.SourceError) as caught:
+                    benchmarks._sanitize_entry(tampered)
+                self.assertEqual(str(caught.exception), "invalid response schema")
+                with self.assertRaises(benchmarks.SourceError):
+                    benchmarks._validated_entries([tampered], source="benchlm")
+        # The 0-1000 index bound itself is accepted on the reload path.
+        self.assertEqual(
+            benchmarks._sanitize_entry(dict(good, value=1000.0))["value"], 1000.0)
+        # eci is an index metric too and keeps the same bound.
+        with self.assertRaises(benchmarks.SourceError):
+            benchmarks._sanitize_entry(
+                dict(entry("eci", "Model", 100.0), value=1001.0))
+
+
+class BenchLMSecurityTests(unittest.TestCase):
+    def test_benchlm_endpoints_are_fixed_https_and_allowlisted(self):
+        for url in (benchmarks.BENCHLM_RANKINGS_URL, benchmarks.BENCHLM_MCP_URL):
+            benchmarks.HttpClient._validate_url(url)  # must not raise
+            parts = urlsplit(url)
+            self.assertEqual(parts.scheme, "https")
+            self.assertIn(parts.hostname, benchmarks.ALLOWED_HOSTS)
+
+    def test_data_key_never_leaks_into_result_cache_or_payload(self):
+        with benchlm_env(BENCHLM_TEST_KEY):
+            result = benchmarks.fetch_benchlm(
+                StubClient(benchlm_standard_responses()), None, deadline())
+        # (a) the fetch result itself
+        self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(result))
+        # (b) the persisted cache file bytes after a real store refresh
+        directory, store, path = temp_store(fetchers={
+            "benchlm": benchmarks.fetch_benchlm,
+            **{name: static_fetcher(benchmarks.SourceError("empty feed"))
+               for name in ("harbor", "epoch", "livebench")},
+        }, client_factory=lambda: StubClient(benchlm_standard_responses()))
+        try:
+            with benchlm_env(BENCHLM_TEST_KEY), \
+                    patch.object(benchmarks, "BENCHLM_ENABLED", True):
+                self.assertTrue(store.refresh_source("benchlm"))
+            self.assertNotIn(BENCHLM_TEST_KEY.encode(), Path(path).read_bytes())
+            state = store.read_state(now=NOW)
+            self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(state))
+            self.assertEqual(len(state["benchlm"]["data"]["entries"]), 6)
+            reloaded = benchmarks.BenchmarkStore(path=path, clock=lambda: NOW)
+            reloaded_state = reloaded.read_state(now=NOW)
+            self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(reloaded_state))
+            self.assertEqual(len(reloaded_state["benchlm"]["data"]["entries"]), 6)
+            # (c) the API payload built from the reloaded state
+            payload = benchmarks.build_payload(
+                [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")],
+                reloaded_state, benchlm_enabled=True)
+            self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(payload))
+            model = payload["models"][0]
+            self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
+            self.assertEqual(model["bench"]["tb4"], 61.25)  # max across TB4 boards
+            self.assertEqual(model["results"]["tb4"][0]["source"], "benchlm")
+            self.assertEqual(model["results"]["tb4"][0]["version"],
+                             benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        finally:
+            directory.cleanup()
+
+    def test_source_enabled_gate_follows_the_module_flag_and_explicit_override(self):
+        with patch.object(benchmarks, "BENCHLM_ENABLED", False):
+            self.assertFalse(benchmarks._source_enabled("benchlm"))
+            self.assertTrue(benchmarks._source_enabled("benchlm",
+                                                        benchlm_enabled=True))
+        with patch.object(benchmarks, "BENCHLM_ENABLED", True):
+            self.assertTrue(benchmarks._source_enabled("benchlm"))
+            self.assertFalse(benchmarks._source_enabled("benchlm",
+                                                         benchlm_enabled=False))
+        # Without an override the import-time env gate decides.
+        self.assertEqual(benchmarks._source_enabled("benchlm"),
+                         benchmarks.BENCHLM_ENABLED)
+
+    def test_disabled_benchlm_is_never_fetched_by_the_store(self):
+        called = []
+
+        def fetcher(*args):
+            called.append(True)
+            return snapshot([entry("benchalign_overall", "gpt-6-1-sol", 91.5,
+                                   source="benchlm", version="benchalign-2026.10.28",
+                                   date="2026-10-28")])
+
+        directory = tempfile.TemporaryDirectory()
+        store = benchmarks.BenchmarkStore(
+            path=str(Path(directory.name) / "b.json"), clock=lambda: NOW,
+            fetchers={"benchlm": fetcher})
+        try:
+            with patch.object(benchmarks, "BENCHLM_ENABLED", False):
+                self.assertNotIn("benchlm", store._enabled_sources())
+                self.assertFalse(store.refresh_source("benchlm"))
+            with patch.object(benchmarks, "BENCHLM_ENABLED", True):
+                self.assertIn("benchlm", store._enabled_sources())
+                self.assertTrue(store.refresh_source("benchlm"))
+            self.assertEqual(len(called), 1)  # only the enabled run fetched
+        finally:
+            directory.cleanup()
+
+    def test_sanitize_source_record_round_trip_and_tamper_rejection(self):
+        good = entry("benchalign_overall", "gpt-6-1-sol", 91.5, source="benchlm",
+                     evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
+                     version="benchalign-2026.10.28", date="2026-10-28")
+        tb4 = entry("tb4", "glm-5-3", 60.0, source="benchlm",
+                    evaluator=benchmarks.BENCHLM_TB4_EVALUATOR,
+                    version=benchmarks.BENCHLM_TB4_BOARDS[0][0], date="2026-10-28",
+                    metadata={"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
+        record = {
+            "schema_version": benchmarks.SOURCE_SCHEMA_VERSION,
+            "version": "benchalign-2026.10.28",
+            "last_checked": NOW, "last_success": NOW,
+            "source_updated": "2026-10-28T09:15:00Z",
+            "error": None, "validators": {},
+            "data": {"entries": [good, tb4], "meta": {"pages": 2, "rows": 2}},
+        }
+        state = benchmarks._sanitize_source_record("benchlm", record)
+        self.assertIsNotNone(state)
+        # The dynamic methodology version is accepted, not pinned.
+        self.assertEqual(state["version"], "benchalign-2026.10.28")
+        self.assertEqual(state["source_updated"], "2026-10-28")
+        self.assertEqual(state["last_success"], NOW)
+        self.assertIsNone(state["error"])
+        self.assertEqual(len(state["data"]["entries"]), 2)
+        self.assertEqual(state["data"]["entries"][1]["version"],
+                         benchmarks.BENCHLM_TB4_BOARDS[0][0])
+        # The tb4 row's board id survives the sanitize round trip.
+        self.assertEqual(state["data"]["entries"][1]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
+        self.assertEqual(state["data"]["meta"], {"pages": 2, "rows": 2})
+        tampered = [
+            ("wrong schema_version", {**record, "schema_version": 99}),
+            ("missing version",
+             {key: value for key, value in record.items() if key != "version"}),
+            ("control char in version", {**record, "version": "bad\nversion"}),
+            ("foreign metric row",
+             {**record, "data": {"entries": [entry("eci", "X", 100.0)], "meta": {}}}),
+            ("empty entries", {**record, "data": {"entries": [], "meta": {}}}),
+            ("oversized timestamp", {**record, "last_success": 10 ** 400}),
+            ("bad source_updated", {**record, "source_updated": "not-a-date"}),
+        ]
+        for label, bad in tampered:
+            with self.subTest(label=label):
+                self.assertIsNone(benchmarks._sanitize_source_record("benchlm", bad))
+        self.assertIsNone(benchmarks._sanitize_source_record("benchlm", "nope"))
 
 
 # ── HTTP and provenance security ────────────────────────────────────────────
@@ -725,8 +1678,7 @@ class _LocalFeedServer:
 class HttpSecurityTests(unittest.TestCase):
     def test_only_fixed_public_https_endpoints_are_accepted(self):
         for url in (benchmarks.HARBOR_ENDPOINT, benchmarks.EPOCH_CSV_URL,
-                    benchmarks.LIVEBENCH_CSV_URL, benchmarks.LIVEBENCH_CATEGORIES_URL,
-                    benchmarks.DEEPSWE_JSON_URL):
+                    benchmarks.LIVEBENCH_CSV_URL, benchmarks.LIVEBENCH_CATEGORIES_URL):
             benchmarks.HttpClient._validate_url(url)
         rejected = [
             "http://epoch.ai/data/eci_scores.csv",
@@ -740,6 +1692,19 @@ class HttpSecurityTests(unittest.TestCase):
             with self.subTest(url=url):
                 with self.assertRaises(benchmarks.SourceError):
                     benchmarks.HttpClient._validate_url(url)
+
+    def test_malformed_ports_raise_source_error_not_value_error(self):
+        # parts.port raises ValueError for a non-numeric or out-of-range
+        # port; _validate_url must convert it to SourceError like every
+        # other rejection.
+        for url in ("https://data.benchlm.ai:abc/x",
+                    "https://data.benchlm.ai:99999/x"):
+            with self.subTest(url=url):
+                with self.assertRaises(benchmarks.SourceError) as caught:
+                    benchmarks.HttpClient._validate_url(url)
+                self.assertEqual(str(caught.exception), "invalid response schema")
+        # An explicit default port is still accepted.
+        benchmarks.HttpClient._validate_url("https://data.benchlm.ai:443/x")
 
     def test_httpx_client_is_hardened_scoped_and_closed_per_request(self):
         created = []
@@ -966,6 +1931,20 @@ class HttpSecurityTests(unittest.TestCase):
         with self.assertRaises(benchmarks.SourceError):
             benchmarks._parse_csv(extra.body, ("model", "coding"), maximum_rows=10)
 
+    def test_load_json_rejects_deep_nesting_and_non_finite_numbers(self):
+        # Deeply nested JSON escapes json.loads as RecursionError; it must be
+        # converted to SourceError like every other parse failure.
+        with self.assertRaises(benchmarks.SourceError) as caught:
+            benchmarks._load_json(b"[" * 100000 + b"]" * 100000)
+        self.assertEqual(str(caught.exception), "invalid JSON response")
+        # 1e999 overflows to inf even though only the NaN/Infinity tokens
+        # are rejected by parse_constant: the parse_float hook rejects it.
+        with self.assertRaises(benchmarks.SourceError) as caught:
+            benchmarks._load_json(b'{"a": 1e999}')
+        self.assertEqual(str(caught.exception), "invalid JSON response")
+        # Finite numbers (including exponents that underflow to 0.0) parse.
+        self.assertEqual(benchmarks._load_json(b'{"a": 1e-999}'), {"a": 0.0})
+
     def test_provenance_links_are_allowlisted_https(self):
         provenance_hosts = benchmarks.ALLOWED_HOSTS | {"docs.harborframework.com"}
         for spec in benchmarks.SOURCES.values():
@@ -975,10 +1954,9 @@ class HttpSecurityTests(unittest.TestCase):
                 self.assertIsNone(parts.username)
                 self.assertIsNone(parts.password)
                 self.assertIn(parts.hostname, provenance_hosts)
-        urls = re.findall(r"https://[^\s)]+", benchmarks.SOURCES["deepswe"].warning)
-        self.assertTrue(urls)
-        for url in urls:
-            self.assertIn(urlsplit(url).hostname, provenance_hosts)
+                # Any link a source warning carries must also be allowlisted.
+                for url in re.findall(r"https://[^\s)]+", spec.warning):
+                    self.assertIn(urlsplit(url).hostname, provenance_hosts)
 
 
 # ── Persistence, staleness and failure isolation ────────────────────────────
@@ -987,7 +1965,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "GPT-6.1 Sol", 58.18)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             self.assertTrue(store.refresh_source("harbor"))
@@ -1010,7 +1988,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(good),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         }, clock=lambda: NOW)
         try:
             store.refresh_source("harbor")
@@ -1034,7 +2012,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             store.refresh_source("harbor")
@@ -1126,7 +2104,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             Path(path).write_text("old-cache")
@@ -1159,7 +2137,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": fetcher,
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         store._clock = lambda: clock["now"]
         try:
@@ -1206,7 +2184,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             self.assertTrue(store.refresh_source("harbor"))
@@ -1236,7 +2214,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, _ = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             with patch.object(benchmarks.json, "dumps",
@@ -1254,7 +2232,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             Path(path).write_text("previous-cache")
@@ -1273,7 +2251,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(persist=False, fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             self.assertTrue(store.refresh_source("harbor"))
@@ -1291,7 +2269,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(old),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             store.refresh_source("harbor")
@@ -1303,7 +2281,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
             payload = benchmarks.build_payload([
                 inventory_model("old-model", "x/Old Model"),
                 inventory_model("new-model", "x/New Model"),
-            ], state, deepswe_enabled=False)
+            ], state)
             self.assertEqual(payload["models"][0]["bench"], {})
             self.assertEqual(payload["models"][1]["bench"]["tb4"], 20.0)
         finally:
@@ -1313,7 +2291,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, _ = temp_store(fetchers={
             "harbor": static_fetcher({"not_modified": True}),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             self.assertFalse(store.refresh_source("harbor"))
@@ -1325,7 +2303,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             bad_source = snapshot([entry("tb4", "Model", 10.0)])
@@ -1542,7 +2520,6 @@ class SnapshotPersistenceTests(unittest.TestCase):
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             "epoch": static_fetcher(benchmarks.SourceError("invalid JSON response")),
             "livebench": static_fetcher(benchmarks.SourceError("empty feed")),
-            "deepswe": static_fetcher(benchmarks.SourceError("empty feed")),
         })
         try:
             store.refresh_now()
@@ -1559,14 +2536,14 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(RuntimeError(secret)),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             store.refresh_source("harbor")
             state = store.read_state(now=NOW)
             self.assertNotIn("secret", json.dumps(state))
             payload = benchmarks.build_payload(
-                [inventory_model("m", "openai/m")], state, deepswe_enabled=False)
+                [inventory_model("m", "openai/m")], state)
             serialized = json.dumps(payload)
             self.assertNotIn("fixture-secret", serialized)
             self.assertNotIn("internal.invalid", serialized)
@@ -1745,7 +2722,7 @@ class RefreshConcurrencyTests(unittest.TestCase):
             state = store.read_state(now=NOW)
             self.assertFalse(called)
             payload = benchmarks.build_payload(
-                [inventory_model("m", "openai/m")], state, deepswe_enabled=False)
+                [inventory_model("m", "openai/m")], state)
             self.assertFalse(called)
             self.assertEqual(payload["models"][0]["missing"]["tb4"], "source unavailable")
         finally:
@@ -1756,11 +2733,9 @@ class RefreshConcurrencyTests(unittest.TestCase):
             "harbor": static_fetcher(snapshot([entry("tb4", "A", 10.0)])),
             "epoch": static_fetcher(benchmarks.SourceError("empty feed")),
             "livebench": static_fetcher(benchmarks.SourceError("empty feed")),
-            "deepswe": static_fetcher(benchmarks.SourceError("empty feed")),
         })
         try:
-            with patch.object(benchmarks, "LIVEBENCH_ENABLED", True), \
-                    patch.object(benchmarks, "DEEPSWE_ENABLED", True):
+            with patch.object(benchmarks, "LIVEBENCH_ENABLED", True):
                 store._refresh_worker()
             state = store.read_state(now=NOW)
             self.assertFalse(state["harbor"]["stale"])
@@ -1867,8 +2842,7 @@ class ManualRefreshPolicyTests(unittest.TestCase):
                         return SourceThread(target, name)
 
                     store._thread_factory = factory
-                    with patch.object(benchmarks, "LIVEBENCH_ENABLED", False), \
-                            patch.object(benchmarks, "DEEPSWE_ENABLED", False):
+                    with patch.object(benchmarks, "LIVEBENCH_ENABLED", False):
                         store._refresh_worker()
                     state = store.read_state()
                     self.assertFalse(store.refreshing)
@@ -2011,12 +2985,9 @@ class ManualRefreshPolicyTests(unittest.TestCase):
 class PayloadContractTests(unittest.TestCase):
     def setUp(self):
         self.livebench_patch = patch.object(benchmarks, "LIVEBENCH_ENABLED", True)
-        self.deepswe_patch = patch.object(benchmarks, "DEEPSWE_ENABLED", True)
         self.livebench_patch.start()
-        self.deepswe_patch.start()
 
     def tearDown(self):
-        self.deepswe_patch.stop()
         self.livebench_patch.stop()
 
     def state(self, entries):
@@ -2027,7 +2998,6 @@ class PayloadContractTests(unittest.TestCase):
             "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
             "epoch": [entry("eci", "GPT-6.1 Sol", 168.37)],
             "livebench": [entry("livebench_coding", "gpt-6.1-sol", 96.0)],
-            "deepswe": [entry("deepswe", "gpt-6-astra", 74.1)],
         })
         payload = benchmarks.build_payload(
             [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state)
@@ -2044,7 +3014,6 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(model["bench"]["tb4"], 58.18)
         self.assertEqual(model["bench"]["eci"], 168.37)
         self.assertEqual(model["bench"]["livebench_coding"], 96.0)
-        self.assertEqual(model["missing"]["deepswe"], "unmatched identity")
         result = model["results"]["tb4"][0]
         for key in ("model", "agent", "effort", "evaluator", "version", "date",
                     "date_kind", "value", "ci", "configuration", "source",
@@ -2069,7 +3038,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("tb4", "Model", 50.0, date="2026-09-01", effort="low"),
                 entry("tb4", "Model", 48.0, date="2026-09-01", effort="max"),
             ],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("model", "x/model")], state)["models"][0]
@@ -2104,7 +3073,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("tb4", "Model", 90.0, date="2026-08-01", effort="max"),
                 entry("tb4", "Model", 70.0, date="2026-09-01", effort="max"),
             ],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         payload = benchmarks.build_payload(
             [inventory_model("model", "x/model")], state)
@@ -2122,7 +3091,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("tb4", "Model", 52.0, date="2026-09-01", effort="medium"),
                 entry("tb4", "Model", 48.0, date="2026-09-01", effort="max"),
             ],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         payload = benchmarks.build_payload([inventory_model("model", "x/model")], state)
         model = payload["models"][0]
@@ -2131,28 +3100,13 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["effort"], "max")
 
-    def test_undated_deepswe_scores_are_retained_but_never_summarized(self):
-        state = self.state({
-            "deepswe": [entry("deepswe", "gpt-6-astra", 74.1)],
-            "harbor": [], "epoch": [], "livebench": [],
-        })
-        model = benchmarks.build_payload(
-            [inventory_model("gpt-6-astra", "openai/gpt-6-astra")], state)["models"][0]
-        self.assertNotIn("deepswe", model["bench"])
-        self.assertEqual(model["missing"]["deepswe"], "not evaluated")
-        result = model["results"]["deepswe"][0]
-        self.assertEqual(result["value"], 74.1)
-        self.assertIsNone(result["date"])
-        self.assertIsNone(result["date_kind"])
-        self.assertNotIn("date_kind", result["metadata"])
-
     def test_multiple_undated_configurations_never_get_a_summary(self):
         state = self.state({
             "harbor": [
                 entry("tb4", "Model", 60.0, date=None, effort="max"),
                 entry("tb4", "Model", 70.0, date=None, effort="low"),
             ],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("model", "x/model")], state)["models"][0]
@@ -2177,7 +3131,6 @@ class PayloadContractTests(unittest.TestCase):
                 entry("livebench_coding", "gpt-6.1-sol", 96.0),
                 entry("livebench_coding", "claude-opus-5.5", 96.3),
             ],
-            "deepswe": [entry("deepswe", "glm-5-3", 68.96)],
         })
         models = benchmarks.build_payload([
             inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol"),
@@ -2192,12 +3145,6 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(models[1]["bench"]["livebench_coding"], 96.3)
         self.assertEqual(models[2]["bench"]["tb4"], 41.82)
         self.assertEqual(models[2]["bench"]["eci"], 155.99)
-        # DeepSWE rows are undated, so no summary is invented; the result value
-        # remains available in the per-configuration list.
-        self.assertNotIn("deepswe", models[2]["bench"])
-        self.assertEqual(models[2]["missing"]["deepswe"], "not evaluated")
-        self.assertEqual(models[2]["results"]["deepswe"][0]["value"], 68.96)
-        self.assertIsNone(models[2]["results"]["deepswe"][0]["date"])
         # LiveBench has no glm-5.3 row: missing, not silently borrowed.
         self.assertEqual(models[2]["missing"]["livebench_coding"], "unmatched identity")
 
@@ -2219,10 +3166,6 @@ class PayloadContractTests(unittest.TestCase):
                 # curated alias and needs no source mapping.
                 entry("livebench_coding", "mistral-large-4", 60.0),
             ],
-            "deepswe": [
-                entry("deepswe", "glm-5-3", 68.96),
-                entry("deepswe", "glm-5-3-flash", 63.39),
-            ],
         })
         models = benchmarks.build_payload([
             inventory_model("zai-glm-5-3", "mistral/zai-glm-5-3"),
@@ -2236,23 +3179,16 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(models[1]["bench"], {
             "tb4": 35.76, "livebench_coding": 80.6, "eci": 153.08,
         })
-        # DeepSWE aliases resolve, but its rows are undated, so the values stay
-        # in results and the summary remains "not evaluated" by contract.
-        self.assertEqual(models[0]["results"]["deepswe"][0]["value"], 68.96)
-        self.assertEqual(models[1]["results"]["deepswe"][0]["value"], 63.39)
-        self.assertEqual(models[0]["missing"]["deepswe"], "not evaluated")
         # Only the reviewed Epoch alias was added for Mistral Large 4.
         self.assertEqual(models[2]["bench"],
                          {"eci": 150.03, "livebench_coding": 60.0})
         self.assertEqual(models[2]["missing"]["tb4"], "unmatched identity")
-        self.assertEqual(models[2]["missing"]["deepswe"], "unmatched identity")
 
     def test_mistral_rolling_latest_and_undocumented_variants_stay_unmatched(self):
         state = self.state({
             "harbor": [entry("tb4", "GLM-5.3", 41.82)],
             "epoch": [entry("eci", "Mistral Large 4", 150.03)],
             "livebench": [entry("livebench_coding", "glm-5.3", 80.0)],
-            "deepswe": [entry("deepswe", "glm-5-3", 68.96)],
         })
         candidates = [
             ("mistral-large-latest", "mistral/mistral-large-latest"),
@@ -2275,7 +3211,6 @@ class PayloadContractTests(unittest.TestCase):
             "harbor": [entry("tb4", "GLM-5.3", 41.82)],
             "epoch": [entry("eci", "GLM-5.3", 155.99)],
             "livebench": [entry("livebench_coding", "glm-5.3", 80.0)],
-            "deepswe": [entry("deepswe", "glm-5-3", 68.96)],
         })
         stock = benchmarks.build_payload([
             inventory_model(
@@ -2302,13 +3237,12 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(normal["bench"]["tb4"], 41.82)
         self.assertEqual(normal["bench"]["eci"], 155.99)
         self.assertEqual(normal["bench"]["livebench_coding"], 80.0)
-        self.assertEqual(normal["results"]["deepswe"][0]["value"], 68.96)
 
     def test_mistral_alias_routes_still_exclude_noncoding_and_abliterated(self):
         state = self.state({
             "harbor": [entry("tb4", "GLM-5.3", 41.82)],
             "epoch": [entry("eci", "GLM-5.3", 155.99)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         models = benchmarks.build_payload([
             inventory_model("audio", "mistral/voxtral-mini-latest",
@@ -2329,7 +3263,7 @@ class PayloadContractTests(unittest.TestCase):
         state = self.state({
             "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
             "epoch": [entry("eci", "GPT-6.1 Sol", 168.37)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         model = benchmarks.build_payload([
             inventory_model("chatgpt-gpt-6.1-sol", "chatgpt/gpt-6.1-sol",
@@ -2347,7 +3281,7 @@ class PayloadContractTests(unittest.TestCase):
         state = self.state({
             "harbor": [entry("tb4", "GPT-5.6 Luna", 52.12)],
             "epoch": [entry("eci", "GPT-5.6 Luna", 156.5)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         model = benchmarks.build_payload([
             inventory_model("gpt-5.6-luna", "openai/responses/gpt-5.6-luna"),
@@ -2357,27 +3291,32 @@ class PayloadContractTests(unittest.TestCase):
 
     def test_user_approved_identity_aliases_resolve(self):
         # Reviewed one-to-one identities approved by the operator on
-        # 2026-10-29 (see SOURCE_ALIASES comments for the risk notes).
+        # 2026-10-29; the rule cascade reproduces them (see
+        # ALIAS_PARITY_TRIPLES for the full parity fixture).
         state = self.state({
             "epoch": [
                 entry("eci", "Kimi K3", 157.86),
                 entry("eci", "Kimi K2.7 Code", 150.11),
                 entry("eci", "Claude Haiku 5.5", 159.32),
                 entry("eci", "DeepSeek V4.1 Flash", 155.93),
+                entry("eci", "DeepSeek V4.1 Flash 1017", 158.83),
                 entry("eci", "Qwen 3.8 Max", 157.4),
                 entry("eci", "Qwen 3.8 27B", 142.0),
                 entry("eci", "Muse Spark 1.3", 157.21),
             ],
             "harbor": [entry("tb4", "Muse Spark 1.3", 46.02)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         cases = [
             ("kimi-k3", "openai/kimi-k3", 157.86),
             ("kimi-k2.7-code", "openai/kimi-k2.7-code", 150.11),
             ("claude-haiku-5-5", "anthropic/claude-haiku-5-5", 159.32),
             ("deepseek-v4.1-flash", "openai/deepseek-v4.1-flash", 155.93),
+            # Documented divergence (brief §5): the route serving the pinned
+            # 1017 snapshot resolves to the dated row, which wins where it
+            # has entries (158.83), instead of the base row's 155.93.
             ("deepseek-v4.1-flash-mistral",
-             "mistral/deepseek-v4-1-flash-1017", 155.93),
+             "mistral/deepseek-v4-1-flash-1017", 158.83),
             ("qwen3.8-max", "openai/qwen3.8-max", 157.4),
             ("qwen3.8-27b", "openai/qwen3.8:27b", 142.0),
             ("muse-spark-1.3-contributor",
@@ -2401,7 +3340,7 @@ class PayloadContractTests(unittest.TestCase):
         # route (2026-10-29) and considers it the same model.
         state = self.state({
             "harbor": [entry("tb4", "Qwen3.8-Max-0902", 51.6)],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("qwen3.8-max", "openai/qwen3.8-max")], state)["models"][0]
@@ -2419,7 +3358,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("livebench_coding", "qwen3.8-27b", 86.8),
                 entry("livebench_coding", "muse-spark-1.3", 90.2),
             ],
-            "harbor": [], "epoch": [], "deepswe": [],
+            "harbor": [], "epoch": [],
         })
         cases = [
             ("deepseek-v4.1-flash-mistral", "mistral/deepseek-v4-1-flash-1017", 96.0),
@@ -2441,7 +3380,6 @@ class PayloadContractTests(unittest.TestCase):
             "harbor": [entry("tb4", "Opus 5.5", 64.85)],
             "epoch": [entry("eci", "Claude Opus 5.5", 168.83)],
             "livebench": [entry("livebench_coding", "claude-opus-5.5", 96.3)],
-            "deepswe": [],
         })
         names = ["claude-opus-5.5-abliterated", "claude-opus-5.5-preview",
                  "claude-opus-5", "claude-opus-latest", "claudeopus55"]
@@ -2459,7 +3397,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_case_insensitive_exact_identity_is_supported_without_punctuation_collapsing(self):
         state = self.state({
             "harbor": [entry("tb4", "GLM-5.3", 41.82)],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         upper = benchmarks.build_payload(
             [inventory_model("GLM-5.3", "zai/GLM-5.3")], state)["models"][0]
@@ -2471,7 +3409,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_unsupported_modalities_remain_rows_without_scores(self):
         state = self.state({
             "harbor": [entry("tb4", "Embed 1", 50.0)],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         models = benchmarks.build_payload([
             inventory_model("audio", "mistral/voxtral-mini-latest", mode="audio_transcription"),
@@ -2487,7 +3425,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_missing_reasons_are_specific_and_source_scoped(self):
         state = self.state({
             "livebench": [entry("livebench_coding", "matched", 80.0)],
-            "harbor": [], "epoch": None, "deepswe": [],
+            "harbor": [], "epoch": None,
         })
         models = benchmarks.build_payload([
             inventory_model("absent", "x/absent"),
@@ -2505,7 +3443,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_identity_match_but_missing_suite_is_not_evaluated(self):
         state = self.state({
             "livebench": [entry("livebench_reasoning", "model", 90.0)],
-            "harbor": [], "epoch": [], "deepswe": [],
+            "harbor": [], "epoch": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("model", "x/model")], state)["models"][0]
@@ -2515,7 +3453,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_openai_is_a_transport_provider_not_an_identity_source(self):
         state = self.state({
             "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("azure-route", "openai/gpt-6.1-sol")], state)["models"][0]
@@ -2526,7 +3464,7 @@ class PayloadContractTests(unittest.TestCase):
         with patch.object(benchmarks, "LIVEBENCH_ENABLED", False):
             state = self.state({
                 "livebench": [entry("livebench_coding", "gpt-6.1-sol", 96.0)],
-                "harbor": [], "epoch": [], "deepswe": [],
+                "harbor": [], "epoch": [],
             })
             payload = benchmarks.build_payload(
                 [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state)
@@ -2540,19 +3478,6 @@ class PayloadContractTests(unittest.TestCase):
         self.assertIn("reuse terms unverified", source["warning"])
         self.assertNotIn("96.0", json.dumps(payload))
 
-    def test_disabled_deepswe_is_optional_and_hides_cached_rows(self):
-        with patch.object(benchmarks, "DEEPSWE_ENABLED", False):
-            state = self.state({
-                "deepswe": [entry("deepswe", "gpt-6-astra", 74.1)],
-                "harbor": [], "epoch": [], "livebench": [],
-            })
-            payload = benchmarks.build_payload(
-                [inventory_model("gpt-6-astra", "openai/gpt-6-astra")], state)
-        self.assertNotIn("deepswe", [m["key"] for m in payload["metrics"]])
-        self.assertTrue(payload["sources"]["deepswe"]["disabled"])
-        self.assertEqual(payload["models"][0]["bench"], {})
-        self.assertNotIn("deepswe", payload["models"][0]["missing"])
-
     def test_source_provenance_never_includes_model_supplied_urls(self):
         row = harbor_row(model_url="https://evil.invalid/secret-path")
         state = self.state({"harbor": [entry("tb4", "GPT-6.1 Sol", 1.0)]})
@@ -2565,12 +3490,587 @@ class PayloadContractTests(unittest.TestCase):
         state = self.state({
             "harbor": [entry("tb4", "Model", 10.0)],
             "epoch": [entry("eci", "Model", 120.0)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         payload = benchmarks.build_payload([inventory_model("model", "x/model")], state)
         for model in payload["models"]:
             for value in model["bench"].values():
                 self.assertTrue(math.isfinite(value))
+
+
+# ── Rule-based identity cascade ─────────────────────────────────────────────
+# Parity fixture: the reviewed alias triples that the removed SOURCE_ALIASES
+# table encoded, kept here as test data only (the runtime resolves identities
+# purely by the rule cascade in app/benchmarks.py).  Each source's synthetic
+# index is built from the fixture's targets plus the dated 1017 models that
+# source actually publishes (PARITY_EXTRA_MODELS).  The two documented
+# divergences (PARITY_DIVERGENCES) are the 1017-snapshot triples: the route
+# now resolves to the dated model itself, and the per-metric preference falls
+# back to the base row only for metrics the dated row does not have.
+ALIAS_PARITY_TRIPLES = {
+    "harbor": {
+        'claude-fable-5': 'Fable 5',
+        'claude-fable-5.1': 'Fable 5.1',
+        'glm-5.3': 'GLM-5.3',
+        'glm-5.3-flash': 'GLM-5.3-Flash',
+        'zai-glm-5-3': 'GLM-5.3',
+        'zai-glm-5-3-flash': 'GLM-5.3-Flash',
+        'gpt-5.6-luna': 'GPT-5.6 Luna',
+        'gpt-5.6-sol': 'GPT-5.6 Sol',
+        'gpt-5.6-terra': 'GPT-5.6 Terra',
+        'gpt-6-astra': 'GPT-6 Astra',
+        'gpt-6-luna': 'GPT-6 Luna',
+        'gpt-6-sol': 'GPT-6 Sol',
+        'gpt-6.1-sol': 'GPT-6.1 Sol',
+        'gemini-3.7-flash': 'Gemini 3.7 Flash',
+        'gemini-3.8-flash': 'Gemini 3.8 Flash',
+        'grok-4.5': 'Grok 4.5',
+        'grok-4.6': 'Grok 4.6',
+        'grok-4.7': 'Grok 4.7',
+        'muse-spark-1.3': 'Muse Spark 1.3',
+        'muse-spark-1.3-contributor': 'Muse Spark 1.3',
+        'claude-opus-4.8': 'Opus 4.8',
+        'claude-opus-5': 'Opus 5',
+        'claude-opus-5.5': 'Opus 5.5',
+        'qwen3.8-max': 'Qwen3.8-Max-0902',
+        'qwen3.8-max-0902': 'Qwen3.8-Max-0902',
+        'claude-sonnet-5': 'Sonnet 5',
+        'claude-sonnet-5.5': 'Sonnet 5.5',
+    },
+    "epoch": {
+        'claude-fable-5': 'Claude Fable 5',
+        'claude-fable-5.1': 'Claude Fable 5.1',
+        'glm-5.3': 'GLM-5.3',
+        'glm-5.3-flash': 'GLM-5.3-Flash',
+        'zai-glm-5-3': 'GLM-5.3',
+        'zai-glm-5-3-flash': 'GLM-5.3-Flash',
+        'mistral-large-4': 'Mistral Large 4',
+        'gpt-5.6-luna': 'GPT-5.6 Luna',
+        'gpt-5.6-sol': 'GPT-5.6 Sol',
+        'gpt-5.6-terra': 'GPT-5.6 Terra',
+        'gpt-6-astra': 'GPT-6 Astra',
+        'gpt-6-luna': 'GPT-6 Luna',
+        'gpt-6-sol': 'GPT-6 Sol',
+        'gpt-6.1-sol': 'GPT-6.1 Sol',
+        'gemini-3.7-flash': 'Gemini 3.7 Flash',
+        'gemini-3.8-flash': 'Gemini 3.8 Flash',
+        'grok-4.5': 'Grok 4.5',
+        'grok-4.6': 'Grok 4.6',
+        'grok-4.7': 'Grok 4.7',
+        'muse-spark-1.3': 'Muse Spark 1.3',
+        'claude-opus-4.8': 'Claude Opus 4.8',
+        'claude-opus-5': 'Claude Opus 5',
+        'claude-opus-5.5': 'Claude Opus 5.5',
+        'qwen3.8-max-0902': 'Qwen3.8 Max (0902)',
+        'claude-sonnet-5': 'Claude Sonnet 5',
+        'claude-sonnet-5.5': 'Claude Sonnet 5.5',
+        'kimi-k3': 'Kimi K3',
+        'kimi-k2.7-code': 'Kimi K2.7 Code',
+        'claude-haiku-5-5': 'Claude Haiku 5.5',
+        'deepseek-v4.1-flash': 'DeepSeek V4.1 Flash',
+        'deepseek-v4-1-flash-1017': 'DeepSeek V4.1 Flash',
+        'qwen3.8-max': 'Qwen 3.8 Max',
+        'qwen3.8:27b': 'Qwen 3.8 27B',
+        'muse-spark-1.3-contributor': 'Muse Spark 1.3',
+    },
+    "livebench": {
+        'zai-glm-5-3': 'glm-5.3',
+        'zai-glm-5-3-flash': 'glm-5.3-flash',
+        'deepseek-v4-1-flash-1017': 'deepseek-v4.1-flash-1017',
+        'claude-haiku-5-5': 'claude-haiku-5.5',
+        'qwen3.8:27b': 'qwen3.8-27b',
+        'muse-spark-1.3-contributor': 'muse-spark-1.3',
+        'deepseek-v4.1-flash': 'deepseek-v4.1-flash-1017',
+    },
+    "benchlm": {
+        'gpt-6.1-sol': 'gpt-6-1-sol',
+        'zai-glm-5-3': 'glm-5-3',
+        'zai-glm-5-3-flash': 'glm-5-3-flash',
+        'deepseek-v4-1-flash-1017': 'deepseek-v4-1-flash',
+        'qwen3.8:27b': 'qwen3-8-27b',
+        'glm-5.3': 'glm-5-3',
+        'glm-5.3-flash': 'glm-5-3-flash',
+        'gpt-5.6-luna': 'gpt-5-6-luna',
+        'kimi-k2.7-code': 'kimi-k2-7-code',
+        'mimo-v2.6-flash': 'mimo-v2-6-flash',
+        'mimo-v2.6-pro': 'mimo-v2-6-pro',
+        'qwen3.8-max': 'qwen3-8-max',
+        'deepseek-v4.1-flash': 'deepseek-v4-1-flash',
+        'muse-spark-1.3-contributor': 'muse-spark-1-3',
+    },
+}
+PARITY_EXTRA_MODELS = {
+    "epoch": ("DeepSeek V4.1 Flash 1017",),
+    "benchlm": ("deepseek-v4-1-flash-1017",),
+}
+# The one documented divergence per source: the 1017 route resolves to the
+# dated snapshot model (itself), not to the base row the old alias named.
+PARITY_DIVERGENCES = {
+    ("epoch", "deepseek-v4-1-flash-1017"): "DeepSeek V4.1 Flash 1017",
+    ("benchlm", "deepseek-v4-1-flash-1017"): "deepseek-v4-1-flash-1017",
+}
+
+
+def parity_index(source):
+    """Synthetic index for one source, built from the parity fixture targets."""
+    models = set(ALIAS_PARITY_TRIPLES[source].values())
+    models.update(PARITY_EXTRA_MODELS.get(source, ()))
+    entries = [{"metric": "tb4", "model": model} for model in sorted(models)]
+    return benchmarks._build_index({"data": {"entries": entries}})
+
+
+def resolve_identity(source, upstream, index=None):
+    return benchmarks._resolve_identity(
+        {"upstream_model": upstream}, source, index if index is not None
+        else parity_index(source))
+
+
+class RuleCascadeTests(unittest.TestCase):
+    def _index(self, *models):
+        entries = [{"metric": "tb4", "model": model} for model in models]
+        return benchmarks._build_index({"data": {"entries": entries}})
+
+    def test_canonical_form_equivalences(self):
+        equal = [
+            ("qwen3.8-max", "Qwen 3.8 Max"),
+            ("qwen3.8:27b", "qwen3-8-27b"),
+            ("claude-haiku-5-5", "claude-haiku-5.5"),
+            ("27B", "27b"),
+        ]
+        for left, right in equal:
+            with self.subTest(pair=(left, right)):
+                self.assertEqual(benchmarks._canonical_tokens(left),
+                                 benchmarks._canonical_tokens(right))
+
+    def test_canonical_form_non_equalities(self):
+        unequal = [
+            ("kimi-k3", "kimi-3"),  # no k3<->3 equivalence
+            ("qwen3-8-max", "qwen3-8-max-internal"),
+        ]
+        for left, right in unequal:
+            with self.subTest(pair=(left, right)):
+                self.assertNotEqual(benchmarks._canonical_tokens(left),
+                                    benchmarks._canonical_tokens(right))
+
+    def test_date_suffix_validation(self):
+        valid = {"1017": 1, "0902": 1, "0731": 1, "0813": 1, "0229": 1,
+                 "20260317": 1, "2026-03-17": 3}
+        for suffix, expected in valid.items():
+            with self.subTest(suffix=suffix):
+                tokens = benchmarks._canonical_tokens("model-" + suffix)
+                self.assertEqual(benchmarks._date_suffix_length(tokens), expected)
+        invalid = ["nvfp4", "internal", "next", "preview", "0", "128b",
+                   "2025", "1-pro", "max", "thinking",
+                   "1300", "2026-13-01", "2026-02-30",
+                   # MMDD must be a real calendar date (year 2000, a leap
+                   # year): these month/day pairs do not exist.
+                   "0231", "1131", "0631", "0431", "0931", "0230"]
+        for suffix in invalid:
+            with self.subTest(suffix=suffix):
+                tokens = benchmarks._canonical_tokens("model-" + suffix)
+                self.assertEqual(benchmarks._date_suffix_length(tokens), 0)
+
+    def test_candidate_generation_is_every_slash_suffix(self):
+        self.assertEqual(
+            benchmarks._identity_candidates({"upstream_model": "mistral/zai-glm-5-3"}),
+            ["mistral/zai-glm-5-3", "zai-glm-5-3"])
+        self.assertEqual(
+            benchmarks._identity_candidates(
+                {"upstream_model": "openai/responses/gpt-5.6-luna"}),
+            ["openai/responses/gpt-5.6-luna", "responses/gpt-5.6-luna",
+             "gpt-5.6-luna"])
+        self.assertEqual(
+            benchmarks._identity_candidates({"upstream_model": "plain"}), ["plain"])
+        # A trailing slash must not survive into the suffix candidates.
+        self.assertEqual(
+            benchmarks._identity_candidates({"upstream_model": "mistral/glm-5.3/"}),
+            ["mistral/glm-5.3", "glm-5.3"])
+
+    def test_r1_exact_and_casefold_beat_canonical(self):
+        # "Alpha-1" and "alpha 1" share the canonical form "alpha-1", so the
+        # canonical rule is ambiguous and can never fire; the exact and
+        # case-folded exact rules still resolve the candidate.
+        index = self._index("Alpha-1", "alpha 1")
+        self.assertIsNone(index["canon"]["alpha-1"])  # ambiguity guard
+        self.assertEqual(resolve_identity("harbor", "ALPHA-1", index), "Alpha-1")
+        self.assertEqual(resolve_identity("harbor", "alpha-1", index), "Alpha-1")
+
+    def test_r2_canonical_beats_r3_dated_extension(self):
+        index = self._index("Base", "Base 0902")
+        self.assertEqual(resolve_identity("epoch", "base", index), "Base")
+        self.assertEqual(resolve_identity("epoch", "BASE", index), "Base")
+
+    def test_r3_unique_dated_extension_wins(self):
+        index = self._index("Only 0902")
+        self.assertEqual(resolve_identity("harbor", "only", index), "Only 0902")
+        self.assertEqual(resolve_identity("harbor", "only-0902", index), "Only 0902")
+
+    def test_r3_two_snapshots_fails_closed(self):
+        index = self._index("Snap 0902", "Snap 0731")
+        self.assertIsNone(resolve_identity("epoch", "snap", index))
+        # A dated candidate itself still resolves exactly/canonically.
+        self.assertEqual(resolve_identity("epoch", "snap-0902", index), "Snap 0902")
+
+    def test_r4_strips_only_the_contributor_qualifier(self):
+        index = self._index("Muse Spark 1.3")
+        self.assertEqual(
+            resolve_identity("harbor", "muse-spark-1.3-contributor", index),
+            "Muse Spark 1.3")
+        self.assertIsNone(
+            resolve_identity("harbor", "muse-spark-1.3-preview", index))
+
+    def test_r5_head_drop_never_fires_before_r2(self):
+        index = self._index("Head-Tail", "tail")
+        self.assertEqual(resolve_identity("x", "head-tail", index), "Head-Tail")
+        only_tail = self._index("tail")
+        self.assertEqual(resolve_identity("x", "head-tail", only_tail), "tail")
+
+    def test_r5_head_drop_overmatches_unpublished_ids(self):
+        # Characterization of the known, accepted R5 hazard documented at the
+        # R5 branch in _match_candidate_tokens: head drop is the only
+        # subsequence rule, so an unpublished id whose tail names a published
+        # model resolves to that published row — tiny-llama-7b -> LLaMA-7B and
+        # pro-gpt-5.4 -> GPT-5.4.  Accepted by design; pinned against a real
+        # built index so the overmatch is visible if the rule ever changes.
+        index = self._index("LLaMA-7B", "GPT-5.4")
+        self.assertEqual(resolve_identity("benchlm", "tiny-llama-7b", index),
+                         "LLaMA-7B")
+        self.assertEqual(resolve_identity("benchlm", "pro-gpt-5.4", index),
+                         "GPT-5.4")
+
+    def test_ambiguity_guard_never_matches_a_shared_canonical_form(self):
+        index = self._index("A B", "A-B")
+        self.assertIsNone(index["canon"]["a-b"])
+        # "a.b" matches neither exactly nor case-folded, only canonically —
+        # and that form is ambiguous, so the resolution fails closed.
+        self.assertIsNone(resolve_identity("epoch", "a.b", index))
+
+    def test_tripwires_never_cross_match_variants(self):
+        cases = [
+            (("nemotron-super-vl-3.5", "nemotron-super-vl-3.5-nvfp4"),
+             "x/nemotron-super-vl-3.5", "nemotron-super-vl-3.5"),
+            (("nemotron-super-vl-3.5-nvfp4",),
+             "x/nemotron-super-vl-3.5", None),
+            (("step-5-preview",), "stepfun/step-5", None),
+            (("mistral-small-3.1",), "mistral/mistral-small-latest", None),
+            (("qwen3-6-max-preview",), "x/qwen3.6-max", None),
+            (("mistral-large-4",), "x/mistral-large-4-0", None),
+            (("mistral-large-4-0",), "mistral/mistral-large-4", None),
+        ]
+        for models, upstream, expected in cases:
+            with self.subTest(upstream=upstream, models=models):
+                self.assertEqual(resolve_identity("livebench", upstream,
+                                                  self._index(*models)),
+                                 expected)
+
+    def test_parity_fixture_rules_reproduce_every_reviewed_triple(self):
+        for source, triples in ALIAS_PARITY_TRIPLES.items():
+            index = parity_index(source)
+            with self.subTest(source=source):
+                # No two fixture targets share a canonical form.
+                self.assertEqual(
+                    [key for key, model in index["canon"].items()
+                     if model is None], [])
+            for upstream, target in triples.items():
+                with self.subTest(source=source, upstream=upstream):
+                    expected = PARITY_DIVERGENCES.get((source, upstream), target)
+                    self.assertEqual(
+                        benchmarks._resolve_identity(
+                            {"upstream_model": upstream}, source, index),
+                        expected)
+
+    def test_dated_route_prefers_dated_row_then_base_per_metric(self):
+        # The dated key has tb4 and one composite; the base key has tb4 and
+        # all composites.  The dated row wins where it exists (even when its
+        # value is lower — never merged or maxed), and the base row supplies
+        # only the metrics the dated row lacks.
+        state = make_state({"benchlm": [
+            entry("tb4", "deepseek-v4-1-flash-1017", 31.818, source="benchlm",
+                  date="2026-10-29"),
+            entry("tb4", "deepseek-v4-1-flash", 42.3, source="benchlm",
+                  date="2026-10-29"),
+            entry("benchalign_overall", "deepseek-v4-1-flash-1017", 60.0,
+                  source="benchlm", date="2026-10-28"),
+            entry("benchalign_overall", "deepseek-v4-1-flash", 65.22,
+                  source="benchlm", date="2026-10-28"),
+            entry("benchalign_coding", "deepseek-v4-1-flash", 62.91,
+                  source="benchlm", date="2026-10-28"),
+        ]})
+        payload = benchmarks.build_payload(
+            [inventory_model("deepseek-v4.1-flash-mistral",
+                             "mistral/deepseek-v4-1-flash-1017")],
+            state, benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertNotIn("tb4", model["missing"])
+        # Present on both keys: the dated value wins, not the maximum.
+        self.assertEqual(model["bench"]["tb4"], 31.818)
+        self.assertEqual(model["results"]["tb4"][0]["model"],
+                         "deepseek-v4-1-flash-1017")
+        self.assertEqual(model["bench"]["benchalign_overall"], 60.0)
+        self.assertEqual(model["results"]["benchalign_overall"][0]["model"],
+                         "deepseek-v4-1-flash-1017")
+        # Present only on the base key: per-metric fallback to the base row.
+        self.assertEqual(model["bench"]["benchalign_coding"], 62.91)
+        self.assertEqual(model["results"]["benchalign_coding"][0]["model"],
+                         "deepseek-v4-1-flash")
+
+
+# ── BenchLM payload and fallback contract ───────────────────────────────────
+class BenchLMPayloadTests(unittest.TestCase):
+    def benchlm_entry(self, metric, model, value, **kwargs):
+        kwargs.setdefault("source", "benchlm")
+        kwargs.setdefault("date", "2026-10-28")
+        if metric == "tb4":
+            kwargs.setdefault("evaluator", benchmarks.BENCHLM_TB4_EVALUATOR)
+            kwargs.setdefault("version", benchmarks.BENCHLM_TB4_BOARDS[0][0])
+            kwargs.setdefault("metadata",
+                              {"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
+        else:
+            kwargs.setdefault("evaluator", benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+            kwargs.setdefault("version", "benchalign-2026.10.28")
+        return entry(metric, model, value, **kwargs)
+
+    def test_tb4_spec_keeps_harbor_primary_with_benchlm_fallback(self):
+        spec = benchmarks.METRIC_BY_KEY["tb4"]
+        self.assertEqual(spec.source, "harbor")
+        self.assertEqual(spec.fallback, ("benchlm",))
+        # tb4 merges candidates by maximum selected value; every other metric
+        # keeps the first-candidate policy, and as_dict stays frontend-shaped.
+        self.assertEqual(spec.merge, "max")
+        for other in benchmarks.METRICS:
+            if other.key != "tb4":
+                self.assertEqual(other.merge, "first")
+        self.assertEqual(set(spec.as_dict()),
+                         {"key", "label", "name", "unit", "source"})
+        # The BenchLM key normalization (gpt-6.1-sol -> gpt-6-1-sol) now comes
+        # from the rule cascade, not an alias table.
+        index = benchmarks._build_index(
+            {"data": {"entries": [{"metric": "tb4", "model": "gpt-6-1-sol"}]}})
+        self.assertEqual(benchmarks._resolve_identity(
+            {"upstream_model": "openai/gpt-6.1-sol"}, "benchlm", index),
+            "gpt-6-1-sol")
+
+    def test_harbor_wins_tb4_when_both_sources_cover_the_model(self):
+        state = make_state({
+            "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
+            "benchlm": [self.benchlm_entry("tb4", "gpt-6-1-sol", 55.5),
+                        self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5)],
+        })
+        payload = benchmarks.build_payload(
+            [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+            benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["bench"]["tb4"], 58.18)
+        self.assertEqual(model["results"]["tb4"][0]["source"], "harbor")
+        self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
+        result = model["results"]["benchalign_overall"][0]
+        self.assertEqual(result["source"], "benchlm")
+        self.assertEqual(result["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+
+    def test_tb4_max_merge_picks_the_higher_candidate_across_sources(self):
+        # merge="max": the candidate whose selected result value is highest
+        # supplies the row; an exact tie keeps the earlier candidate (Harbor).
+        cases = [
+            ("benchlm higher", 41.0, 61.25, "benchlm", 61.25),
+            ("harbor higher", 58.18, 55.5, "harbor", 58.18),
+            ("exact tie", 50.0, 50.0, "harbor", 50.0),
+        ]
+        for label, harbor_value, benchlm_value, expected_source, expected in cases:
+            with self.subTest(label=label):
+                state = make_state({
+                    "harbor": [entry("tb4", "GPT-6.1 Sol", harbor_value)],
+                    "benchlm": [self.benchlm_entry("tb4", "gpt-6-1-sol", benchlm_value)],
+                })
+                payload = benchmarks.build_payload(
+                    [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+                    benchlm_enabled=True)
+                model = payload["models"][0]
+                self.assertEqual(model["bench"]["tb4"], expected)
+                self.assertNotIn("tb4", model["missing"])
+                results = model["results"]["tb4"]
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0]["source"], expected_source)
+                self.assertTrue(results[0]["selected"])
+                if expected_source == "benchlm":
+                    self.assertEqual(results[0]["version"],
+                                     benchmarks.BENCHLM_TB4_BOARDS[0][0])
+                    self.assertEqual(results[0]["metadata"]["board"],
+                                     benchmarks.BENCHLM_TB4_BOARDS[0][1])
+                else:
+                    self.assertEqual(results[0]["version"],
+                                     benchmarks.SOURCES["harbor"].version)
+
+    def test_tb4_missing_reasons_are_unchanged_without_a_usable_value(self):
+        # No candidate yields a numeric selected value: the selection falls
+        # through to the first-candidate behaviour, so the missing reason and
+        # the emitted results are exactly as before the max merge.
+        state = make_state({
+            "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18, date=None)],
+            "benchlm": [self.benchlm_entry("tb4", "gpt-6-1-sol", 55.5, date=None)],
+        })
+        payload = benchmarks.build_payload(
+            [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+            benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["missing"]["tb4"], "not evaluated")
+        self.assertNotIn("tb4", model["bench"])
+        self.assertEqual(len(model["results"]["tb4"]), 1)  # harbor's row kept
+        self.assertFalse(any(item["selected"] for item in model["results"]["tb4"]))
+        # Primary outage with no usable fallback row still reports
+        # "source unavailable" (the primary-outage rule), and with an undated
+        # fallback row the reason stays "not evaluated" as before.
+        for label, benchlm, expected in (
+            ("primary outage, no tb4 row",
+             [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5)],
+             "source unavailable"),
+            ("primary outage, undated tb4 row",
+             [self.benchlm_entry("tb4", "gpt-6-1-sol", 55.5, date=None)],
+             "not evaluated"),
+        ):
+            with self.subTest(label=label):
+                state = make_state({"harbor": None, "benchlm": benchlm})
+                payload = benchmarks.build_payload(
+                    [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+                    benchlm_enabled=True)
+                model = payload["models"][0]
+                self.assertEqual(model["missing"]["tb4"], expected)
+                self.assertNotIn("tb4", model["bench"])
+
+    def test_benchlm_fills_tb4_when_harbor_has_no_identity_or_no_entries(self):
+        benchlm = [self.benchlm_entry("tb4", "glm-5-3", 41.0),
+                   self.benchlm_entry("benchalign_overall", "glm-5-3", 80.25)]
+        for label, harbor in (("no identity", [entry("tb4", "GPT-6.1 Sol", 58.18)]),
+                              ("no entries", None)):
+            with self.subTest(label=label):
+                state = make_state({"harbor": harbor, "benchlm": benchlm})
+                payload = benchmarks.build_payload(
+                    [inventory_model("zai-glm-5-3", "mistral/zai-glm-5-3")],
+                    state, benchlm_enabled=True)
+                model = payload["models"][0]
+                self.assertEqual(model["bench"]["tb4"], 41.0)
+                self.assertNotIn("tb4", model["missing"])
+                result = model["results"]["tb4"][0]
+                self.assertEqual(result["source"], "benchlm")
+                self.assertEqual(result["version"], benchmarks.BENCHLM_TB4_BOARDS[0][0])
+                self.assertEqual(result["metadata"]["board"],
+                                 benchmarks.BENCHLM_TB4_BOARDS[0][1])
+                self.assertEqual(result["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
+                self.assertEqual(result["date_kind"],
+                                 benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+                self.assertEqual(model["bench"]["benchalign_overall"], 80.25)
+
+    def test_missing_reason_is_the_furthest_progressed_candidate(self):
+        state = make_state({
+            "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
+            "benchlm": [self.benchlm_entry("benchalign_overall", "glm-5-3", 80.25)],
+        })
+        # Harbor has data but no identity for this model (unmatched), while
+        # BenchLM resolves the identity but has no tb4 row (not evaluated):
+        # the deeper reason wins.
+        payload = benchmarks.build_payload(
+            [inventory_model("zai-glm-5-3", "mistral/zai-glm-5-3")], state,
+            benchlm_enabled=True)
+        self.assertEqual(payload["models"][0]["missing"]["tb4"], "not evaluated")
+        # A disabled fallback (unavailable) never masks the primary's unmatched.
+        payload = benchmarks.build_payload(
+            [inventory_model("absent", "x/absent")], state, benchlm_enabled=False)
+        self.assertEqual(payload["models"][0]["missing"]["tb4"], "unmatched identity")
+
+    def test_primary_outage_is_never_reported_as_not_evaluated(self):
+        # Harbor (the tb4 primary) is enabled but has no data (an outage),
+        # while BenchLM covers the model yet has no tb4 row: the primary's
+        # "source unavailable" must win over the fallback's deeper
+        # "not evaluated".
+        state = make_state({
+            "harbor": None,
+            "benchlm": [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5)],
+        })
+        payload = benchmarks.build_payload(
+            [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+            benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["missing"]["tb4"], "source unavailable")
+        self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
+
+    def test_benchalign_values_resolve_through_the_identity_rules(self):
+        state = make_state({
+            "benchlm": [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5),
+                        self.benchlm_entry("benchalign_coding", "gpt-6-1-sol", 88.0)],
+        })
+        payload = benchmarks.build_payload(
+            [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+            benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
+        self.assertEqual(model["bench"]["benchalign_coding"], 88.0)
+        result = model["results"]["benchalign_overall"][0]
+        self.assertEqual(result["source"], "benchlm")
+        self.assertEqual(result["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
+        self.assertEqual(result["version"], "benchalign-2026.10.28")
+        self.assertEqual(result["date"], "2026-10-28")
+        self.assertEqual(result["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        self.assertEqual(result["metadata"]["date_kind"],
+                         benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
+        self.assertTrue(result["selected"])
+        source = payload["sources"]["benchlm"]
+        self.assertFalse(source["disabled"])
+        self.assertEqual(source["warning"], benchmarks.BENCHLM_WARNING)
+
+    def test_disabled_benchlm_hides_cached_rows_and_reports_source_unavailable(self):
+        state = make_state({
+            "benchlm": [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5),
+                        self.benchlm_entry("tb4", "gpt-6-1-sol", 55.5)],
+        })
+        cases = [
+            ("module flag off", patch.object(benchmarks, "BENCHLM_ENABLED", False), {}),
+            ("override off", patch.object(benchmarks, "BENCHLM_ENABLED", True),
+             {"benchlm_enabled": False}),
+        ]
+        for label, patcher, kwargs in cases:
+            with self.subTest(label=label), patcher:
+                payload = benchmarks.build_payload(
+                    [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")],
+                    state, **kwargs)
+            model = payload["models"][0]
+            self.assertEqual(model["bench"], {})
+            self.assertEqual(model["results"], {})
+            self.assertEqual(model["missing"]["benchalign_overall"], "source unavailable")
+            self.assertEqual(model["missing"]["benchalign_coding"], "source unavailable")
+            self.assertEqual(model["missing"]["tb4"], "source unavailable")
+            source = payload["sources"]["benchlm"]
+            self.assertTrue(source["disabled"])
+            self.assertEqual(source["warning"], benchmarks.BENCHLM_DISABLED_WARNING)
+            serialized = json.dumps(payload)
+            self.assertNotIn("91.5", serialized)
+            self.assertNotIn("55.5", serialized)
+            # Definitions stay in the metrics contract (like LiveBench).
+            self.assertIn("benchalign_overall", [m["key"] for m in payload["metrics"]])
+
+    def test_vals_shaped_tb4_row_flows_from_the_board_into_the_payload(self):
+        # Regression: the Vals board's null modelKey used to abort the whole
+        # BenchLM refresh with "invalid response schema"; the converted row
+        # must now survive the fetch and reach the payload as a benchlm-
+        # sourced tb4 result for the canonically-named inventory model.
+        responses = benchlm_tb4_responses(
+            [], [benchlm_item(None, 27.778,
+                              source_model_id="mistralai/mistral-large-4")])
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        state = make_state({"benchlm": result["entries"]})
+        payload = benchmarks.build_payload(
+            [inventory_model("mistral-large-4", "mistralai/mistral-large-4")],
+            state, benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["bench"]["tb4"], 27.778)
+        self.assertNotIn("tb4", model["missing"])
+        selected = [item for item in model["results"]["tb4"] if item["selected"]]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["source"], "benchlm")
+        self.assertEqual(selected[0]["model"], "mistral-large-4")
+        self.assertEqual(selected[0]["value"], 27.778)
+        self.assertEqual(selected[0]["metadata"]["board"],
+                         benchmarks.BENCHLM_TB4_BOARDS[1][1])
 
 
 # ── Inventory and API wrappers ──────────────────────────────────────────────
@@ -2922,14 +4422,12 @@ class ApiContractTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         store = benchmarks.BenchmarkStore(
             path=str(Path(directory.name) / "b.json"), clock=lambda: NOW,
-            fetchers={"livebench": fetcher, "deepswe": fetcher})
+            fetchers={"livebench": fetcher})
         try:
-            with patch.object(benchmarks, "LIVEBENCH_ENABLED", False), \
-                    patch.object(benchmarks, "DEEPSWE_ENABLED", False):
+            with patch.object(benchmarks, "LIVEBENCH_ENABLED", False):
                 enabled = store._enabled_sources()
                 self.assertEqual(set(enabled), {"harbor", "epoch"})
                 self.assertFalse(store.refresh_source("livebench"))
-                self.assertFalse(store.refresh_source("deepswe"))
             self.assertFalse(called)
         finally:
             directory.cleanup()
