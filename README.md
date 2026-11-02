@@ -111,15 +111,16 @@ HTML/JavaScript:
   **BenchAlign Coding**, **BenchAlign Agentic** and **BenchAlign Knowledge**
   (0–100 composite point estimates, not percentages; one manual refresh reads
   11 requests in practice — 9 GETs + 2 MCP calls — and at most 14 across the
-  4 surfaces + 2 MCP calls)
+  4 surfaces + 2 MCP calls; retries can multiply these logical requests on
+  the wire, so this count assumes a clean run)
   plus Terminal-Bench 4.0 rows from its two TB4 boards: the displayed TB4
   value is the highest recorded result across Harbor and those boards, so a
   TB4 row's harness varies by model (its `version` names the board); it does
   not replace any other source — no ECI composite, no LiveBench per-suite
   breakdown, and it covers roughly 19 of this install's 28 inventory models.
   BenchLM data is [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/);
-  this private, non-commercial single-user install shows it with attribution
-  ("Data from BenchLM.ai") as the operator's choice; redistribution or
+  this private, non-commercial single-user install shows it with attribution —
+  cite BenchLM.ai (CC BY-NC 4.0) — as the operator's choice; redistribution or
   commercial display requires a separate licence from BenchLM. Not legal
   advice. Its scores carry the `source_snapshot` date kind (the date BenchLM
   captured the board), never an evaluation date.

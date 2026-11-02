@@ -107,8 +107,10 @@ the browser. A prefix on `litellm_params.model` (for example `openai/`)
 identifies the LiteLLM route provider or gateway, not the model's developer; do
 not read it as "made by OpenAI".
 
-Identity matching is explicit. A row gets a benchmark only after an exact
-normalized identity match or a reviewed, source-specific mapping. There is no
+Identity matching is explicit and source-agnostic: a row gets a benchmark
+only after an exact match, then a case-folded match, then a canonical-form
+match, then a unique dated extension of a published model — failing closed
+when the dated extension is ambiguous. There is no
 fuzzy prefix matching, version guessing, automatic `-latest` alias mapping, or
 copying a base model's score onto a modified/abliterated variant. An unmatched
 row shows a dash with a hover-only missing reason (not evaluated, unmatched
@@ -242,12 +244,14 @@ evidence.
   (9 ranking GETs + 2 MCP calls, one per TB4 board) and never more than the
   hard cap of 14 reads (3 pages per surface × 4 surfaces + 2 MCP calls). At
   250 reads/month that is about 22 refreshes per month, so a daily refresh
-  no longer fits the free plan — refresh every other day or less. BenchLM supplies no per-run dates, so its scores carry the new
+  no longer fits the free plan — refresh every other day or less. Retries can
+  multiply these logical reads into wire requests (up to 3 attempts each), so
+  the ~22-refresh estimate assumes a clean run. BenchLM supplies no per-run dates, so its scores carry the new
   date kind `source_snapshot` — the date BenchLM captured the board — never an
   evaluation date or a benchmark release date. BenchLM data is
   [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): this
-  private, non-commercial single-user install displays it with attribution
-  ("Data from BenchLM.ai") as the operator's choice; redistribution or
+  private, non-commercial single-user install displays it with attribution —
+  cite BenchLM.ai (CC BY-NC 4.0) — as the operator's choice; redistribution or
   commercial display requires a separate licence from BenchLM. Not legal
   advice. BenchLM does not replace the other sources — it has no Epoch ECI
   composite and no LiveBench per-suite breakdown, and covers roughly 19 of
