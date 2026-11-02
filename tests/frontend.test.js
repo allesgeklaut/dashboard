@@ -1750,8 +1750,8 @@ test('the score column sorts; switching benchmarks keeps the score sort', async 
   assert.doesNotMatch(head, /data-ai-key="tb4"/);
   rows = d.element('ai-tbody').innerHTML;
   assert.ok(rows.indexOf('alpha') < rows.indexOf('gamma'), 'highest eci value sorts first after the switch');
-  // The routes column is not sortable.
-  d.run("aiSort('routes')");
+  // The routes column is not sortable: its header carries no sort key.
+  assert.doesNotMatch(head, /data-ai-key="routes"/);
   assert.equal(d.run('_aiSort.key'), 'eci');
 });
 
@@ -2414,12 +2414,13 @@ function swipeTabs(d, hidden = ['ai-services', 'security']) {
 // Synthetic swipe: finger starts at (300, 200), ends at (300+dx, 200+dy).
 function doSwipe(d, dx, dy, opts = {}) {
   d.context.swipeTarget = opts.target || paneTarget;
+  d.context.swipeEndTarget = opts.endTarget || d.context.swipeTarget;
   d.run('tabSwipeStart({ touches: [{ clientX: 300, clientY: 200 }], target: swipeTarget })');
   if (opts.touches === 2) d.run('tabSwipeStart({ touches: [{ clientX: 300, clientY: 200 }, { clientX: 320, clientY: 200 }], target: swipeTarget })');
   if (opts.dt) d.run(`_tabSwipeStart.time -= ${opts.dt}`);
   d.run(`tabSwipeEnd({ touches: [{ clientX: ${300 + dx}, clientY: ${200 + dy} }],
                        changedTouches: [{ clientX: ${300 + dx}, clientY: ${200 + dy} }],
-                       target: swipeTarget })`);
+                       target: swipeEndTarget })`);
 }
 
 test('tab swipe left/right switches to the next/previous visible tab', () => {
@@ -2469,6 +2470,26 @@ test('a multi-touch start is ignored', () => {
   const d = dashboard();
   swipeTabs(d);
   doSwipe(d, -100, 0, { touches: 2 });
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('a touchcancel after touchstart clears the pending gesture', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  d.context.swipeTarget = paneTarget;
+  d.run('tabSwipeStart({ touches: [{ clientX: 300, clientY: 200 }], target: swipeTarget })');
+  assert.ok(d.run('_tabSwipeStart'), 'gesture is pending after touchstart');
+  d.run('tabSwipeCancel()');
+  assert.equal(d.run('_tabSwipeStart'), null, 'touchcancel clears the pending gesture');
+  d.run('tabSwipeEnd({ touches: [{ clientX: 200, clientY: 200 }], changedTouches: [{ clientX: 200, clientY: 200 }], target: swipeTarget })');
+  assert.equal(d.run('_activeTab'), 'server', 'the touchend after a cancel does not switch tabs');
+});
+
+test('a qualifying swipe whose touchend lands outside a pane does not switch tabs', () => {
+  const d = dashboard();
+  swipeTabs(d);
+  // Same start/end coordinates as a real switch, but the finger ends on the tab bar.
+  doSwipe(d, -100, 0, { endTarget: closestMatching('.tab-bar-wrap') });
   assert.equal(d.run('_activeTab'), 'server');
 });
 

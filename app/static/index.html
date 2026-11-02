@@ -2566,6 +2566,11 @@ function tabSwipeEnd(event) {
     if (!event || !event.changedTouches || !event.changedTouches.length) return;
     const touch = event.changedTouches[0];
     if (!touch || typeof touch.clientX !== 'number' || typeof touch.clientY !== 'number') return;
+    // The gesture must still be over a pane: a drag that ends on the tab bar,
+    // header or action bar is not a tab switch.
+    const endTarget = event.target;
+    if (!endTarget || typeof endTarget.closest !== 'function') return;
+    if (!endTarget.closest('.tab-pane')) return;
     const dx = touch.clientX - start.x;
     const dy = touch.clientY - start.y;
     const dt = Date.now() - start.time;
@@ -2587,9 +2592,12 @@ function tabSwipeEnd(event) {
   } catch(e) { /* gesture ignored */ }
 }
 
+function tabSwipeCancel() { _tabSwipeStart = null; }
+
 if (typeof document.addEventListener === 'function') {
   document.addEventListener('touchstart', tabSwipeStart, { passive: true });
   document.addEventListener('touchend', tabSwipeEnd, { passive: true });
+  document.addEventListener('touchcancel', tabSwipeCancel, { passive: true });
 }
 
 // ── shelly plug 2 ─────────────────────────────────────────────────────────────
@@ -3445,7 +3453,7 @@ function aiSetMetric(key) {
   aiSaveMetric();
   // The score column survives a benchmark switch: keep sorting by it, in the
   // same direction, and re-point the key at the newly selected metric.
-  if (_aiSort.key !== 'model' && _aiSort.key !== 'routes') {
+  if (_aiSort.key !== 'model') {
     _aiSort = { key: next, dir: _aiSort.dir };
   }
   aiRenderMetricSelect();
@@ -3480,14 +3488,10 @@ function aiBenchState(model, key) {
 }
 function aiSortValue(model) {
   if (_aiSort.key === 'model') return aiModelName(model).toLowerCase();
-  if (_aiSort.key === 'routes') {
-    return aiRoutes(model).map(route => aiText(route.name)).join(' ').toLowerCase();
-  }
   const state = aiBenchState(model, _aiSort.key);
   return typeof state.value === 'number' ? state.value : null;
 }
 function aiSort(key) {
-  if (key === 'routes') return;
   if (_aiSort.key === key) _aiSort.dir *= -1;
   else { _aiSort.key = key; _aiSort.dir = key === 'model' ? 1 : -1; }
   aiRenderTable();
@@ -3698,7 +3702,7 @@ function aiAcceptServices(data) {
     _aiMetric = aiAvailableMetrics()[0] || '';
     aiSaveMetric();
   }
-  if (_aiSort.key !== 'model' && _aiSort.key !== 'routes' && _aiSort.key !== _aiMetric) {
+  if (_aiSort.key !== 'model' && _aiSort.key !== _aiMetric) {
     _aiSort = { key: 'model', dir: 1 };
   }
   _aiLoadedAt = Date.now();
