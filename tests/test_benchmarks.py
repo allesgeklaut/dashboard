@@ -3232,13 +3232,15 @@ class PayloadContractTests(unittest.TestCase):
 
     def test_user_approved_identity_aliases_resolve(self):
         # Reviewed one-to-one identities approved by the operator on
-        # 2026-10-29 (see SOURCE_ALIASES comments for the risk notes).
+        # 2026-10-29; the rule cascade reproduces them (see
+        # ALIAS_PARITY_TRIPLES for the full parity fixture).
         state = self.state({
             "epoch": [
                 entry("eci", "Kimi K3", 157.86),
                 entry("eci", "Kimi K2.7 Code", 150.11),
                 entry("eci", "Claude Haiku 5.5", 159.32),
                 entry("eci", "DeepSeek V4.1 Flash", 155.93),
+                entry("eci", "DeepSeek V4.1 Flash 1017", 158.83),
                 entry("eci", "Qwen 3.8 Max", 157.4),
                 entry("eci", "Qwen 3.8 27B", 142.0),
                 entry("eci", "Muse Spark 1.3", 157.21),
@@ -3251,8 +3253,11 @@ class PayloadContractTests(unittest.TestCase):
             ("kimi-k2.7-code", "openai/kimi-k2.7-code", 150.11),
             ("claude-haiku-5-5", "anthropic/claude-haiku-5-5", 159.32),
             ("deepseek-v4.1-flash", "openai/deepseek-v4.1-flash", 155.93),
+            # Documented divergence (brief §5): the route serving the pinned
+            # 1017 snapshot resolves to the dated row, which wins where it
+            # has entries (158.83), instead of the base row's 155.93.
             ("deepseek-v4.1-flash-mistral",
-             "mistral/deepseek-v4-1-flash-1017", 155.93),
+             "mistral/deepseek-v4-1-flash-1017", 158.83),
             ("qwen3.8-max", "openai/qwen3.8-max", 157.4),
             ("qwen3.8-27b", "openai/qwen3.8:27b", 142.0),
             ("muse-spark-1.3-contributor",
@@ -3434,6 +3439,303 @@ class PayloadContractTests(unittest.TestCase):
                 self.assertTrue(math.isfinite(value))
 
 
+# ── Rule-based identity cascade ─────────────────────────────────────────────
+# Parity fixture: the reviewed alias triples that the removed SOURCE_ALIASES
+# table encoded, kept here as test data only (the runtime resolves identities
+# purely by the rule cascade in app/benchmarks.py).  Each source's synthetic
+# index is built from the fixture's targets plus the dated 1017 models that
+# source actually publishes (PARITY_EXTRA_MODELS).  The two documented
+# divergences (PARITY_DIVERGENCES) are the 1017-snapshot triples: the route
+# now resolves to the dated model itself, and the per-metric preference falls
+# back to the base row only for metrics the dated row does not have.
+ALIAS_PARITY_TRIPLES = {
+    "harbor": {
+        'claude-fable-5': 'Fable 5',
+        'claude-fable-5.1': 'Fable 5.1',
+        'glm-5.3': 'GLM-5.3',
+        'glm-5.3-flash': 'GLM-5.3-Flash',
+        'zai-glm-5-3': 'GLM-5.3',
+        'zai-glm-5-3-flash': 'GLM-5.3-Flash',
+        'gpt-5.6-luna': 'GPT-5.6 Luna',
+        'gpt-5.6-sol': 'GPT-5.6 Sol',
+        'gpt-5.6-terra': 'GPT-5.6 Terra',
+        'gpt-6-astra': 'GPT-6 Astra',
+        'gpt-6-luna': 'GPT-6 Luna',
+        'gpt-6-sol': 'GPT-6 Sol',
+        'gpt-6.1-sol': 'GPT-6.1 Sol',
+        'gemini-3.7-flash': 'Gemini 3.7 Flash',
+        'gemini-3.8-flash': 'Gemini 3.8 Flash',
+        'grok-4.5': 'Grok 4.5',
+        'grok-4.6': 'Grok 4.6',
+        'grok-4.7': 'Grok 4.7',
+        'muse-spark-1.3': 'Muse Spark 1.3',
+        'muse-spark-1.3-contributor': 'Muse Spark 1.3',
+        'claude-opus-4.8': 'Opus 4.8',
+        'claude-opus-5': 'Opus 5',
+        'claude-opus-5.5': 'Opus 5.5',
+        'qwen3.8-max': 'Qwen3.8-Max-0902',
+        'qwen3.8-max-0902': 'Qwen3.8-Max-0902',
+        'claude-sonnet-5': 'Sonnet 5',
+        'claude-sonnet-5.5': 'Sonnet 5.5',
+    },
+    "epoch": {
+        'claude-fable-5': 'Claude Fable 5',
+        'claude-fable-5.1': 'Claude Fable 5.1',
+        'glm-5.3': 'GLM-5.3',
+        'glm-5.3-flash': 'GLM-5.3-Flash',
+        'zai-glm-5-3': 'GLM-5.3',
+        'zai-glm-5-3-flash': 'GLM-5.3-Flash',
+        'mistral-large-4': 'Mistral Large 4',
+        'gpt-5.6-luna': 'GPT-5.6 Luna',
+        'gpt-5.6-sol': 'GPT-5.6 Sol',
+        'gpt-5.6-terra': 'GPT-5.6 Terra',
+        'gpt-6-astra': 'GPT-6 Astra',
+        'gpt-6-luna': 'GPT-6 Luna',
+        'gpt-6-sol': 'GPT-6 Sol',
+        'gpt-6.1-sol': 'GPT-6.1 Sol',
+        'gemini-3.7-flash': 'Gemini 3.7 Flash',
+        'gemini-3.8-flash': 'Gemini 3.8 Flash',
+        'grok-4.5': 'Grok 4.5',
+        'grok-4.6': 'Grok 4.6',
+        'grok-4.7': 'Grok 4.7',
+        'muse-spark-1.3': 'Muse Spark 1.3',
+        'claude-opus-4.8': 'Claude Opus 4.8',
+        'claude-opus-5': 'Claude Opus 5',
+        'claude-opus-5.5': 'Claude Opus 5.5',
+        'qwen3.8-max-0902': 'Qwen3.8 Max (0902)',
+        'claude-sonnet-5': 'Claude Sonnet 5',
+        'claude-sonnet-5.5': 'Claude Sonnet 5.5',
+        'kimi-k3': 'Kimi K3',
+        'kimi-k2.7-code': 'Kimi K2.7 Code',
+        'claude-haiku-5-5': 'Claude Haiku 5.5',
+        'deepseek-v4.1-flash': 'DeepSeek V4.1 Flash',
+        'deepseek-v4-1-flash-1017': 'DeepSeek V4.1 Flash',
+        'qwen3.8-max': 'Qwen 3.8 Max',
+        'qwen3.8:27b': 'Qwen 3.8 27B',
+        'muse-spark-1.3-contributor': 'Muse Spark 1.3',
+    },
+    "livebench": {
+        'zai-glm-5-3': 'glm-5.3',
+        'zai-glm-5-3-flash': 'glm-5.3-flash',
+        'deepseek-v4-1-flash-1017': 'deepseek-v4.1-flash-1017',
+        'claude-haiku-5-5': 'claude-haiku-5.5',
+        'qwen3.8:27b': 'qwen3.8-27b',
+        'muse-spark-1.3-contributor': 'muse-spark-1.3',
+        'deepseek-v4.1-flash': 'deepseek-v4.1-flash-1017',
+    },
+    "benchlm": {
+        'gpt-6.1-sol': 'gpt-6-1-sol',
+        'zai-glm-5-3': 'glm-5-3',
+        'zai-glm-5-3-flash': 'glm-5-3-flash',
+        'deepseek-v4-1-flash-1017': 'deepseek-v4-1-flash',
+        'qwen3.8:27b': 'qwen3-8-27b',
+        'glm-5.3': 'glm-5-3',
+        'glm-5.3-flash': 'glm-5-3-flash',
+        'gpt-5.6-luna': 'gpt-5-6-luna',
+        'kimi-k2.7-code': 'kimi-k2-7-code',
+        'mimo-v2.6-flash': 'mimo-v2-6-flash',
+        'mimo-v2.6-pro': 'mimo-v2-6-pro',
+        'qwen3.8-max': 'qwen3-8-max',
+        'deepseek-v4.1-flash': 'deepseek-v4-1-flash',
+        'muse-spark-1.3-contributor': 'muse-spark-1-3',
+    },
+}
+PARITY_EXTRA_MODELS = {
+    "epoch": ("DeepSeek V4.1 Flash 1017",),
+    "benchlm": ("deepseek-v4-1-flash-1017",),
+}
+# The one documented divergence per source: the 1017 route resolves to the
+# dated snapshot model (itself), not to the base row the old alias named.
+PARITY_DIVERGENCES = {
+    ("epoch", "deepseek-v4-1-flash-1017"): "DeepSeek V4.1 Flash 1017",
+    ("benchlm", "deepseek-v4-1-flash-1017"): "deepseek-v4-1-flash-1017",
+}
+
+
+def parity_index(source):
+    """Synthetic index for one source, built from the parity fixture targets."""
+    models = set(ALIAS_PARITY_TRIPLES[source].values())
+    models.update(PARITY_EXTRA_MODELS.get(source, ()))
+    entries = [{"metric": "tb4", "model": model} for model in sorted(models)]
+    return benchmarks._build_index({"data": {"entries": entries}})
+
+
+def resolve_identity(source, upstream, index=None):
+    return benchmarks._resolve_identity(
+        {"upstream_model": upstream}, source, index if index is not None
+        else parity_index(source))
+
+
+class RuleCascadeTests(unittest.TestCase):
+    def _index(self, *models):
+        entries = [{"metric": "tb4", "model": model} for model in models]
+        return benchmarks._build_index({"data": {"entries": entries}})
+
+    def test_canonical_form_equivalences(self):
+        equal = [
+            ("qwen3.8-max", "Qwen 3.8 Max"),
+            ("qwen3.8:27b", "qwen3-8-27b"),
+            ("claude-haiku-5-5", "claude-haiku-5.5"),
+            ("27B", "27b"),
+        ]
+        for left, right in equal:
+            with self.subTest(pair=(left, right)):
+                self.assertEqual(benchmarks._canonical_tokens(left),
+                                 benchmarks._canonical_tokens(right))
+
+    def test_canonical_form_non_equalities(self):
+        unequal = [
+            ("kimi-k3", "kimi-3"),  # no k3<->3 equivalence
+            ("qwen3-8-max", "qwen3-8-max-internal"),
+        ]
+        for left, right in unequal:
+            with self.subTest(pair=(left, right)):
+                self.assertNotEqual(benchmarks._canonical_tokens(left),
+                                    benchmarks._canonical_tokens(right))
+
+    def test_date_suffix_validation(self):
+        valid = {"1017": 1, "0902": 1, "0731": 1, "0813": 1,
+                 "20260317": 1, "2026-03-17": 3}
+        for suffix, expected in valid.items():
+            with self.subTest(suffix=suffix):
+                tokens = benchmarks._canonical_tokens("model-" + suffix)
+                self.assertEqual(benchmarks._date_suffix_length(tokens), expected)
+        invalid = ["nvfp4", "internal", "next", "preview", "0", "128b",
+                   "2025", "1-pro", "max", "thinking",
+                   "1300", "2026-13-01", "2026-02-30"]
+        for suffix in invalid:
+            with self.subTest(suffix=suffix):
+                tokens = benchmarks._canonical_tokens("model-" + suffix)
+                self.assertEqual(benchmarks._date_suffix_length(tokens), 0)
+
+    def test_candidate_generation_is_every_slash_suffix(self):
+        self.assertEqual(
+            benchmarks._identity_candidates({"upstream_model": "mistral/zai-glm-5-3"}),
+            ["mistral/zai-glm-5-3", "zai-glm-5-3"])
+        self.assertEqual(
+            benchmarks._identity_candidates(
+                {"upstream_model": "openai/responses/gpt-5.6-luna"}),
+            ["openai/responses/gpt-5.6-luna", "responses/gpt-5.6-luna",
+             "gpt-5.6-luna"])
+        self.assertEqual(
+            benchmarks._identity_candidates({"upstream_model": "plain"}), ["plain"])
+
+    def test_r1_exact_and_casefold_beat_canonical(self):
+        # "Alpha-1" and "alpha 1" share the canonical form "alpha-1", so the
+        # canonical rule is ambiguous and can never fire; the exact and
+        # case-folded exact rules still resolve the candidate.
+        index = self._index("Alpha-1", "alpha 1")
+        self.assertIsNone(index["canon"]["alpha-1"])  # ambiguity guard
+        self.assertEqual(resolve_identity("harbor", "ALPHA-1", index), "Alpha-1")
+        self.assertEqual(resolve_identity("harbor", "alpha-1", index), "Alpha-1")
+
+    def test_r2_canonical_beats_r3_dated_extension(self):
+        index = self._index("Base", "Base 0902")
+        self.assertEqual(resolve_identity("epoch", "base", index), "Base")
+        self.assertEqual(resolve_identity("epoch", "BASE", index), "Base")
+
+    def test_r3_unique_dated_extension_wins(self):
+        index = self._index("Only 0902")
+        self.assertEqual(resolve_identity("harbor", "only", index), "Only 0902")
+        self.assertEqual(resolve_identity("harbor", "only-0902", index), "Only 0902")
+
+    def test_r3_two_snapshots_fails_closed(self):
+        index = self._index("Snap 0902", "Snap 0731")
+        self.assertIsNone(resolve_identity("epoch", "snap", index))
+        # A dated candidate itself still resolves exactly/canonically.
+        self.assertEqual(resolve_identity("epoch", "snap-0902", index), "Snap 0902")
+
+    def test_r4_strips_only_the_contributor_qualifier(self):
+        index = self._index("Muse Spark 1.3")
+        self.assertEqual(
+            resolve_identity("harbor", "muse-spark-1.3-contributor", index),
+            "Muse Spark 1.3")
+        self.assertIsNone(
+            resolve_identity("harbor", "muse-spark-1.3-preview", index))
+
+    def test_r5_head_drop_never_fires_before_r2(self):
+        index = self._index("Head-Tail", "tail")
+        self.assertEqual(resolve_identity("x", "head-tail", index), "Head-Tail")
+        only_tail = self._index("tail")
+        self.assertEqual(resolve_identity("x", "head-tail", only_tail), "tail")
+
+    def test_ambiguity_guard_never_matches_a_shared_canonical_form(self):
+        index = self._index("A B", "A-B")
+        self.assertIsNone(index["canon"]["a-b"])
+        # "a.b" matches neither exactly nor case-folded, only canonically —
+        # and that form is ambiguous, so the resolution fails closed.
+        self.assertIsNone(resolve_identity("epoch", "a.b", index))
+
+    def test_tripwires_never_cross_match_variants(self):
+        cases = [
+            (("nemotron-super-vl-3.5", "nemotron-super-vl-3.5-nvfp4"),
+             "x/nemotron-super-vl-3.5", "nemotron-super-vl-3.5"),
+            (("nemotron-super-vl-3.5-nvfp4",),
+             "x/nemotron-super-vl-3.5", None),
+            (("step-5-preview",), "stepfun/step-5", None),
+            (("mistral-small-3.1",), "mistral/mistral-small-latest", None),
+            (("qwen3-6-max-preview",), "x/qwen3.6-max", None),
+            (("mistral-large-4",), "x/mistral-large-4-0", None),
+            (("mistral-large-4-0",), "mistral/mistral-large-4", None),
+        ]
+        for models, upstream, expected in cases:
+            with self.subTest(upstream=upstream, models=models):
+                self.assertEqual(resolve_identity("livebench", upstream,
+                                                  self._index(*models)),
+                                 expected)
+
+    def test_parity_fixture_rules_reproduce_every_reviewed_triple(self):
+        for source, triples in ALIAS_PARITY_TRIPLES.items():
+            index = parity_index(source)
+            with self.subTest(source=source):
+                # No two fixture targets share a canonical form.
+                self.assertEqual(
+                    [key for key, model in index["canon"].items()
+                     if model is None], [])
+            for upstream, target in triples.items():
+                with self.subTest(source=source, upstream=upstream):
+                    expected = PARITY_DIVERGENCES.get((source, upstream), target)
+                    self.assertEqual(
+                        benchmarks._resolve_identity(
+                            {"upstream_model": upstream}, source, index),
+                        expected)
+
+    def test_dated_route_prefers_dated_row_then_base_per_metric(self):
+        # The dated key has tb4 and one composite; the base key has tb4 and
+        # all composites.  The dated row wins where it exists (even when its
+        # value is lower — never merged or maxed), and the base row supplies
+        # only the metrics the dated row lacks.
+        state = make_state({"benchlm": [
+            entry("tb4", "deepseek-v4-1-flash-1017", 31.818, source="benchlm",
+                  date="2026-10-29"),
+            entry("tb4", "deepseek-v4-1-flash", 42.3, source="benchlm",
+                  date="2026-10-29"),
+            entry("benchalign_overall", "deepseek-v4-1-flash-1017", 60.0,
+                  source="benchlm", date="2026-10-28"),
+            entry("benchalign_overall", "deepseek-v4-1-flash", 65.22,
+                  source="benchlm", date="2026-10-28"),
+            entry("benchalign_coding", "deepseek-v4-1-flash", 62.91,
+                  source="benchlm", date="2026-10-28"),
+        ]})
+        payload = benchmarks.build_payload(
+            [inventory_model("deepseek-v4.1-flash-mistral",
+                             "mistral/deepseek-v4-1-flash-1017")],
+            state, benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertNotIn("tb4", model["missing"])
+        # Present on both keys: the dated value wins, not the maximum.
+        self.assertEqual(model["bench"]["tb4"], 31.818)
+        self.assertEqual(model["results"]["tb4"][0]["model"],
+                         "deepseek-v4-1-flash-1017")
+        self.assertEqual(model["bench"]["benchalign_overall"], 60.0)
+        self.assertEqual(model["results"]["benchalign_overall"][0]["model"],
+                         "deepseek-v4-1-flash-1017")
+        # Present only on the base key: per-metric fallback to the base row.
+        self.assertEqual(model["bench"]["benchalign_coding"], 62.91)
+        self.assertEqual(model["results"]["benchalign_coding"][0]["model"],
+                         "deepseek-v4-1-flash")
+
+
 # ── BenchLM payload and fallback contract ───────────────────────────────────
 class BenchLMPayloadTests(unittest.TestCase):
     def benchlm_entry(self, metric, model, value, **kwargs):
@@ -3461,7 +3763,13 @@ class BenchLMPayloadTests(unittest.TestCase):
                 self.assertEqual(other.merge, "first")
         self.assertEqual(set(spec.as_dict()),
                          {"key", "label", "name", "unit", "source"})
-        self.assertTrue(benchmarks.SOURCE_ALIASES["benchlm"])
+        # The BenchLM key normalization (gpt-6.1-sol -> gpt-6-1-sol) now comes
+        # from the rule cascade, not an alias table.
+        index = benchmarks._build_index(
+            {"data": {"entries": [{"metric": "tb4", "model": "gpt-6-1-sol"}]}})
+        self.assertEqual(benchmarks._resolve_identity(
+            {"upstream_model": "openai/gpt-6.1-sol"}, "benchlm", index),
+            "gpt-6-1-sol")
 
     def test_harbor_wins_tb4_when_both_sources_cover_the_model(self):
         state = make_state({

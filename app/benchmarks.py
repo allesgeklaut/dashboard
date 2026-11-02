@@ -62,6 +62,7 @@ import stat
 import tempfile
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import date as _date
 from email.utils import parsedate_to_datetime
@@ -291,146 +292,6 @@ SOURCES: dict[str, SourceSpec] = {
 }
 SOURCE_NAMES = tuple(SOURCES)
 
-# ── Reviewed exact identities ───────────────────────────────────────────────
-# Keys are provider-stripped LiteLLM upstream IDs (case-insensitive exact
-# lookup); values are the exact identifiers published by that source.  These
-# are curated one-to-one identities, never produced by dropping punctuation,
-# matching prefixes/version ranges, or mapping a rolling "latest" alias.  The
-# LiveBench table publishes exact API-style IDs (for example claude-opus-5.5),
-# so it only needs the reviewed Mistral-hosted ZAI aliases below.
-SOURCE_ALIASES: dict[str, dict[str, str]] = {
-    "harbor": {
-        "claude-fable-5": "Fable 5",
-        "claude-fable-5.1": "Fable 5.1",
-        "glm-5.3": "GLM-5.3",
-        "glm-5.3-flash": "GLM-5.3-Flash",
-        # Mistral publishes these as hosted ZAI API IDs and says the model is
-        # "served without Mistral modifications" (v5.3), reviewed 2026-10-29:
-        # https://docs.mistral.ai/models/zai-glm-5-3
-        # https://docs.mistral.ai/models/zai-glm-5-3-flash
-        "zai-glm-5-3": "GLM-5.3",
-        "zai-glm-5-3-flash": "GLM-5.3-Flash",
-        "gpt-5.6-luna": "GPT-5.6 Luna",
-        "gpt-5.6-sol": "GPT-5.6 Sol",
-        "gpt-5.6-terra": "GPT-5.6 Terra",
-        "gpt-6-astra": "GPT-6 Astra",
-        "gpt-6-luna": "GPT-6 Luna",
-        "gpt-6-sol": "GPT-6 Sol",
-        "gpt-6.1-sol": "GPT-6.1 Sol",
-        "gemini-3.7-flash": "Gemini 3.7 Flash",
-        "gemini-3.8-flash": "Gemini 3.8 Flash",
-        "grok-4.5": "Grok 4.5",
-        "grok-4.6": "Grok 4.6",
-        "grok-4.7": "Grok 4.7",
-        "muse-spark-1.3": "Muse Spark 1.3",
-        # User accepted the variant risk on this contributor route (2026-10-29).
-        "muse-spark-1.3-contributor": "Muse Spark 1.3",
-        "claude-opus-4.8": "Opus 4.8",
-        "claude-opus-5": "Opus 5",
-        "claude-opus-5.5": "Opus 5.5",
-        # Terminal-Bench only evaluated the dated Qwen3.8-Max-0902 snapshot.
-        # User accepted the variant risk on the rolling qwen3.8-max route
-        # (2026-10-29): considered the same model even if the route may serve
-        # a newer snapshot than the 0902 evaluation.
-        "qwen3.8-max": "Qwen3.8-Max-0902",
-        "qwen3.8-max-0902": "Qwen3.8-Max-0902",
-        "claude-sonnet-5": "Sonnet 5",
-        "claude-sonnet-5.5": "Sonnet 5.5",
-    },
-    "epoch": {
-        "claude-fable-5": "Claude Fable 5",
-        "claude-fable-5.1": "Claude Fable 5.1",
-        "glm-5.3": "GLM-5.3",
-        "glm-5.3-flash": "GLM-5.3-Flash",
-        # Mistral's hosted ZAI API IDs, served without Mistral modifications
-        # (v5.3), reviewed 2026-10-29:
-        # https://docs.mistral.ai/models/zai-glm-5-3
-        # https://docs.mistral.ai/models/zai-glm-5-3-flash
-        "zai-glm-5-3": "GLM-5.3",
-        "zai-glm-5-3-flash": "GLM-5.3-Flash",
-        # Mistral Large 4 Public Preview v26.10 (2026-10-06) documents this API
-        # ID; Epoch's row is exactly "Mistral Large 4", reviewed 2026-10-29:
-        # https://docs.mistral.ai/models/mistral-large-4-0
-        "mistral-large-4": "Mistral Large 4",
-        "gpt-5.6-luna": "GPT-5.6 Luna",
-        "gpt-5.6-sol": "GPT-5.6 Sol",
-        "gpt-5.6-terra": "GPT-5.6 Terra",
-        "gpt-6-astra": "GPT-6 Astra",
-        "gpt-6-luna": "GPT-6 Luna",
-        "gpt-6-sol": "GPT-6 Sol",
-        "gpt-6.1-sol": "GPT-6.1 Sol",
-        "gemini-3.7-flash": "Gemini 3.7 Flash",
-        "gemini-3.8-flash": "Gemini 3.8 Flash",
-        "grok-4.5": "Grok 4.5",
-        "grok-4.6": "Grok 4.6",
-        "grok-4.7": "Grok 4.7",
-        "muse-spark-1.3": "Muse Spark 1.3",
-        "claude-opus-4.8": "Claude Opus 4.8",
-        "claude-opus-5": "Claude Opus 5",
-        "claude-opus-5.5": "Claude Opus 5.5",
-        "qwen3.8-max-0902": "Qwen3.8 Max (0902)",
-        "claude-sonnet-5": "Claude Sonnet 5",
-        "claude-sonnet-5.5": "Claude Sonnet 5.5",
-        # Reviewed one-to-one identities (user-approved 2026-10-29): these are
-        # punctuation/spelling-only differences against a single matching row.
-        "kimi-k3": "Kimi K3",
-        "kimi-k2.7-code": "Kimi K2.7 Code",
-        "claude-haiku-5-5": "Claude Haiku 5.5",
-        "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
-        # User accepted the version/variant risk on these rolling, pinned and
-        # local routes (2026-10-29): qwen3.8-max maps to the unsuffixed
-        # "Qwen 3.8 Max" row (2026-08-02), not "Qwen3.8 Max (0902)" — the
-        # route ID carries no date suffix; Mistral's pinned 1017 snapshot maps
-        # to Epoch's single V4.1 Flash row; the local qwen3.8:27b is accepted
-        # as the stock "Qwen 3.8 27B"; the contributor route is accepted as
-        # stock Muse Spark 1.3.
-        "deepseek-v4-1-flash-1017": "DeepSeek V4.1 Flash",
-        "qwen3.8-max": "Qwen 3.8 Max",
-        "qwen3.8:27b": "Qwen 3.8 27B",
-        "muse-spark-1.3-contributor": "Muse Spark 1.3",
-    },
-    # LiveBench's own identifiers are exact API-style IDs.  The entries here
-    # are reviewed one-to-one identities only; there is no punctuation or
-    # version-prefix normalization.
-    "livebench": {
-        "zai-glm-5-3": "glm-5.3",
-        "zai-glm-5-3-flash": "glm-5.3-flash",
-        # Reviewed one-to-one identities (user-approved 2026-10-29), mirroring
-        # the same judgments already approved for the epoch/harbor tables:
-        # - exact Mistral-hosted snapshot ID, punctuation only;
-        # - stock claude-haiku-5-5 == LiveBench's claude-haiku-5.5;
-        # - local qwen3.8:27b == LiveBench's qwen3.8-27b;
-        # - contributor route accepted as stock Muse Spark 1.3.
-        "deepseek-v4-1-flash-1017": "deepseek-v4.1-flash-1017",
-        "claude-haiku-5-5": "claude-haiku-5.5",
-        "qwen3.8:27b": "qwen3.8-27b",
-        "muse-spark-1.3-contributor": "muse-spark-1.3",
-        # User explicitly accepted this rolling -> dated snapshot mapping on
-        # 2026-10-29 during branch review. The route may serve a newer snapshot
-        # than LiveBench's 1017 evaluation; no other rolling alias is inferred.
-        "deepseek-v4.1-flash": "deepseek-v4.1-flash-1017",
-    },
-    # BenchLM indexes models by its own modelKey values.  The entries below
-    # are reviewed one-to-one identities only; there is no punctuation or
-    # version-prefix normalization.
-    "benchlm": {
-        "gpt-6.1-sol": "gpt-6-1-sol",
-        "zai-glm-5-3": "glm-5-3",
-        "zai-glm-5-3-flash": "glm-5-3-flash",
-        "deepseek-v4-1-flash-1017": "deepseek-v4-1-flash",
-        "qwen3.8:27b": "qwen3-8-27b",
-        "glm-5.3": "glm-5-3",
-        "glm-5.3-flash": "glm-5-3-flash",
-        "gpt-5.6-luna": "gpt-5-6-luna",
-        "kimi-k2.7-code": "kimi-k2-7-code",
-        "mimo-v2.6-flash": "mimo-v2-6-flash",
-        "mimo-v2.6-pro": "mimo-v2-6-pro",
-        "qwen3.8-max": "qwen3-8-max",
-        "deepseek-v4.1-flash": "deepseek-v4-1-flash",
-        "muse-spark-1.3-contributor": "muse-spark-1-3",
-    },
-}
-
 # The summary is chosen by explicit date first, then by this published
 # reasoning-effort ordering.  It never ranks by score value, so it cannot pick
 # a per-metric maximum within one source/board.  (The tb4 "max" merge in
@@ -442,8 +303,8 @@ EFFORT_PRIORITY = {
     "minimal": 5, "none": 6,
 }
 
-# Modified variants must never inherit a stock model's score, even through an
-# alias table, so these identities are excluded up front.
+# Modified variants must never inherit a stock model's score, even through
+# identity matching, so these identities are excluded up front.
 _MODIFIED_TOKENS = ("abliterated", "uncensored", "lobotomized", "heretic")
 
 _SOURCE_ERROR_NETWORK = "network error"
@@ -2290,6 +2151,87 @@ def _enabled_metrics() -> list[MetricSpec]:
     return list(METRICS)
 
 
+# ── Rule-based model identity matching ──────────────────────────────────────
+# An inventory row's identity is resolved against each source's published
+# model keys by a fixed rule cascade — there is no alias table anymore.  The
+# rules only ever compare whole, canonicalized identifiers: no fuzzy/edit-
+# distance matching, no token-subsequence matching, no vendor allow-list, and
+# no k3↔3 / v4↔4 version equivalence (each measured to add ambiguity without
+# gaining a match).
+
+def _is_letter_digit_boundary(left: str, right: str) -> bool:
+    return (left.isalpha() and right.isdigit()) or (left.isdigit() and right.isalpha())
+
+
+def _canonical_tokens(identifier: str) -> tuple[str, ...]:
+    """Canonical token form of a model identifier.
+
+    NFKC + casefold, every non-alphanumeric character becomes ``-``, a ``-``
+    is inserted at every letter<->digit boundary, and empty tokens are
+    dropped.  This is what makes ``qwen3.8-max`` ≡ ``Qwen 3.8 Max`` and
+    ``qwen3.8:27b`` ≡ ``qwen3-8-27b``, while ``kimi-k3`` ≠ ``kimi-3``
+    (the ``k`` and ``3`` are separate tokens) and ``27B`` ≡ ``27b``.
+    """
+    text = unicodedata.normalize("NFKC", identifier).casefold()
+    chars = [ch if ch.isalnum() else "-" for ch in text]
+    spaced: list[str] = []
+    previous = ""
+    for ch in chars:
+        if previous and _is_letter_digit_boundary(previous, ch):
+            spaced.append("-")
+        spaced.append(ch)
+        previous = ch
+    return tuple(token for token in "".join(spaced).split("-") if token)
+
+
+def _canonical_key(tokens) -> str:
+    """Join canonical tokens into the index key form."""
+    return "-".join(tokens)
+
+
+def _valid_calendar_date(year: str, month: str, day: str) -> bool:
+    try:
+        _date(int(year), int(month), int(day))
+    except ValueError:
+        return False
+    return True
+
+
+def _date_suffix_length(tokens: tuple[str, ...]) -> int:
+    """Length of a trailing valid date suffix in canonical tokens (0, 1, 3).
+
+    Valid suffixes: ``MMDD`` (4 digits, month 01-12, day 01-31 — 1017, 0902,
+    0731, 0813), ``YYYYMMDD`` (8 digits, a real calendar date), and
+    ``YYYY-MM-DD`` (three canonical tokens, e.g. ``2026-03-17``).  Nothing
+    else is ever a date and never stripped: ``nvfp4``, ``internal``,
+    ``next``, ``preview``, ``0``, ``128b``, ``2025``, ``1-pro``, ``max``,
+    ``thinking`` all describe the model artifact, not a snapshot date.
+    """
+    if not tokens:
+        return 0
+    last = tokens[-1]
+    if len(last) == 4 and last.isdigit():
+        if 1 <= int(last[:2]) <= 12 and 1 <= int(last[2:]) <= 31:
+            return 1
+    if len(last) == 8 and last.isdigit():
+        if _valid_calendar_date(last[:4], last[4:6], last[6:8]):
+            return 1
+    if len(tokens) >= 3:
+        year, month, day = tokens[-3], tokens[-2], tokens[-1]
+        if (len(year) == 4 and year.isdigit() and len(month) == 2
+                and month.isdigit() and len(day) == 2 and day.isdigit()
+                and _valid_calendar_date(year, month, day)):
+            return 3
+    return 0
+
+
+# The only qualifier token that may ever be stripped from a candidate: it
+# names the publishing contributor, not the model artifact.  ``preview``,
+# ``exp``, ``latest``, ``internal``, ``nvfp4``, ``max``, ``thinking``,
+# ``reasoning`` etc. describe the artifact and are never stripped.
+_QUALIFIER_TOKENS = frozenset({"contributor"})
+
+
 def _build_index(source_state: dict | None) -> dict:
     entries = ((source_state or {}).get("data") or {}).get("entries") or []
     by_metric: dict[str, dict[str, list[dict]]] = {}
@@ -2299,28 +2241,144 @@ def _build_index(source_state: dict | None) -> dict:
         by_metric.setdefault(entry["metric"], {}).setdefault(model, []).append(entry)
         models.add(model)
     lower: dict[str, str | None] = {}
+    canon: dict[str, str | None] = {}
+    dated: dict[str, list[str]] = {}
     for model in models:
-        key = model.lower()
-        lower[key] = model if key not in lower else None  # ambiguous case fold
-    return {"by_metric": by_metric, "models": models, "lower": lower}
+        folded = model.casefold()
+        lower[folded] = model if folded not in lower else None  # ambiguous case fold
+        tokens = _canonical_tokens(model)
+        key = _canonical_key(tokens)
+        # Ambiguity guard: two distinct published models sharing one
+        # canonical form make that form unmatchable.
+        canon[key] = model if key not in canon else None
+        suffix = _date_suffix_length(tokens)
+        stripped = _canonical_key(tokens[: len(tokens) - suffix]) if suffix else key
+        dated.setdefault(stripped, []).append(model)
+    return {"by_metric": by_metric, "models": models, "lower": lower,
+            "canon": canon, "dated": dated}
 
 
 def _identity_candidates(row: dict) -> list[str]:
+    """Every ``/``-suffix of the upstream id, full id first.
+
+    ``mistral/zai-glm-5-3`` -> [full, ``zai-glm-5-3``];
+    ``openai/responses/gpt-5.6-luna`` -> [full, ``responses/gpt-5.6-luna``,
+    ``gpt-5.6-luna``].  No published source model contains ``/``, so a
+    slashed candidate can only ever match exactly; the first matching
+    candidate wins.
+    """
     upstream = row.get("upstream_model") or ""
     candidates = [upstream]
-    if "/" in upstream:
-        remainder = upstream.split("/", 1)[1]
-        if remainder and remainder != upstream:
-            candidates.append(remainder)
-            # LiteLLM gateway routes may sit behind the Responses-API pseudo
-            # provider (openai/responses/<model>); the model identity is below
-            # it. Only this exact segment is stripped — every other spelling
-            # stays verbatim so no punctuation normalization can sneak in.
-            if remainder.startswith("responses/"):
-                inner = remainder.split("/", 1)[1]
-                if inner and inner != remainder:
-                    candidates.append(inner)
+    parts = upstream.split("/")
+    for start in range(1, len(parts)):
+        suffix = "/".join(parts[start:])
+        if suffix and suffix != upstream and suffix not in candidates:
+            candidates.append(suffix)
     return candidates
+
+
+def _match_candidate_tokens(tokens: tuple[str, ...],
+                            index: dict) -> tuple[str | None, bool]:
+    """Rules R2-R5 for one ``/``-free candidate.
+
+    Returns ``(model, fail_closed)``.  ``fail_closed`` is True when the
+    dated extension is ambiguous (two or more published snapshots share the
+    date-stripped canonical form), so the identity must not be guessed.
+    """
+    key = _canonical_key(tokens)
+    # R2 canonical: the candidate's canonical form is a published model.
+    model = index["canon"].get(key)
+    if model is not None:
+        return model, False
+    # R3 dated extension: the candidate carries no date suffix and exactly
+    # one published snapshot is the candidate plus a date suffix.
+    if _date_suffix_length(tokens) == 0:
+        matches = index["dated"].get(key, [])
+        if len(matches) == 1:
+            return matches[0], False
+        if len(matches) > 1:
+            return None, True  # fail closed
+    # R4 qualifier strip: recurse R2/R3 without a trailing qualifier token.
+    if len(tokens) >= 2 and tokens[-1] in _QUALIFIER_TOKENS:
+        sub = tokens[:-1]
+        sub_key = _canonical_key(sub)
+        model = index["canon"].get(sub_key)
+        if model is not None:
+            return model, False
+        if _date_suffix_length(sub) == 0:
+            matches = index["dated"].get(sub_key, [])
+            if len(matches) == 1:
+                return matches[0], False
+            if len(matches) > 1:
+                return None, True  # fail closed
+    # R5 head drop: the candidate minus its first token is a published model.
+    if len(tokens) >= 2:
+        model = index["canon"].get(_canonical_key(tokens[1:]))
+        if model is not None:
+            return model, False
+    return None, False
+
+
+def _resolve_identity(row: dict, source: str, index: dict) -> str | None:
+    """Resolve one inventory row to a published model key by the cascade.
+
+    Per candidate, in order: R1 exact then case-folded exact; for
+    ``/``-free candidates additionally R2 canonical, R3 unique dated
+    extension (fail closed on ambiguity), R4 qualifier strip, R5 head
+    drop.  The first matching candidate wins; full-candidate rules always
+    run before suffix-drop rules.
+    """
+    for candidate in _identity_candidates(row):
+        # R1 exact, then case-folded exact.
+        if candidate in index["models"]:
+            return candidate
+        folded = index["lower"].get(candidate.casefold())
+        if folded is not None:
+            return folded
+        if "/" in candidate:
+            continue  # token rules never apply to provider-prefixed ids
+        tokens = _canonical_tokens(candidate)
+        if not tokens:
+            continue
+        model, fail_closed = _match_candidate_tokens(tokens, index)
+        if fail_closed:
+            return None
+        if model is not None:
+            return model
+    return None
+
+
+def _dated_base_model(index: dict, identity: str) -> str | None:
+    """The date-stripped base model of a dated resolved key, if published."""
+    tokens = _canonical_tokens(identity)
+    suffix = _date_suffix_length(tokens)
+    if not suffix:
+        return None
+    return index["canon"].get(_canonical_key(tokens[: len(tokens) - suffix]))
+
+
+def _identity_entry_keys(index: dict, identity: str) -> list[str]:
+    """Metric lookup order for a resolved identity.
+
+    A resolved key that carries a valid date suffix is tried first; the
+    date-stripped base key is only a per-metric fallback.  The two are
+    never merged or maxed together.
+    """
+    keys = [identity]
+    base = _dated_base_model(index, identity)
+    if base is not None and base != identity:
+        keys.append(base)
+    return keys
+
+
+def _metric_entries(index: dict, metric: str, identity: str) -> list[dict]:
+    """Entries for one metric under a resolved identity, dated key first."""
+    by_model = index["by_metric"].get(metric, {})
+    for key in _identity_entry_keys(index, identity):
+        entries = by_model.get(key, [])
+        if entries:
+            return entries
+    return []
 
 
 def _is_modified_variant(row: dict) -> bool:
@@ -2342,21 +2400,6 @@ def _is_modified_variant(row: dict) -> bool:
                 values.append(route["name"])
     haystack = " ".join(values).lower()
     return any(token in haystack for token in _MODIFIED_TOKENS)
-
-
-def _resolve_identity(row: dict, source: str, index: dict) -> str | None:
-    aliases = SOURCE_ALIASES.get(source, {})
-    for candidate in _identity_candidates(row):
-        for key in (candidate, candidate.lower()):
-            target = aliases.get(key)
-            if target is not None and target in index["models"]:
-                return target
-            if key in index["models"]:
-                return key
-        folded = candidate.lower()
-        if index["lower"].get(folded):
-            return index["lower"][folded]
-    return None
 
 
 def _result(entry: dict, source: str, *, selected: bool = False) -> dict:
@@ -2500,8 +2543,10 @@ def build_payload(inventory: list[dict], state: dict, *,
                     if identity is None:
                         candidate_reason = MISSING_UNMATCHED
                     else:
-                        entries = indexes[source]["by_metric"].get(
-                            spec.key, {}).get(identity, [])
+                        # A resolved key with a valid date suffix is tried
+                        # first; the date-stripped base key only supplies
+                        # metrics the dated key does not have (never merged).
+                        entries = _metric_entries(indexes[source], spec.key, identity)
                         if not entries:
                             candidate_reason = MISSING_NOT_EVALUATED
                         else:
@@ -2596,7 +2641,7 @@ def last_success(state: dict) -> float | None:
 
 __all__ = [
     "BenchmarkStore", "Deadline", "HttpClient", "METRICS", "SOURCES",
-    "SOURCE_ALIASES", "BENCHLM_ENABLED", "BENCHLM_WARNING",
+    "BENCHLM_ENABLED", "BENCHLM_WARNING",
     "build_payload", "ensure_refresh_scheduled", "get_store", "is_refreshing",
     "last_success", "metrics_metadata", "read_state", "request_refresh", "refresh_policy",
 ]
