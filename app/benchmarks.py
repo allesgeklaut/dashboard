@@ -809,9 +809,15 @@ class HttpClient:
     @staticmethod
     def _validate_url(url: str) -> None:
         parts = urlsplit(url)
+        # parts.port raises ValueError on a malformed or out-of-range port;
+        # convert it so this method only ever raises SourceError.
+        try:
+            port = parts.port
+        except ValueError:
+            raise SourceError(_SOURCE_ERROR_SCHEMA) from None
         if (parts.scheme != "https" or parts.hostname not in ALLOWED_HOSTS
                 or parts.username or parts.password
-                or parts.port not in (None, 443)):
+                or port not in (None, 443)):
             raise SourceError(_SOURCE_ERROR_SCHEMA)
 
     async def _sleep_before_retry(self, attempt: int, deadline: Deadline) -> None:
@@ -952,13 +958,21 @@ def _load_json(body: bytes):
     except UnicodeDecodeError as exc:
         raise SourceError(_SOURCE_ERROR_JSON) from exc
     try:
-        return json.loads(text, parse_constant=_reject_json_constant)
-    except (ValueError, TypeError) as exc:
+        return json.loads(text, parse_constant=_reject_json_constant,
+                          parse_float=_finite_float)
+    except (ValueError, TypeError, RecursionError) as exc:
         raise SourceError(_SOURCE_ERROR_JSON) from exc
 
 
 def _reject_json_constant(value):
     raise ValueError(f"non-finite JSON constant {value}")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite JSON number {text}")
+    return value
 
 
 def _parse_csv(body: bytes, required: tuple[str, ...], *, maximum_rows: int) -> list[dict]:
@@ -1387,11 +1401,16 @@ def _benchlm_rankings_page(payload, *, metric: str, offset: int,
         raise SourceError(_SOURCE_ERROR_PAGINATION)
     if _integer(pagination.get("limit"), minimum=1, maximum=1000) != BENCHLM_PAGE_SIZE:
         raise SourceError(_SOURCE_ERROR_PAGINATION)
+    # nextOffset is embedded into the next request's offset, which is itself
+    # bounded to 0..10**7 — apply the same bound here so one huge value
+    # cannot fail the whole source on the next page.  _integer also rejects
+    # bools; every nextOffset violation stays a pagination error.
     next_offset = pagination.get("nextOffset")
-    if next_offset is not None and (isinstance(next_offset, bool)
-                                    or not isinstance(next_offset, int)
-                                    or next_offset < 0):
-        raise SourceError(_SOURCE_ERROR_PAGINATION)
+    if next_offset is not None:
+        try:
+            next_offset = _integer(next_offset, minimum=0, maximum=10**7)
+        except SourceError:
+            raise SourceError(_SOURCE_ERROR_PAGINATION) from None
     entries = []
     for item in items:
         if not isinstance(item, dict):
@@ -1826,6 +1845,17 @@ class BenchmarkStore:
                 handle = None
                 os.replace(temporary, self.path)
                 temporary = None
+                # The rename is not durable until the directory entry is
+                # fsynced; best-effort only — a successful write must never
+                # turn into a storage failure here.
+                try:
+                    directory_fd = os.open(directory, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                except OSError:
+                    pass
                 return True
             except OSError as exc:
                 _log.warning("benchmark cache write failed (%s)", type(exc).__name__)
@@ -1961,9 +1991,11 @@ class BenchmarkStore:
                 return True
             except SourceError as exc:
                 self._record_failure(name, self._clock(), str(exc))
-            except Exception:
+            except Exception as exc:
                 # Never propagate exception text: it can contain a URL or
-                # credentials from an underlying transport.
+                # credentials from an underlying transport.  Log the type
+                # only, so a persistent failure leaves a trace.
+                _log.warning("benchmark refresh failed (%s)", type(exc).__name__)
                 self._record_failure(name, self._clock(), _SOURCE_ERROR_NETWORK)
             self._persist()
             return False
@@ -2200,8 +2232,9 @@ def _valid_calendar_date(year: str, month: str, day: str) -> bool:
 def _date_suffix_length(tokens: tuple[str, ...]) -> int:
     """Length of a trailing valid date suffix in canonical tokens (0, 1, 3).
 
-    Valid suffixes: ``MMDD`` (4 digits, month 01-12, day 01-31 — 1017, 0902,
-    0731, 0813), ``YYYYMMDD`` (8 digits, a real calendar date), and
+    Valid suffixes: ``MMDD`` (4 digits, a real calendar date in year 2000 —
+    1017, 0902, 0731, 0813, 0229), ``YYYYMMDD`` (8 digits, a real calendar
+    date), and
     ``YYYY-MM-DD`` (three canonical tokens, e.g. ``2026-03-17``).  Nothing
     else is ever a date and never stripped: ``nvfp4``, ``internal``,
     ``next``, ``preview``, ``0``, ``128b``, ``2025``, ``1-pro``, ``max``,
@@ -2211,7 +2244,8 @@ def _date_suffix_length(tokens: tuple[str, ...]) -> int:
         return 0
     last = tokens[-1]
     if len(last) == 4 and last.isdigit():
-        if 1 <= int(last[:2]) <= 12 and 1 <= int(last[2:]) <= 31:
+        # Year 2000 is a leap year: 0229 is a real date, 0231/1131/0631 are not.
+        if _valid_calendar_date("2000", last[:2], last[2:]):
             return 1
     if len(last) == 8 and last.isdigit():
         if _valid_calendar_date(last[:4], last[4:6], last[6:8]):
@@ -2263,11 +2297,12 @@ def _identity_candidates(row: dict) -> list[str]:
 
     ``mistral/zai-glm-5-3`` -> [full, ``zai-glm-5-3``];
     ``openai/responses/gpt-5.6-luna`` -> [full, ``responses/gpt-5.6-luna``,
-    ``gpt-5.6-luna``].  No published source model contains ``/``, so a
-    slashed candidate can only ever match exactly; the first matching
-    candidate wins.
+    ``gpt-5.6-luna``].  Trailing slashes are stripped first, so
+    ``mistral/glm-5.3/`` -> [``mistral/glm-5.3``, ``glm-5.3``].  No published
+    source model contains ``/``, so a slashed candidate can only ever match
+    exactly; the first matching candidate wins.
     """
-    upstream = row.get("upstream_model") or ""
+    upstream = (row.get("upstream_model") or "").rstrip("/")
     candidates = [upstream]
     parts = upstream.split("/")
     for start in range(1, len(parts)):
@@ -2312,6 +2347,13 @@ def _match_candidate_tokens(tokens: tuple[str, ...],
             if len(matches) > 1:
                 return None, True  # fail closed
     # R5 head drop: the candidate minus its first token is a published model.
+    # This is the only subsequence rule, and its overmatch is known and
+    # accepted: an unpublished id whose tail names a published model — e.g.
+    # "tiny-llama-7b" -> "LLaMA-7B", "pro-gpt-5.4" -> "GPT-5.4" — resolves to
+    # that published row.  The alternative (requiring the head to prefix at
+    # least two published ids) was rejected because it makes resolution
+    # depend on inventory breadth: removing one route would silently drop
+    # another model's scores.
     if len(tokens) >= 2:
         model = index["canon"].get(_canonical_key(tokens[1:]))
         if model is not None:

@@ -1057,6 +1057,24 @@ class BenchLMAdapterTests(unittest.TestCase):
         self.assertNotEqual(converted["kimi/kimi-k3.1-pro"],
                             converted["kimi/kimi-k3"])
 
+    def test_every_real_vals_identifier_round_trips_through_identity_rules(self):
+        # Build a real index from the 57 converted board keys, then resolve
+        # each publisher id through the cascade: the vendor-prefixed full
+        # candidate never matches, so the bare suffix must resolve (R2
+        # canonical in practice) to exactly the converted key.  All 57 ids
+        # round-trip; none is an exception.
+        ids = BENCHLM_VALS_SOURCE_MODEL_IDS
+        converted = {ident: benchmarks._board_model_key({"sourceModelId": ident})
+                     for ident in ids}
+        entries = [{"metric": "tb4", "model": key} for key in converted.values()]
+        index = benchmarks._build_index({"data": {"entries": entries}})
+        for ident in ids:
+            with self.subTest(source_model_id=ident):
+                self.assertEqual(
+                    benchmarks._resolve_identity(
+                        {"upstream_model": ident}, "benchlm", index),
+                    converted[ident])
+
     def test_oversized_items_lists_are_rejected_before_row_allocation(self):
         too_many = [benchlm_item(f"model-{i}", 50.0)
                     for i in range(benchmarks.BENCHLM_PAGE_SIZE + 1)]
@@ -1199,6 +1217,20 @@ class BenchLMAdapterTests(unittest.TestCase):
                 self.assertEqual(str(caught.exception), message)
                 self.assertEqual(len(client.calls), 1)
                 self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_next_offset_above_the_offset_bound_is_rejected(self):
+        # nextOffset is embedded into the next request's offset, which is
+        # itself bounded to 0..10**7: one huge value must be rejected here
+        # instead of failing the whole source on the following page.
+        good = [benchlm_item("gpt-6-1-sol", 91.5)]
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient([benchlm_page(good, pagination={
+                "offset": 0, "limit": 100, "nextOffset": 10**8})])
+            with self.assertRaises(benchmarks.SourceError) as caught:
+                benchmarks.fetch_benchlm(client, None, deadline())
+        self.assertEqual(str(caught.exception), "invalid pagination")
+        self.assertEqual(len(client.calls), 1)
+        self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
 
     def test_malformed_mcp_envelopes_raise_sanitized_errors(self):
         schema = "invalid response schema"
@@ -1661,6 +1693,19 @@ class HttpSecurityTests(unittest.TestCase):
                 with self.assertRaises(benchmarks.SourceError):
                     benchmarks.HttpClient._validate_url(url)
 
+    def test_malformed_ports_raise_source_error_not_value_error(self):
+        # parts.port raises ValueError for a non-numeric or out-of-range
+        # port; _validate_url must convert it to SourceError like every
+        # other rejection.
+        for url in ("https://data.benchlm.ai:abc/x",
+                    "https://data.benchlm.ai:99999/x"):
+            with self.subTest(url=url):
+                with self.assertRaises(benchmarks.SourceError) as caught:
+                    benchmarks.HttpClient._validate_url(url)
+                self.assertEqual(str(caught.exception), "invalid response schema")
+        # An explicit default port is still accepted.
+        benchmarks.HttpClient._validate_url("https://data.benchlm.ai:443/x")
+
     def test_httpx_client_is_hardened_scoped_and_closed_per_request(self):
         created = []
         closed = []
@@ -1885,6 +1930,20 @@ class HttpSecurityTests(unittest.TestCase):
         extra = benchmarks.Response(200, {}, b"model,coding\nx,1,2\n")
         with self.assertRaises(benchmarks.SourceError):
             benchmarks._parse_csv(extra.body, ("model", "coding"), maximum_rows=10)
+
+    def test_load_json_rejects_deep_nesting_and_non_finite_numbers(self):
+        # Deeply nested JSON escapes json.loads as RecursionError; it must be
+        # converted to SourceError like every other parse failure.
+        with self.assertRaises(benchmarks.SourceError) as caught:
+            benchmarks._load_json(b"[" * 100000 + b"]" * 100000)
+        self.assertEqual(str(caught.exception), "invalid JSON response")
+        # 1e999 overflows to inf even though only the NaN/Infinity tokens
+        # are rejected by parse_constant: the parse_float hook rejects it.
+        with self.assertRaises(benchmarks.SourceError) as caught:
+            benchmarks._load_json(b'{"a": 1e999}')
+        self.assertEqual(str(caught.exception), "invalid JSON response")
+        # Finite numbers (including exponents that underflow to 0.0) parse.
+        self.assertEqual(benchmarks._load_json(b'{"a": 1e-999}'), {"a": 0.0})
 
     def test_provenance_links_are_allowlisted_https(self):
         provenance_hosts = benchmarks.ALLOWED_HOSTS | {"docs.harborframework.com"}
@@ -3594,7 +3653,7 @@ class RuleCascadeTests(unittest.TestCase):
                                     benchmarks._canonical_tokens(right))
 
     def test_date_suffix_validation(self):
-        valid = {"1017": 1, "0902": 1, "0731": 1, "0813": 1,
+        valid = {"1017": 1, "0902": 1, "0731": 1, "0813": 1, "0229": 1,
                  "20260317": 1, "2026-03-17": 3}
         for suffix, expected in valid.items():
             with self.subTest(suffix=suffix):
@@ -3602,7 +3661,10 @@ class RuleCascadeTests(unittest.TestCase):
                 self.assertEqual(benchmarks._date_suffix_length(tokens), expected)
         invalid = ["nvfp4", "internal", "next", "preview", "0", "128b",
                    "2025", "1-pro", "max", "thinking",
-                   "1300", "2026-13-01", "2026-02-30"]
+                   "1300", "2026-13-01", "2026-02-30",
+                   # MMDD must be a real calendar date (year 2000, a leap
+                   # year): these month/day pairs do not exist.
+                   "0231", "1131", "0631", "0431", "0931", "0230"]
         for suffix in invalid:
             with self.subTest(suffix=suffix):
                 tokens = benchmarks._canonical_tokens("model-" + suffix)
@@ -3619,6 +3681,10 @@ class RuleCascadeTests(unittest.TestCase):
              "gpt-5.6-luna"])
         self.assertEqual(
             benchmarks._identity_candidates({"upstream_model": "plain"}), ["plain"])
+        # A trailing slash must not survive into the suffix candidates.
+        self.assertEqual(
+            benchmarks._identity_candidates({"upstream_model": "mistral/glm-5.3/"}),
+            ["mistral/glm-5.3", "glm-5.3"])
 
     def test_r1_exact_and_casefold_beat_canonical(self):
         # "Alpha-1" and "alpha 1" share the canonical form "alpha-1", so the
@@ -3658,6 +3724,19 @@ class RuleCascadeTests(unittest.TestCase):
         self.assertEqual(resolve_identity("x", "head-tail", index), "Head-Tail")
         only_tail = self._index("tail")
         self.assertEqual(resolve_identity("x", "head-tail", only_tail), "tail")
+
+    def test_r5_head_drop_overmatches_unpublished_ids(self):
+        # Characterization of the known, accepted R5 hazard documented at the
+        # R5 branch in _match_candidate_tokens: head drop is the only
+        # subsequence rule, so an unpublished id whose tail names a published
+        # model resolves to that published row — tiny-llama-7b -> LLaMA-7B and
+        # pro-gpt-5.4 -> GPT-5.4.  Accepted by design; pinned against a real
+        # built index so the overmatch is visible if the rule ever changes.
+        index = self._index("LLaMA-7B", "GPT-5.4")
+        self.assertEqual(resolve_identity("benchlm", "tiny-llama-7b", index),
+                         "LLaMA-7B")
+        self.assertEqual(resolve_identity("benchlm", "pro-gpt-5.4", index),
+                         "GPT-5.4")
 
     def test_ambiguity_guard_never_matches_a_shared_canonical_form(self):
         index = self._index("A B", "A-B")
@@ -3913,7 +3992,7 @@ class BenchLMPayloadTests(unittest.TestCase):
         self.assertEqual(model["missing"]["tb4"], "source unavailable")
         self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
 
-    def test_benchalign_values_resolve_through_the_reviewed_aliases(self):
+    def test_benchalign_values_resolve_through_the_identity_rules(self):
         state = make_state({
             "benchlm": [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5),
                         self.benchlm_entry("benchalign_coding", "gpt-6-1-sol", 88.0)],
