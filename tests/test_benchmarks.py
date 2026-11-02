@@ -153,8 +153,12 @@ def benchlm_env(key):
         yield
 
 
-def benchlm_item(model, score, *, rank=None, interval=None):
+def benchlm_item(model, score, *, rank=None, interval=None, source_model_id=None):
     item = {"modelKey": model, "score": score}
+    if source_model_id is not None:
+        # Vals-capture row shape: the board publishes no modelKey, only a
+        # publisher-prefixed sourceModelId.
+        item["sourceModelId"] = source_model_id
     if rank is not None:
         item["rank"] = rank
     if interval is not None:
@@ -208,6 +212,82 @@ def benchlm_standard_responses():
             benchlm_page(knowledge),
             benchlm_mcp_response(tb4_recorded),
             benchlm_mcp_response(tb4_vals)]
+
+
+# Snapshot of every sourceModelId the Vals TB4 board published on 2026-10-29
+# (all 57 rows; that board carries no modelKey).  Pinned so the board-row
+# conversion is exercised against the real identifier shapes — vendor
+# prefixes, dots, uppercase, underscores, version suffixes — instead of a
+# hand-picked sample; refresh deliberately if the board's ids ever change.
+BENCHLM_VALS_SOURCE_MODEL_IDS = (
+    "alibaba/qwen3.8-max",
+    "alibaba/qwen3.8-max-internal",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-fable-5-1",
+    "anthropic/claude-haiku-5-5",
+    "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-5",
+    "anthropic/claude-opus-5-5",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-sonnet-5-5",
+    "deepseek/deepseek-v4-flash-0731",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-pro-0813",
+    "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4.1-flash-1017",
+    "fireworks/ember-1",
+    "google/gemini-3.1-pro-preview",
+    "google/gemini-3.5-flash",
+    "google/gemini-3.7-flash",
+    "google/gemini-3.8-flash",
+    "google/gemini-4-argon",
+    "google/gemini-4-carbon",
+    "grok/grok-4.5",
+    "grok/grok-4.6",
+    "grok/grok-4.7",
+    "inception/mercury-2.5",
+    "inception/mercury-3",
+    "kimi/kimi-k3",
+    "kimi/kimi-k3.1-pro",
+    "meta/muse-spark-open",
+    "meta/muse-wonder",
+    "meta/muse-wonder-full",
+    "meta/muse_spark_1_2",
+    "meta/muse_spark_1_3",
+    "meta/muse_spark_1_3_max",
+    "minimax/MiniMax-M3",
+    "minimax/MiniMax-M3.1-flash",
+    "mistralai/mistral-large-4",
+    "openai/gpt-5.4-mini-2026-03-17",
+    "openai/gpt-5.6-luna",
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.6-terra",
+    "openai/gpt-6-astra",
+    "openai/gpt-6-luna",
+    "openai/gpt-6-sol",
+    "openai/gpt-6.1-sol",
+    "openai/gpt-6.1-terra",
+    "reflection/Beam-1.0",
+    "stepfun/step-5-preview",
+    "tencent/hy4-preview",
+    "thinkingmachines/inkling",
+    "thinkingmachines/inkling-small",
+    "xiaomi/mimo-v2.5-pro",
+    "xiaomi/mimo-v2.6-flash",
+    "xiaomi/mimo-v2.6-pro",
+    "zai/glm-5.3",
+    "zai/glm-5.3-flash",
+)
+
+
+def benchlm_tb4_responses(recorded_items, vals_items):
+    """One ranking page per surface plus one MCP response per TB4 board."""
+    return [benchlm_page([benchlm_item("m", 90.0)]),
+            benchlm_page([benchlm_item("c", 80.0)]),
+            benchlm_page([benchlm_item("a", 70.0)]),
+            benchlm_page([benchlm_item("k", 60.0)]),
+            benchlm_mcp_response(list(recorded_items)),
+            benchlm_mcp_response(list(vals_items))]
 
 
 class StubClient:
@@ -913,6 +993,137 @@ class BenchLMAdapterTests(unittest.TestCase):
                          {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
         self.assertEqual(tb4["vals-only"]["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
         self.assertEqual(result["meta"], {"pages": 4, "rows": 6})
+
+    def test_mcp_row_without_model_key_converts_source_model_id_to_canonical_slug(self):
+        # The Vals board publishes no modelKey, only a publisher-prefixed
+        # sourceModelId; the board parser converts it to BenchLM's canonical
+        # slug (vendor prefix dropped, lowercased, "." and "_" -> "-").
+        cases = [
+            ("alibaba/qwen3.8-max", "qwen3-8-max"),
+            ("mistralai/mistral-large-4", "mistral-large-4"),
+            ("minimax/MiniMax-M3", "minimax-m3"),
+            ("meta/muse_spark_1_3", "muse-spark-1-3"),
+            ("reflection/Beam-1.0", "beam-1-0"),
+            # Version suffixes name distinct variants: kept, never collapsed.
+            ("deepseek/deepseek-v4.1-flash-1017", "deepseek-v4-1-flash-1017"),
+            ("zai/glm-5.3", "glm-5-3"),
+            ("xiaomi/mimo-v2.6-flash", "mimo-v2-6-flash"),
+        ]
+        for source_model_id, expected in cases:
+            with self.subTest(source_model_id=source_model_id):
+                responses = benchlm_tb4_responses(
+                    [], [benchlm_item(None, 27.5, source_model_id=source_model_id)])
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient(responses)
+                    result = benchmarks.fetch_benchlm(client, None, deadline())
+                tb4 = {item["model"]: item for item in result["entries"]
+                       if item["metric"] == "tb4"}
+                self.assertEqual(set(tb4), {expected})
+                self.assertEqual(tb4[expected]["value"], 27.5)
+                self.assertEqual(tb4[expected]["version"],
+                                 benchmarks.BENCHLM_TB4_BOARDS[1][0])
+                self.assertEqual(tb4[expected]["metadata"],
+                                 {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+
+    def test_cross_board_rows_with_mixed_identifier_styles_merge_into_one_entry(self):
+        # The recorded board keys the row canonically (qwen3-8-max) while the
+        # Vals row only carries the publisher id (alibaba/qwen3.8-max); after
+        # conversion both name the same model, so they merge into one entry
+        # and the higher value wins with the winning board's provenance.
+        responses = benchlm_tb4_responses(
+            [benchlm_item("qwen3-8-max", 30.0)],
+            [benchlm_item(None, 34.343, source_model_id="alibaba/qwen3.8-max")])
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        tb4 = [item for item in result["entries"] if item["metric"] == "tb4"]
+        self.assertEqual(len(tb4), 1)
+        self.assertEqual(tb4[0]["model"], "qwen3-8-max")
+        self.assertEqual(tb4[0]["value"], 34.343)
+        self.assertEqual(tb4[0]["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(tb4[0]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+
+    def test_mcp_row_with_both_identifier_fields_null_is_rejected(self):
+        rows = [
+            ("modelKey null and sourceModelId null",
+             {"modelKey": None, "sourceModelId": None, "score": 1.0}),
+            ("modelKey null, sourceModelId absent", benchlm_item(None, 1.0)),
+            ("modelKey blank, sourceModelId null",
+             {"modelKey": "   ", "sourceModelId": None, "score": 1.0}),
+        ]
+        for label, row in rows:
+            with self.subTest(label=label):
+                responses = benchlm_tb4_responses([benchlm_item("r", 10.0)], [row])
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient(responses)
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), "invalid response schema")
+                self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
+
+    def test_mcp_row_with_non_string_identifier_values_is_rejected(self):
+        rows = [
+            ("non-string sourceModelId (int)",
+             benchlm_item(None, 1.0, source_model_id=123)),
+            ("non-string sourceModelId (list)",
+             benchlm_item(None, 1.0, source_model_id=["alibaba/qwen3.8-max"])),
+            ("non-string modelKey", {"modelKey": 7, "score": 1.0}),
+        ]
+        for label, row in rows:
+            with self.subTest(label=label):
+                responses = benchlm_tb4_responses([benchlm_item("r", 10.0)], [row])
+                with benchlm_env(BENCHLM_TEST_KEY):
+                    client = StubClient(responses)
+                    with self.assertRaises(benchmarks.SourceError) as caught:
+                        benchmarks.fetch_benchlm(client, None, deadline())
+                self.assertEqual(str(caught.exception), "invalid response schema")
+
+    def test_canonical_model_key_is_used_verbatim_and_never_rewritten(self):
+        # A present, non-empty modelKey is canonical already: dots, case, and
+        # underscores survive untouched; only the sourceModelId fallback is
+        # normalized.
+        responses = benchlm_tb4_responses(
+            [], [benchlm_item("some.model", 12.0),
+                 benchlm_item("UPPER_Case.Key", 13.0)])
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        tb4 = {item["model"] for item in result["entries"] if item["metric"] == "tb4"}
+        self.assertEqual(tb4, {"some.model", "UPPER_Case.Key"})
+
+    def test_board_model_key_covers_every_real_vals_identifier(self):
+        # Every sourceModelId the Vals TB4 board actually published must
+        # convert to a canonical slug: lowercase alphanumeric segments joined
+        # by single hyphens, with no two distinct ids colliding.
+        ids = BENCHLM_VALS_SOURCE_MODEL_IDS
+        self.assertEqual(len(ids), 57)
+        converted = {}
+        for ident in ids:
+            with self.subTest(source_model_id=ident):
+                key = benchmarks._board_model_key({"sourceModelId": ident})
+                self.assertIsNotNone(key)
+                self.assertRegex(key, r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+            converted[ident] = key
+        # No two distinct publisher ids collapse onto one canonical key.
+        self.assertEqual(len(set(converted.values())), len(ids))
+        # Representative shapes, pinned one-to-one.
+        expected = {
+            "alibaba/qwen3.8-max": "qwen3-8-max",
+            "mistralai/mistral-large-4": "mistral-large-4",
+            "minimax/MiniMax-M3": "minimax-m3",       # uppercase
+            "meta/muse_spark_1_3": "muse-spark-1-3",   # underscores
+            "reflection/Beam-1.0": "beam-1-0",         # uppercase + dot + digits
+            # Version suffix preserved, never collapsed to the base key.
+            "deepseek/deepseek-v4.1-flash-1017": "deepseek-v4-1-flash-1017",
+        }
+        for ident, key in expected.items():
+            self.assertEqual(converted[ident], key)
+        # Version-suffixed variants stay distinct from their base keys.
+        self.assertNotEqual(converted["deepseek/deepseek-v4.1-flash-1017"],
+                            converted["deepseek/deepseek-v4.1-flash"])
+        self.assertNotEqual(converted["kimi/kimi-k3.1-pro"],
+                            converted["kimi/kimi-k3"])
 
     def test_oversized_items_lists_are_rejected_before_row_allocation(self):
         too_many = [benchlm_item(f"model-{i}", 50.0)
@@ -3575,6 +3786,32 @@ class BenchLMPayloadTests(unittest.TestCase):
             self.assertNotIn("55.5", serialized)
             # Definitions stay in the metrics contract (like LiveBench).
             self.assertIn("benchalign_overall", [m["key"] for m in payload["metrics"]])
+
+    def test_vals_shaped_tb4_row_flows_from_the_board_into_the_payload(self):
+        # Regression: the Vals board's null modelKey used to abort the whole
+        # BenchLM refresh with "invalid response schema"; the converted row
+        # must now survive the fetch and reach the payload as a benchlm-
+        # sourced tb4 result for the canonically-named inventory model.
+        responses = benchlm_tb4_responses(
+            [], [benchlm_item(None, 27.778,
+                              source_model_id="mistralai/mistral-large-4")])
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        state = make_state({"benchlm": result["entries"]})
+        payload = benchmarks.build_payload(
+            [inventory_model("mistral-large-4", "mistralai/mistral-large-4")],
+            state, benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["bench"]["tb4"], 27.778)
+        self.assertNotIn("tb4", model["missing"])
+        selected = [item for item in model["results"]["tb4"] if item["selected"]]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["source"], "benchlm")
+        self.assertEqual(selected[0]["model"], "mistral-large-4")
+        self.assertEqual(selected[0]["value"], 27.778)
+        self.assertEqual(selected[0]["metadata"]["board"],
+                         benchmarks.BENCHLM_TB4_BOARDS[1][1])
 
 
 # ── Inventory and API wrappers ──────────────────────────────────────────────

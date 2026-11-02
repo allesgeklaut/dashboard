@@ -1679,6 +1679,30 @@ def _benchlm_rankings_page(payload, *, metric: str, offset: int,
     return entries, data_as_of, version, next_offset
 
 
+def _board_model_key(item: dict) -> str:
+    """Resolve a board row's model identifier to BenchLM's canonical slug.
+
+    The Vals capture publishes no modelKey and only a publisher-prefixed
+    sourceModelId (``alibaba/qwen3.8-max``).  BenchLM's canonical keys carry
+    no vendor prefix, are lowercase, and use ``-`` where the publisher id
+    uses ``.`` or ``_``, so the publisher id is converted to that shape.
+    This is a deterministic format conversion of a known id scheme, not
+    fuzzy matching: it applies only when modelKey is absent, and canonical
+    keys are never rewritten.  Version suffixes (``-1017``, ``-0813``,
+    ``-internal``, dates) name distinct variants and are kept verbatim.
+    """
+    model_key = _text(item.get("modelKey"), maximum=200)
+    if model_key is not None:
+        return model_key  # canonical key: used verbatim, never rewritten
+    source = item.get("sourceModelId")
+    if not isinstance(source, str):
+        # Missing, null, and non-string values are rejected exactly the way
+        # _text rejects them.
+        raise SourceError(_SOURCE_ERROR_SCHEMA)
+    slug = source.rsplit("/", 1)[-1].lower().replace(".", "-").replace("_", "-")
+    return _text(slug, maximum=200, required=True)
+
+
 def _benchlm_mcp_entries(payload, *, label: str, board_id: str,
                          tb4: dict) -> str:
     """Parse one TB4 MCP board response into rows merged into ``tb4``.
@@ -1722,7 +1746,7 @@ def _benchlm_mcp_entries(payload, *, label: str, board_id: str,
     for item in items:
         if not isinstance(item, dict):
             raise SourceError(_SOURCE_ERROR_SCHEMA)
-        model = _text(item.get("modelKey"), maximum=200, required=True)
+        model = _board_model_key(item)
         score = _number(item.get("score"), low=0.0, high=100.0)
         existing = tb4.get(model)
         if existing is not None:
