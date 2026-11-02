@@ -120,8 +120,11 @@ HTML/JavaScript:
   and [MCP endpoint](https://data.benchlm.ai/mcp). Adds **BenchAlign Overall**,
   **BenchAlign Coding**, **BenchAlign Agentic** and **BenchAlign Knowledge**
   (0–100 composite point estimates, not percentages; one manual refresh reads
-  at most 13 requests across the 4 surfaces + 1 MCP call)
-  plus a Terminal-Bench 4.0 fallback for models Harbor does not cover; it does
+  11 requests in practice — 9 GETs + 2 MCP calls — and at most 14 across the
+  4 surfaces + 2 MCP calls)
+  plus Terminal-Bench 4.0 rows from its two TB4 boards: the displayed TB4
+  value is the highest recorded result across Harbor and those boards, so a
+  TB4 row's harness varies by model (its `version` names the board); it does
   not replace any other source — no ECI composite, no LiveBench per-suite
   breakdown, and it covers roughly 19 of this install's 28 inventory models.
   BenchLM data is [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/);
@@ -137,7 +140,10 @@ a benchmark release (`benchmark_release`). DeepSWE's `generated_at` is
 source-level `source_updated`, not a per-result date, so its rows stay undated.
 The score column uses the latest published dated result — ties break on
 reasoning effort, then agent/configuration lexical order, never on score — and
-the API keeps every configuration's own value. Score hover text shows the
+the API keeps every configuration's own value. Terminal-Bench 4.0 is the one
+exception: its column shows the highest recorded result across Harbor and
+BenchLM's two TB4 boards, so a displayed TB4 row may come from a different
+harness than another model's row. Score hover text shows the
 selected result's agent, effort, confidence interval, date kind, trial count and
 benchmark model identity when available. Stale cached scores and missing reasons
 are also identified on hover. An evaluation date

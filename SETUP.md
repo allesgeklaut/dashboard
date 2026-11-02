@@ -117,6 +117,10 @@ a fetch failure.
 
 When a source has several results or configurations for an identity, the
 summary column uses the latest published dated result, never the maximum.
+The one exception is Terminal-Bench 4.0: it shows the highest recorded result
+across Harbor and BenchLM's two TB4 boards (a cross-source maximum, never a
+within-board one), so a displayed TB4 row may come from a different harness
+than another model's row.
 Every published date carries a `date_kind`: Harbor's `metadata.date` (Release
 Date) and Epoch's `date` are model releases (`model_release`); LiveBench's
 pinned release is a benchmark release (`benchmark_release`). DeepSWE's
@@ -244,13 +248,19 @@ evidence.
   and `https://data.benchlm.ai/mcp`. It contributes four metrics, **BenchAlign
   Overall**, **BenchAlign Coding**, **BenchAlign Agentic** and **BenchAlign
   Knowledge** — 0–100 composite point estimates, not
-  percentages — and a fallback for Terminal-Bench 4.0: Harbor stays the
-  primary source and BenchLM only fills models Harbor does not cover. The
+  percentages — and Terminal-Bench 4.0 rows from its two TB4 boards
+  (`benchlm-recorded:agentic.terminalBench4` and
+  `benchlm-capture:vals_bench_terminal_bench_4:entries`). TB4 shows the
+  **highest recorded result across Harbor and those two boards**, so a
+  displayed TB4 row may come from a different harness than another model's
+  row; each row's `version` names the board it came from (and its
+  `metadata.board` carries the board id). The
   free plan allows 250 successful reads per month at 30 requests/minute; one
-  page is one read, and a single manual refresh costs at most 13 reads (3 pages
-  per surface × 4 surfaces + 1 MCP call). At 250 reads/month that is about 19
-  refreshes per month, so a daily refresh no longer fits the free plan —
-  refresh every other day or less. BenchLM supplies no per-run dates, so its scores carry the new
+  page is one read, and a single manual refresh costs 11 reads in practice
+  (9 ranking GETs + 2 MCP calls, one per TB4 board) and never more than the
+  hard cap of 14 reads (3 pages per surface × 4 surfaces + 2 MCP calls). At
+  250 reads/month that is about 22 refreshes per month, so a daily refresh
+  no longer fits the free plan — refresh every other day or less. BenchLM supplies no per-run dates, so its scores carry the new
   date kind `source_snapshot` — the date BenchLM captured the board — never an
   evaluation date or a benchmark release date. BenchLM data is
   [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): this

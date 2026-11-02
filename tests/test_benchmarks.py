@@ -195,15 +195,19 @@ def benchlm_mcp_response(items, *, data_as_of="2026-10-28T09:15:00Z"):
 
 
 def benchlm_standard_responses():
-    """One page per ranking surface plus the Terminal-Bench 4.0 MCP board."""
+    """One page per ranking surface plus one MCP response per TB4 board."""
     overall = [benchlm_item("gpt-6-1-sol", 91.5, rank=1, interval=(89.0, 94.0)),
                benchlm_item("glm-5-3", 80.25, rank=2)]
     coding = [benchlm_item("gpt-6-1-sol", 88.0, rank=1)]
     agentic = [benchlm_item("kimi-k2-7-code", 76.5, rank=1)]
     knowledge = [benchlm_item("mimo-v2-6-pro", 68.0, rank=1)]
-    tb4 = [benchlm_item("gpt-6-1-sol", 55.5)]
+    # Both TB4 boards cover gpt-6-1-sol; the higher value (vals-capture) wins.
+    tb4_recorded = [benchlm_item("gpt-6-1-sol", 55.5)]
+    tb4_vals = [benchlm_item("gpt-6-1-sol", 61.25)]
     return [benchlm_page(overall), benchlm_page(coding), benchlm_page(agentic),
-            benchlm_page(knowledge), benchlm_mcp_response(tb4)]
+            benchlm_page(knowledge),
+            benchlm_mcp_response(tb4_recorded),
+            benchlm_mcp_response(tb4_vals)]
 
 
 class StubClient:
@@ -664,24 +668,26 @@ class DeepSweAdapterTests(unittest.TestCase):
 
 # ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
 class BenchLMAdapterTests(unittest.TestCase):
-    def test_happy_path_reads_all_four_surfaces_then_the_mcp_board(self):
+    def test_happy_path_reads_all_four_surfaces_then_both_mcp_boards(self):
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient(benchlm_standard_responses())
             result = benchmarks.fetch_benchlm(client, None, deadline())
         self.assertEqual([call["method"] for call in client.calls],
-                         ["GET", "GET", "GET", "GET", "POST"])
+                         ["GET", "GET", "GET", "GET", "POST", "POST"])
         for index, surface in enumerate(
                 surface for _metric, surface in benchmarks.BENCHLM_SURFACES):
             self.assertEqual(client.calls[index]["url"],
                              f"{benchmarks.BENCHLM_RANKINGS_URL}?surface={surface}"
                              f"&limit={benchmarks.BENCHLM_PAGE_SIZE}&offset=0")
-        self.assertEqual(client.calls[4]["url"], benchmarks.BENCHLM_MCP_URL)
-        self.assertEqual(client.calls[4]["json"], {
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": benchmarks.BENCHLM_MCP_TOOL,
-                       "arguments": {"boardId": benchmarks.BENCHLM_TB4_BOARD_ID,
-                                     "limit": benchmarks.BENCHLM_PAGE_SIZE}},
-        })
+        for board_index, (_label, board_id) in enumerate(benchmarks.BENCHLM_TB4_BOARDS):
+            post = client.calls[4 + board_index]
+            self.assertEqual(post["url"], benchmarks.BENCHLM_MCP_URL)
+            self.assertEqual(post["json"], {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": benchmarks.BENCHLM_MCP_TOOL,
+                           "arguments": {"boardId": board_id,
+                                         "limit": benchmarks.BENCHLM_PAGE_SIZE}},
+            })
         entries = {(item["metric"], item["model"]): item
                    for item in result["entries"]}
         self.assertEqual(set(entries), {
@@ -711,9 +717,12 @@ class BenchLMAdapterTests(unittest.TestCase):
         self.assertEqual(knowledge["value"], 68.0)
         self.assertEqual(knowledge["evaluator"], benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
         tb4 = entries[("tb4", "gpt-6-1-sol")]
-        self.assertEqual(tb4["value"], 55.5)
+        # The model is on both boards; the higher vals-capture value wins and
+        # the entry carries the winning board's label and board id.
+        self.assertEqual(tb4["value"], 61.25)
         self.assertEqual(tb4["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
-        self.assertEqual(tb4["version"], benchmarks.BENCHLM_TB4_VERSION)
+        self.assertEqual(tb4["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(tb4["metadata"], {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
         self.assertEqual(tb4["date"], "2026-10-28")
         self.assertEqual(tb4["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
         self.assertEqual(result["version"], "benchalign-2026.10.28")
@@ -745,11 +754,13 @@ class BenchLMAdapterTests(unittest.TestCase):
             benchlm_page(knowledge_p1, offset=0, next_offset=100),
             benchlm_page(knowledge_p2, offset=100, next_offset=None),
             benchlm_mcp_response([benchlm_item("model-a", 60.0)]),
+            # Second board repeats model-a with a higher value: it wins.
+            benchlm_mcp_response([benchlm_item("model-a", 65.0)]),
         ]
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient(responses)
             result = benchmarks.fetch_benchlm(client, None, deadline())
-        self.assertEqual(len(client.calls), 9)
+        self.assertEqual(len(client.calls), 10)
         self.assertIn("surface=overall&limit=100&offset=0", client.calls[0]["url"])
         self.assertIn("surface=overall&limit=100&offset=100", client.calls[1]["url"])
         self.assertIn("surface=coding&limit=100&offset=0", client.calls[2]["url"])
@@ -768,16 +779,25 @@ class BenchLMAdapterTests(unittest.TestCase):
         })
         # The repeated (overall, model-a) row kept its first occurrence.
         self.assertEqual(seen[("benchalign_overall", "model-a")]["value"], 90.0)
+        # The tb4 row present on both boards kept the higher second-board value
+        # and the winning board's provenance.
+        self.assertEqual(seen[("tb4", "model-a")]["value"], 65.0)
+        self.assertEqual(seen[("tb4", "model-a")]["version"],
+                         benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(seen[("tb4", "model-a")]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
         self.assertEqual(result["meta"], {"pages": 8, "rows": 9})
 
-    def test_read_cap_is_derived_from_the_surface_count(self):
-        # Regression guard: the cap must scale with BENCHLM_SURFACES so every
-        # surface is always reachable (2 surfaces hardcoded here once starved
-        # the remaining surfaces of reads).
+    def test_read_cap_is_derived_from_the_surface_and_board_count(self):
+        # Regression guard: the cap must scale with both BENCHLM_SURFACES and
+        # BENCHLM_TB4_BOARDS so every surface and every TB4 board is always
+        # reachable (2 surfaces hardcoded here once starved the remaining
+        # surfaces of reads).
         self.assertEqual(
             benchmarks.BENCHLM_MAX_REQUESTS,
-            len(benchmarks.BENCHLM_SURFACES) * benchmarks.BENCHLM_MAX_PAGES + 1)
-        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 13)
+            len(benchmarks.BENCHLM_SURFACES) * benchmarks.BENCHLM_MAX_PAGES
+            + len(benchmarks.BENCHLM_TB4_BOARDS))
+        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 14)
 
     def test_each_surface_is_requested_once_in_order_and_yields_its_metric(self):
         with benchlm_env(BENCHLM_TEST_KEY):
@@ -792,7 +812,7 @@ class BenchLMAdapterTests(unittest.TestCase):
         for metric, _surface in benchmarks.BENCHLM_SURFACES:
             self.assertIn(metric, metric_keys)
 
-    def test_read_cap_yields_exactly_thirteen_requests_and_never_raises(self):
+    def test_read_cap_yields_exactly_fourteen_requests_and_never_raises(self):
         responses = []
         for surface_index in range(len(benchmarks.BENCHLM_SURFACES)):
             for page_index in range(benchmarks.BENCHLM_MAX_PAGES):
@@ -803,24 +823,33 @@ class BenchLMAdapterTests(unittest.TestCase):
                     offset=offset,
                     next_offset=offset + benchmarks.BENCHLM_PAGE_SIZE))
         responses.append(benchlm_mcp_response([benchlm_item("mcp-model", 42.0)]))
+        responses.append(benchlm_mcp_response([benchlm_item("mcp-model", 43.0)]))
         responses.append(benchlm_page([benchlm_item("never-fetched", 1.0)]))
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient(responses)
             # An always-advancing nextOffset must not raise and must stop at
-            # the hard cap: 12 GETs + 1 POST, no more.
+            # the hard cap: 12 GETs + 2 POSTs, no more.
             result = benchmarks.fetch_benchlm(client, None, deadline())
         self.assertEqual(len(client.calls), benchmarks.BENCHLM_MAX_REQUESTS)
-        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 13)
+        self.assertEqual(benchmarks.BENCHLM_MAX_REQUESTS, 14)
         self.assertEqual(sum(call["method"] == "GET" for call in client.calls), 12)
-        self.assertEqual(sum(call["method"] == "POST" for call in client.calls), 1)
+        self.assertEqual(sum(call["method"] == "POST" for call in client.calls), 2)
+        self.assertEqual([call["json"]["params"]["arguments"]["boardId"]
+                          for call in client.calls if call["method"] == "POST"],
+                         [board_id for _label, board_id in benchmarks.BENCHLM_TB4_BOARDS])
         self.assertEqual(result["meta"], {"pages": 12, "rows": 13})
         self.assertEqual(len(result["entries"]), 13)
+        tb4 = [item for item in result["entries"] if item["metric"] == "tb4"]
+        self.assertEqual(len(tb4), 1)
+        self.assertEqual(tb4[0]["value"], 43.0)  # higher second-board value won
+        self.assertEqual(tb4[0]["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
 
-    def test_hitting_the_cap_mid_pagination_stops_reads_and_skips_the_mcp_post(self):
+    def test_hitting_the_cap_mid_pagination_stops_reads_and_skips_the_mcp_posts(self):
         responses = [benchlm_page([benchlm_item(f"m{i}", 10.0 + i)],
                                   offset=i * 100, next_offset=(i + 1) * 100)
                      for i in range(4)]
         responses.append(benchlm_mcp_response([benchlm_item("mcp", 1.0)]))
+        responses.append(benchlm_mcp_response([benchlm_item("mcp2", 2.0)]))
         with benchlm_env(BENCHLM_TEST_KEY), \
                 patch.object(benchmarks, "BENCHLM_MAX_REQUESTS", 3):
             client = StubClient(responses)
@@ -828,6 +857,62 @@ class BenchLMAdapterTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 3)  # cap reached: stop, never raise
         self.assertTrue(all(call["method"] == "GET" for call in client.calls))
         self.assertEqual(len(result["entries"]), 3)
+
+    def test_tb4_row_on_both_boards_keeps_the_higher_value_and_winning_board(self):
+        recorded = [benchlm_item("shared", 42.3), benchlm_item("tie", 50.0),
+                    benchlm_item("recorded-only", 10.0)]
+        vals = [benchlm_item("shared", 19.7), benchlm_item("tie", 50.0),
+                benchlm_item("vals-only", 88.0)]
+        responses = [benchlm_page([benchlm_item("m", 90.0)]),
+                     benchlm_page([benchlm_item("c", 80.0)]),
+                     benchlm_page([benchlm_item("a", 70.0)]),
+                     benchlm_page([benchlm_item("k", 60.0)]),
+                     benchlm_mcp_response(recorded),
+                     benchlm_mcp_response(vals)]
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        posts = [call for call in client.calls if call["method"] == "POST"]
+        self.assertEqual([call["json"]["params"]["arguments"]["boardId"]
+                          for call in posts],
+                         [board_id for _label, board_id in benchmarks.BENCHLM_TB4_BOARDS])
+        tb4 = {item["model"]: item for item in result["entries"]
+               if item["metric"] == "tb4"}
+        self.assertEqual(set(tb4), {"shared", "tie", "recorded-only", "vals-only"})
+        # Higher value wins and carries the winning board's version/metadata.
+        self.assertEqual(tb4["shared"]["value"], 42.3)
+        self.assertEqual(tb4["shared"]["version"], benchmarks.BENCHLM_TB4_BOARDS[0][0])
+        self.assertEqual(tb4["shared"]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
+        # An exact tie keeps the earlier board in tuple order.
+        self.assertEqual(tb4["tie"]["value"], 50.0)
+        self.assertEqual(tb4["tie"]["version"], benchmarks.BENCHLM_TB4_BOARDS[0][0])
+        self.assertEqual(tb4["tie"]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
+        self.assertEqual(tb4["recorded-only"]["value"], 10.0)
+        self.assertEqual(tb4["recorded-only"]["version"],
+                         benchmarks.BENCHLM_TB4_BOARDS[0][0])
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 8})
+
+    def test_tb4_row_only_on_the_second_board_is_still_returned(self):
+        responses = [benchlm_page([benchlm_item("m", 90.0)]),
+                     benchlm_page([benchlm_item("c", 80.0)]),
+                     benchlm_page([benchlm_item("a", 70.0)]),
+                     benchlm_page([benchlm_item("k", 60.0)]),
+                     benchlm_mcp_response([benchlm_item("first-only", 30.0)]),
+                     benchlm_mcp_response([benchlm_item("vals-only", 88.0)])]
+        with benchlm_env(BENCHLM_TEST_KEY):
+            client = StubClient(responses)
+            result = benchmarks.fetch_benchlm(client, None, deadline())
+        tb4 = {item["model"]: item for item in result["entries"]
+               if item["metric"] == "tb4"}
+        self.assertEqual(set(tb4), {"first-only", "vals-only"})
+        self.assertEqual(tb4["vals-only"]["value"], 88.0)
+        self.assertEqual(tb4["vals-only"]["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(tb4["vals-only"]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
+        self.assertEqual(tb4["vals-only"]["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 6})
 
     def test_oversized_items_lists_are_rejected_before_row_allocation(self):
         too_many = [benchlm_item(f"model-{i}", 50.0)
@@ -840,6 +925,7 @@ class BenchLMAdapterTests(unittest.TestCase):
                 benchlm_page([benchlm_item("a", 70.0)]),
                 benchlm_page([benchlm_item("k", 60.0)]),
                 benchlm_mcp_response(too_many),
+                benchlm_mcp_response([benchlm_item("t", 50.0)]),
             ], 5),
         ]
         for label, responses, expected_calls in cases:
@@ -1003,24 +1089,26 @@ class BenchLMAdapterTests(unittest.TestCase):
                         benchlm_page([benchlm_item("k", 60.0)]),
                         envelope if isinstance(envelope, benchmarks.Response)
                         else benchlm_raw_response(envelope),
+                        benchlm_mcp_response([benchlm_item("t", 50.0)]),
                     ])
                     with self.assertRaises(benchmarks.SourceError) as caught:
                         benchmarks.fetch_benchlm(client, None, deadline())
                 self.assertEqual(str(caught.exception), message)
-                self.assertEqual(len(client.calls), 5)  # 4 GETs then the POST
+                self.assertEqual(len(client.calls), 5)  # 4 GETs then the first POST
                 self.assertNotIn(BENCHLM_TEST_KEY, str(caught.exception))
 
-    def test_empty_surfaces_and_empty_board_raise_empty_feed(self):
+    def test_empty_surfaces_and_empty_boards_raise_empty_feed(self):
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient([benchlm_page([]), benchlm_page([]),
                                  benchlm_page([]), benchlm_page([]),
+                                 benchlm_mcp_response([]),
                                  benchlm_mcp_response([])])
             with self.assertRaises(benchmarks.SourceError) as caught:
                 benchmarks.fetch_benchlm(client, None, deadline())
         self.assertEqual(str(caught.exception), "empty feed")
-        self.assertEqual(len(client.calls), 5)
+        self.assertEqual(len(client.calls), 6)
 
-    def test_empty_ranking_surfaces_still_contribute_the_mcp_board(self):
+    def test_empty_ranking_surfaces_still_contribute_the_mcp_boards(self):
         with benchlm_env(BENCHLM_TEST_KEY):
             client = StubClient([
                 benchlm_page([]),
@@ -1028,14 +1116,15 @@ class BenchLMAdapterTests(unittest.TestCase):
                 benchlm_page([]),
                 benchlm_page([]),
                 benchlm_mcp_response([benchlm_item("mcp-model", 42.0)]),
+                benchlm_mcp_response([benchlm_item("vals-model", 40.0)]),
             ])
             result = benchmarks.fetch_benchlm(client, None, deadline())
         self.assertEqual([(item["metric"], item["model"], item["value"])
                           for item in result["entries"]],
-                         [("tb4", "mcp-model", 42.0)])
+                         [("tb4", "mcp-model", 42.0), ("tb4", "vals-model", 40.0)])
         self.assertEqual(result["source_updated"], "2026-10-28")
         self.assertEqual(result["version"], "benchalign-2026.10.28")
-        self.assertEqual(result["meta"], {"pages": 4, "rows": 1})
+        self.assertEqual(result["meta"], {"pages": 4, "rows": 2})
 
     def test_ci_interval_mapping(self):
         cases = [
@@ -1063,15 +1152,26 @@ class BenchLMAdapterTests(unittest.TestCase):
                 benchlm_page([benchlm_item("a", 70.0)]),
                 benchlm_page([benchlm_item("k", 60.0)]),
                 benchlm_mcp_response([benchlm_item("t", 50.0)]),
+                benchlm_mcp_response([benchlm_item("t", 51.0)]),
             ]), None, deadline())
         self.assertEqual(result["entries"][0]["ci"],
                          {"low": 88.0, "high": 92.0, "half_width": 2.0})
         self.assertIsNone(result["entries"][1]["ci"])
+        # Both TB4 boards were read; "t" is merged to the higher second-board
+        # value and carries that board's provenance.
+        tb4 = [item for item in result["entries"] if item["metric"] == "tb4"]
+        self.assertEqual(len(tb4), 1)
+        self.assertEqual(tb4[0]["value"], 51.0)
+        self.assertEqual(tb4[0]["version"], benchmarks.BENCHLM_TB4_BOARDS[1][0])
+        self.assertEqual(tb4[0]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[1][1]})
 
     def test_validated_entries_accepts_benchlm_rows_and_rejects_foreign_metrics(self):
         tb4_row = entry("tb4", "gpt-6-1-sol", 55.5, source="benchlm",
                         evaluator=benchmarks.BENCHLM_TB4_EVALUATOR,
-                        version=benchmarks.BENCHLM_TB4_VERSION, date="2026-10-28")
+                        version=benchmarks.BENCHLM_TB4_BOARDS[0][0],
+                        date="2026-10-28",
+                        metadata={"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
         self.assertEqual(tb4_row["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
         overall = entry("benchalign_overall", "gpt-6-1-sol", 91.5, source="benchlm",
                         evaluator=benchmarks.BENCHLM_COMPOSITE_EVALUATOR,
@@ -1174,8 +1274,10 @@ class BenchLMSecurityTests(unittest.TestCase):
             self.assertNotIn(BENCHLM_TEST_KEY, json.dumps(payload))
             model = payload["models"][0]
             self.assertEqual(model["bench"]["benchalign_overall"], 91.5)
-            self.assertEqual(model["bench"]["tb4"], 55.5)  # fallback fills tb4
+            self.assertEqual(model["bench"]["tb4"], 61.25)  # max across TB4 boards
             self.assertEqual(model["results"]["tb4"][0]["source"], "benchlm")
+            self.assertEqual(model["results"]["tb4"][0]["version"],
+                             benchmarks.BENCHLM_TB4_BOARDS[1][0])
         finally:
             directory.cleanup()
 
@@ -1222,7 +1324,8 @@ class BenchLMSecurityTests(unittest.TestCase):
                      version="benchalign-2026.10.28", date="2026-10-28")
         tb4 = entry("tb4", "glm-5-3", 60.0, source="benchlm",
                     evaluator=benchmarks.BENCHLM_TB4_EVALUATOR,
-                    version=benchmarks.BENCHLM_TB4_VERSION, date="2026-10-28")
+                    version=benchmarks.BENCHLM_TB4_BOARDS[0][0], date="2026-10-28",
+                    metadata={"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
         record = {
             "schema_version": benchmarks.SOURCE_SCHEMA_VERSION,
             "version": "benchalign-2026.10.28",
@@ -1239,6 +1342,11 @@ class BenchLMSecurityTests(unittest.TestCase):
         self.assertEqual(state["last_success"], NOW)
         self.assertIsNone(state["error"])
         self.assertEqual(len(state["data"]["entries"]), 2)
+        self.assertEqual(state["data"]["entries"][1]["version"],
+                         benchmarks.BENCHLM_TB4_BOARDS[0][0])
+        # The tb4 row's board id survives the sanitize round trip.
+        self.assertEqual(state["data"]["entries"][1]["metadata"],
+                         {"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
         self.assertEqual(state["data"]["meta"], {"pages": 2, "rows": 2})
         tampered = [
             ("wrong schema_version", {**record, "schema_version": 99}),
@@ -3250,7 +3358,9 @@ class BenchLMPayloadTests(unittest.TestCase):
         kwargs.setdefault("date", "2026-10-28")
         if metric == "tb4":
             kwargs.setdefault("evaluator", benchmarks.BENCHLM_TB4_EVALUATOR)
-            kwargs.setdefault("version", benchmarks.BENCHLM_TB4_VERSION)
+            kwargs.setdefault("version", benchmarks.BENCHLM_TB4_BOARDS[0][0])
+            kwargs.setdefault("metadata",
+                              {"board": benchmarks.BENCHLM_TB4_BOARDS[0][1]})
         else:
             kwargs.setdefault("evaluator", benchmarks.BENCHLM_COMPOSITE_EVALUATOR)
             kwargs.setdefault("version", "benchalign-2026.10.28")
@@ -3260,6 +3370,14 @@ class BenchLMPayloadTests(unittest.TestCase):
         spec = benchmarks.METRIC_BY_KEY["tb4"]
         self.assertEqual(spec.source, "harbor")
         self.assertEqual(spec.fallback, ("benchlm",))
+        # tb4 merges candidates by maximum selected value; every other metric
+        # keeps the first-candidate policy, and as_dict stays frontend-shaped.
+        self.assertEqual(spec.merge, "max")
+        for other in benchmarks.METRICS:
+            if other.key != "tb4":
+                self.assertEqual(other.merge, "first")
+        self.assertEqual(set(spec.as_dict()),
+                         {"key", "label", "name", "unit", "source"})
         self.assertTrue(benchmarks.SOURCE_ALIASES["benchlm"])
 
     def test_harbor_wins_tb4_when_both_sources_cover_the_model(self):
@@ -3279,6 +3397,75 @@ class BenchLMPayloadTests(unittest.TestCase):
         self.assertEqual(result["source"], "benchlm")
         self.assertEqual(result["date_kind"], benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
 
+    def test_tb4_max_merge_picks_the_higher_candidate_across_sources(self):
+        # merge="max": the candidate whose selected result value is highest
+        # supplies the row; an exact tie keeps the earlier candidate (Harbor).
+        cases = [
+            ("benchlm higher", 41.0, 61.25, "benchlm", 61.25),
+            ("harbor higher", 58.18, 55.5, "harbor", 58.18),
+            ("exact tie", 50.0, 50.0, "harbor", 50.0),
+        ]
+        for label, harbor_value, benchlm_value, expected_source, expected in cases:
+            with self.subTest(label=label):
+                state = make_state({
+                    "harbor": [entry("tb4", "GPT-6.1 Sol", harbor_value)],
+                    "benchlm": [self.benchlm_entry("tb4", "gpt-6-1-sol", benchlm_value)],
+                })
+                payload = benchmarks.build_payload(
+                    [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+                    benchlm_enabled=True)
+                model = payload["models"][0]
+                self.assertEqual(model["bench"]["tb4"], expected)
+                self.assertNotIn("tb4", model["missing"])
+                results = model["results"]["tb4"]
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0]["source"], expected_source)
+                self.assertTrue(results[0]["selected"])
+                if expected_source == "benchlm":
+                    self.assertEqual(results[0]["version"],
+                                     benchmarks.BENCHLM_TB4_BOARDS[0][0])
+                    self.assertEqual(results[0]["metadata"]["board"],
+                                     benchmarks.BENCHLM_TB4_BOARDS[0][1])
+                else:
+                    self.assertEqual(results[0]["version"],
+                                     benchmarks.SOURCES["harbor"].version)
+
+    def test_tb4_missing_reasons_are_unchanged_without_a_usable_value(self):
+        # No candidate yields a numeric selected value: the selection falls
+        # through to the first-candidate behaviour, so the missing reason and
+        # the emitted results are exactly as before the max merge.
+        state = make_state({
+            "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18, date=None)],
+            "benchlm": [self.benchlm_entry("tb4", "gpt-6-1-sol", 55.5, date=None)],
+        })
+        payload = benchmarks.build_payload(
+            [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+            benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["missing"]["tb4"], "not evaluated")
+        self.assertNotIn("tb4", model["bench"])
+        self.assertEqual(len(model["results"]["tb4"]), 1)  # harbor's row kept
+        self.assertFalse(any(item["selected"] for item in model["results"]["tb4"]))
+        # Primary outage with no usable fallback row still reports
+        # "source unavailable" (the primary-outage rule), and with an undated
+        # fallback row the reason stays "not evaluated" as before.
+        for label, benchlm, expected in (
+            ("primary outage, no tb4 row",
+             [self.benchlm_entry("benchalign_overall", "gpt-6-1-sol", 91.5)],
+             "source unavailable"),
+            ("primary outage, undated tb4 row",
+             [self.benchlm_entry("tb4", "gpt-6-1-sol", 55.5, date=None)],
+             "not evaluated"),
+        ):
+            with self.subTest(label=label):
+                state = make_state({"harbor": None, "benchlm": benchlm})
+                payload = benchmarks.build_payload(
+                    [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state,
+                    benchlm_enabled=True)
+                model = payload["models"][0]
+                self.assertEqual(model["missing"]["tb4"], expected)
+                self.assertNotIn("tb4", model["bench"])
+
     def test_benchlm_fills_tb4_when_harbor_has_no_identity_or_no_entries(self):
         benchlm = [self.benchlm_entry("tb4", "glm-5-3", 41.0),
                    self.benchlm_entry("benchalign_overall", "glm-5-3", 80.25)]
@@ -3294,7 +3481,9 @@ class BenchLMPayloadTests(unittest.TestCase):
                 self.assertNotIn("tb4", model["missing"])
                 result = model["results"]["tb4"][0]
                 self.assertEqual(result["source"], "benchlm")
-                self.assertEqual(result["version"], benchmarks.BENCHLM_TB4_VERSION)
+                self.assertEqual(result["version"], benchmarks.BENCHLM_TB4_BOARDS[0][0])
+                self.assertEqual(result["metadata"]["board"],
+                                 benchmarks.BENCHLM_TB4_BOARDS[0][1])
                 self.assertEqual(result["evaluator"], benchmarks.BENCHLM_TB4_EVALUATOR)
                 self.assertEqual(result["date_kind"],
                                  benchmarks.DATE_KIND_SOURCE_SNAPSHOT)
