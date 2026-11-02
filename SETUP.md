@@ -123,9 +123,8 @@ within-board one), so a displayed TB4 row may come from a different harness
 than another model's row.
 Every published date carries a `date_kind`: Harbor's `metadata.date` (Release
 Date) and Epoch's `date` are model releases (`model_release`); LiveBench's
-pinned release is a benchmark release (`benchmark_release`). DeepSWE's
-`generated_at` is source-level `source_updated`, not a per-result date, so its
-rows stay undated and have no summary. An actual evaluation or submission date,
+pinned release is a benchmark release (`benchmark_release`).
+An actual evaluation or submission date,
 when the feed includes one, is labeled `evaluation`; otherwise the evaluation
 date is shown as unknown. Ties are broken by reasoning-effort priority, then
 agent/configuration lexical order — never by score. An undated or ambiguous
@@ -162,12 +161,12 @@ bind mount from the main Compose file before recreating the service.
 #### Benchmark sources
 
 Harbor Terminal-Bench 4 and Epoch ECI are enabled by default. LiveBench 2.0
-is opt-in and DeepSWE is optional, so neither is fetched until explicitly
-enabled; BenchLM is opt-in through the `BENCHLM_DATA_KEY` secret. The two
-opt-in flags are ordinary feature flags in the repository
+is opt-in, so it is not fetched until explicitly
+enabled; BenchLM is opt-in through the `BENCHLM_DATA_KEY` secret. The
+opt-in flag is an ordinary feature flag in the repository
 `.env` (used for Compose interpolation and local startup), not `/opt/secrets`
 credentials. This private, single-user installation uses
-`HOMELAB_LIVEBENCH_ENABLED=true`; DeepSWE remains off. Defaults in `.env.example`
+`HOMELAB_LIVEBENCH_ENABLED=true`. Defaults in `.env.example`
 stay false for other installations. All
 benchmark fetches use `httpx` (a runtime dependency) against fixed, allowlisted
 HTTPS endpoints. Each response is streamed inside one absolute per-source
@@ -221,23 +220,6 @@ evidence.
   vendor-reported results; show it with its own units and dates. Epoch AI's
   data is [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); keep the
   attribution and link to [epoch.ai/eci](https://epoch.ai/eci).
-- **DeepSWE** (optional, off by default) — enable with
-  `HOMELAB_DEEPSWE_ENABLED=true` (Compose forwards the variable; no new
-  service or volume). It reads Datacurve's v1.1
-  [leaderboard JSON](https://deepswe.datacurve.ai/artifacts/v1.1/leaderboard-live.json)
-  and stores each pass@1 result (0–1 in the feed) as a percentage in the API,
-  not best-of-four. Because its rows are undated, there is no single table
-  summary value. The artifact itself has no express license; the
-  project repository's Apache-2.0 license covers original contributions and
-  curation, but does not explicitly license the website leaderboard artifact.
-  Cite Datacurve 2026 (Wenqi Huang, Charley Lee, Leonard Tng, Serena Ge) and do
-  not copy tasks or training data. Epoch AI found grading defects in at least 23
-  of 113 v1.1 tasks, chiefly agent/hidden-test collisions; the API carries
-  that warning and a link to the
-  [DeepSWE v1.1 review](https://epoch.ai/benchmarks/deepswe/review). No score
-  correction is invented. Datacurve's benchmark is not the Together or
-  Agentica coding agent of the same name; do not fill gaps from community
-  leaderboards.
 - **BenchLM (BenchLM.ai Data API)** (optional, off unless keyed) — enabled if
   and only if `BENCHLM_DATA_KEY` is set and non-empty; there is no separate
   flag, and while disabled the source is never fetched and its cached rows
@@ -276,10 +258,8 @@ on your website; this repository does not assert a broader redistribution
 license for the results. Epoch AI's data is CC BY 4.0 — attribution is shown and
 must be preserved. The scope of LiveBench's older dataset/code licensing for
 the newer published scores remains unconfirmed; it is an operator opt-in,
-enabled here for private use after review. The DeepSWE artifact has
-no express license, and the repository's Apache-2.0 terms cover only original
-contributions/curation without explicitly licensing the website leaderboard
-artifact. These notes record current terms; they are not a verification of all
+enabled here for private use after review.
+These notes record current terms; they are not a verification of all
 reuse permissions or legal advice. Public availability alone
 is not display permission. Check each publisher's terms before republishing the
 data or exposing the dashboard beyond personal use, and do not copy benchmark
@@ -767,6 +747,5 @@ docker compose up -d --build
 | Refresh history unavailable / API returns 503 | No requests start without a durable reservation. Check `HOMELAB_BENCH_FILE`, cache validity and `/data` permissions; do not erase history to reset a valid cooldown |
 | Benchmark cache cannot be written after a run | Sources report a storage error and stay stale; the daily reservation still counts. Last-good in-memory data and the previous readable file are retained |
 | LiveBench suites absent from dropdown | Defaults off pending operator review; set `HOMELAB_LIVEBENCH_ENABLED=true` in the repo `.env` and recreate the container (or restart local uvicorn). This private install opts in |
-| DeepSWE absent or scoreless | Optional and off unless `HOMELAB_DEEPSWE_ENABLED=true`; current undated results have no summary, and grading-defect warnings remain in the API (see the review above) |
 | SECURITY tab missing | Locally, `SECURITY_REPORT_DIR` is unset; in Docker, check the report directory, its uid-1000 ownership, and the read-only mount (see the SECURITY tab section) |
 | SECURITY report unavailable | Check `latest.json` exists, is valid JSON, and is under 8 MiB; "stale" reflects report age, not the watch's job status |

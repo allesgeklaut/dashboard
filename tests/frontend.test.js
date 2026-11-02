@@ -1219,12 +1219,6 @@ function aiServicesReport(overrides = {}) {
         url: 'https://livebench.ai/data/20261025/table.csv', disabled: true,
         warning: 'LiveBench2.0 reuse terms unverified; opt-in after review',
       },
-      deepswe: {
-        last_checked: checked, last_success: null, source_updated: null,
-        stale: false, error: null, version: null,
-        url: 'https://epoch.ai/benchmarks/deepswe/review', disabled: true,
-        warning: 'DeepSWE opt-in after review',
-      },
     },
     models: [
       {
@@ -1353,7 +1347,7 @@ test('AI services merges tabs into one dropdown table without AA or explanation 
     'aiRenderFilters', 'aiRenderColumnPicker', 'aiAvailableOptionalMetrics',
     'aiVisibleColumnKeys', 'aiResetHiddenSort', 'aiRestoreColumns', 'aiSaveColumns',
     'aiAttributionGroups', 'aiConfigEntries', 'aiResultCard', 'aiDateFields', 'aiResultValue',
-    'aiSafeLink', 'aiTimestampMs', 'aiDeepSwePresent', 'aiLiveBenchPresent',
+    'aiSafeLink', 'aiTimestampMs', 'aiLiveBenchPresent',
   ]) {
     assert.doesNotMatch(html, new RegExp(`\\b${gone}\\b`), gone);
   }
@@ -1362,10 +1356,10 @@ test('AI services merges tabs into one dropdown table without AA or explanation 
 test('one dropdown selects the benchmark; the table shows routes and one score column', async () => {
   const d = await loadAI();
   const select = d.element('ai-metric-select');
-  // Enabled sources only: LiveBench and DeepSWE never appear as options.
+  // Enabled sources only: LiveBench never appears as an option.
   assert.match(select.innerHTML, /Terminal-Bench 4\.0/);
   assert.match(select.innerHTML, /Epoch Capabilities Index/);
-  assert.doesNotMatch(select.innerHTML, /LiveBench|DeepSWE/);
+  assert.doesNotMatch(select.innerHTML, /LiveBench/);
   assert.equal(select.value, 'tb4');
 
   const thead = d.element('ai-thead').innerHTML;
@@ -1466,7 +1460,7 @@ test('a disabled stored benchmark falls back to the first available metric', asy
 test('the benchmark dropdown offers every enabled source metric', async () => {
   const base = aiServicesReport();
   const d = await loadAI();
-  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /LiveBench|DeepSWE/);
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /LiveBench/);
 
   const enabled = await loadAI(aiServicesReport({
     sources: { ...base.sources, livebench: { ...base.sources.livebench, disabled: false, warning: null } },
@@ -1474,7 +1468,6 @@ test('the benchmark dropdown offers every enabled source metric', async () => {
   const options = enabled.element('ai-metric-select').innerHTML;
   assert.match(options, /LiveBench Coding/);
   assert.match(options, /LiveBench Reasoning/);
-  assert.doesNotMatch(options, /DeepSWE/);
   enabled.run("aiSetMetric('livebench_coding')");
   assert.equal(enabled.run('_aiMetric'), 'livebench_coding');
   assert.match(enabled.element('ai-thead').innerHTML, /LBC/);
@@ -2081,7 +2074,6 @@ test('disabled source errors never count as refresh failures', async () => {
     sources: {
       ...base.sources,
       livebench: { ...base.sources.livebench, error: 'artifact not fetched' },
-      deepswe: { ...base.sources.deepswe, error: 'artifact not fetched' },
     },
   });
   const { d } = refreshDashboard(report);

@@ -27,7 +27,7 @@ from unittest.mock import patch
 with patch('dotenv.find_dotenv', return_value=sys.argv[1]):
     import homelab_core
 import benchmarks
-print(json.dumps([benchmarks.LIVEBENCH_ENABLED, benchmarks.DEEPSWE_ENABLED]))
+print(json.dumps([benchmarks.LIVEBENCH_ENABLED]))
 """
             result = subprocess.run(
                 [sys.executable, "-c", script, str(dotenv_path)],
@@ -38,14 +38,14 @@ print(json.dumps([benchmarks.LIVEBENCH_ENABLED, benchmarks.DEEPSWE_ENABLED]))
 
     def test_dotenv_opt_ins_are_loaded_before_benchmark_initialization(self):
         self.assertEqual(self.startup_flags(
-            "HOMELAB_LIVEBENCH_ENABLED=true\nHOMELAB_DEEPSWE_ENABLED=true\n"
-        ), [True, True])
+            "HOMELAB_LIVEBENCH_ENABLED=true\n"
+        ), [True])
 
     def test_process_environment_takes_precedence_over_dotenv(self):
         self.assertEqual(self.startup_flags(
-            "HOMELAB_LIVEBENCH_ENABLED=true\nHOMELAB_DEEPSWE_ENABLED=true\n",
-            HOMELAB_LIVEBENCH_ENABLED="false", HOMELAB_DEEPSWE_ENABLED="false",
-        ), [False, False])
+            "HOMELAB_LIVEBENCH_ENABLED=true\n",
+            HOMELAB_LIVEBENCH_ENABLED="false",
+        ), [False])
 
     def test_optional_sources_default_off(self):
-        self.assertEqual(self.startup_flags(""), [False, False])
+        self.assertEqual(self.startup_flags(""), [False])

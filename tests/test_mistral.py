@@ -273,8 +273,7 @@ class AiServicesRouteTests(unittest.TestCase):
     def test_ai_services_route_matches_the_shared_contract(self):
         payload = {
             "models": [],
-            "metrics": [spec.as_dict() for spec in benchmarks.METRICS
-                        if spec.source != "deepswe"],
+            "metrics": [spec.as_dict() for spec in benchmarks.METRICS],
             "sources": {},
             "refreshing": False,
         }

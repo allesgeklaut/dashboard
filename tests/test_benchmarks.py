@@ -121,23 +121,6 @@ def livebench_categories_response(categories=None):
     return benchmarks.Response(200, {}, json.dumps(categories or livebench_categories()).encode())
 
 
-def deepswe_response(rows=None, *, task_count=113, generated_at="2026-09-22T06:27:15.860279+00:00"):
-    rows = rows if rows is not None else [
-        {"model": "gpt-6-astra", "harness": "mini-swe-agent", "reasoning_effort": "xhigh",
-         "config": "mini_swe_agent_gpt_6_astra_xhigh", "pass_at_1": 0.74115,
-         "pass_at_4": 0.8053, "ci_lo": 0.7125, "ci_hi": 0.7698, "ci_half": 0.0287,
-         "n_runs": 4, "ci_method": "fixture"},
-        {"model": "gpt-6-astra", "harness": "mini-swe-agent", "reasoning_effort": "max",
-         "config": "mini_swe_agent_gpt_6_astra_max", "pass_at_1": 0.7323,
-         "ci_lo": 0.70, "ci_hi": 0.76, "ci_half": 0.03, "n_runs": 4, "ci_method": "fixture"},
-    ]
-    payload = {"scope": "fixture", "unit": "pass@1", "generated_at": generated_at,
-               "n_tasks_in_set": task_count,
-               "latest_job": {"name": "fixture", "finished_at": "2026-09-01T07:35:13Z"},
-               "rows": rows}
-    return benchmarks.Response(200, {}, json.dumps(payload).encode())
-
-
 # ── BenchLM fixtures ────────────────────────────────────────────────────────
 # Test-only sentinel credential; never a real key.
 BENCHLM_TEST_KEY = "benchlm-test-sentinel-0000notarealkey"
@@ -320,8 +303,7 @@ def entry(metric, model, value, *, date=_UNSET, source=None, **kwargs):
     assert source is None or source in (spec.source, *spec.fallback)
     resolved_source = source or spec.source
     if date is _UNSET:
-        # DeepSWE carries no eval date; other sources default to a dated fixture.
-        date = None if spec.source == "deepswe" else "2026-09-01"
+        date = "2026-09-01"
     date_kind = kwargs.pop("date_kind", None)
     if date is not None and date_kind is None:
         if spec.source == "livebench":
@@ -694,56 +676,6 @@ class LiveBenchAdapterTests(unittest.TestCase):
         metrics = {item["metric"] for item in result["entries"]}
         self.assertNotIn("livebench_coding", metrics)
         self.assertIn("livebench_reasoning", metrics)
-
-
-# ── DeepSWE ─────────────────────────────────────────────────────────────────
-class DeepSweAdapterTests(unittest.TestCase):
-    def test_pass_at_1_is_converted_to_percent_and_configs_are_retained(self):
-        response = deepswe_response()
-        response = benchmarks.Response(200, {"etag": 'W/"d"'}, response.body)
-        result = benchmarks.fetch_deepswe(StubClient([response]), None, deadline())
-        self.assertEqual(len(result["entries"]), 2)
-        self.assertEqual(result["entries"][0]["value"], 74.115)
-        self.assertEqual(result["entries"][0]["ci"]["low"], 71.25)
-        self.assertIsNone(result["entries"][0]["date"])
-        self.assertIsNone(result["entries"][0]["date_kind"])
-        self.assertEqual(result["source_updated"], "2026-09-22")
-        self.assertEqual(result["entries"][0]["metadata"]["task_count"], 113)
-        self.assertIn("23 of 113", benchmarks.DEEPSWE_WARNING)
-        self.assertIn(benchmarks.DEEPSWE_REVIEW_URL, benchmarks.DEEPSWE_WARNING)
-
-    def test_actual_row_eval_date_is_used_when_the_row_supplies_one(self):
-        rows = [{
-            "model": "gpt-6-astra", "harness": "mini-swe-agent",
-            "reasoning_effort": "max", "config": "fixture",
-            "pass_at_1": 0.5, "evaluated_at": "2026-09-05T10:11:12Z",
-        }]
-        result = benchmarks.fetch_deepswe(
-            StubClient([deepswe_response(rows)]), None, deadline())
-        self.assertEqual(result["entries"][0]["date"], "2026-09-05")
-        self.assertEqual(result["entries"][0]["date_kind"],
-                         benchmarks.DATE_KIND_EVALUATION)
-
-    def test_ranges_tasks_and_timestamps_are_validated(self):
-        bad = [
-            deepswe_response(task_count=112),
-            deepswe_response(generated_at="not-a-date"),
-            deepswe_response([{"model": "x", "pass_at_1": 1.1}]),
-            deepswe_response([{"model": "x", "pass_at_1": 0.5, "ci_lo": 0.8, "ci_hi": 0.2}]),
-            deepswe_response([]),
-        ]
-        for response in bad:
-            with self.subTest(body=response.body[:80]):
-                with self.assertRaises(benchmarks.SourceError):
-                    benchmarks.fetch_deepswe(StubClient([response]), None, deadline())
-
-    def test_conditional_request_and_304(self):
-        previous = {"validators": {"last_modified": "Mon, 26 Oct 2026 08:25:02 GMT"}}
-        client = StubClient([benchmarks.Response(304, {}, b"")])
-        result = benchmarks.fetch_deepswe(client, previous, deadline())
-        self.assertTrue(result["not_modified"])
-        self.assertEqual(client.calls[0]["headers"]["If-Modified-Since"],
-                         "Mon, 26 Oct 2026 08:25:02 GMT")
 
 
 # ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
@@ -1464,7 +1396,7 @@ class BenchLMSecurityTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "benchlm": benchmarks.fetch_benchlm,
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("harbor", "epoch", "livebench", "deepswe")},
+               for name in ("harbor", "epoch", "livebench")},
         }, client_factory=lambda: StubClient(benchlm_standard_responses()))
         try:
             with benchlm_env(BENCHLM_TEST_KEY), \
@@ -1714,8 +1646,7 @@ class _LocalFeedServer:
 class HttpSecurityTests(unittest.TestCase):
     def test_only_fixed_public_https_endpoints_are_accepted(self):
         for url in (benchmarks.HARBOR_ENDPOINT, benchmarks.EPOCH_CSV_URL,
-                    benchmarks.LIVEBENCH_CSV_URL, benchmarks.LIVEBENCH_CATEGORIES_URL,
-                    benchmarks.DEEPSWE_JSON_URL):
+                    benchmarks.LIVEBENCH_CSV_URL, benchmarks.LIVEBENCH_CATEGORIES_URL):
             benchmarks.HttpClient._validate_url(url)
         rejected = [
             "http://epoch.ai/data/eci_scores.csv",
@@ -1964,10 +1895,9 @@ class HttpSecurityTests(unittest.TestCase):
                 self.assertIsNone(parts.username)
                 self.assertIsNone(parts.password)
                 self.assertIn(parts.hostname, provenance_hosts)
-        urls = re.findall(r"https://[^\s)]+", benchmarks.SOURCES["deepswe"].warning)
-        self.assertTrue(urls)
-        for url in urls:
-            self.assertIn(urlsplit(url).hostname, provenance_hosts)
+                # Any link a source warning carries must also be allowlisted.
+                for url in re.findall(r"https://[^\s)]+", spec.warning):
+                    self.assertIn(urlsplit(url).hostname, provenance_hosts)
 
 
 # ── Persistence, staleness and failure isolation ────────────────────────────
@@ -1976,7 +1906,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "GPT-6.1 Sol", 58.18)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             self.assertTrue(store.refresh_source("harbor"))
@@ -1999,7 +1929,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(good),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         }, clock=lambda: NOW)
         try:
             store.refresh_source("harbor")
@@ -2023,7 +1953,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             store.refresh_source("harbor")
@@ -2115,7 +2045,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             Path(path).write_text("old-cache")
@@ -2148,7 +2078,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": fetcher,
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         store._clock = lambda: clock["now"]
         try:
@@ -2195,7 +2125,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             self.assertTrue(store.refresh_source("harbor"))
@@ -2225,7 +2155,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, _ = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             with patch.object(benchmarks.json, "dumps",
@@ -2243,7 +2173,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             Path(path).write_text("previous-cache")
@@ -2262,7 +2192,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(persist=False, fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             self.assertTrue(store.refresh_source("harbor"))
@@ -2280,7 +2210,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(old),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             store.refresh_source("harbor")
@@ -2292,7 +2222,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
             payload = benchmarks.build_payload([
                 inventory_model("old-model", "x/Old Model"),
                 inventory_model("new-model", "x/New Model"),
-            ], state, deepswe_enabled=False)
+            ], state)
             self.assertEqual(payload["models"][0]["bench"], {})
             self.assertEqual(payload["models"][1]["bench"]["tb4"], 20.0)
         finally:
@@ -2302,7 +2232,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, _ = temp_store(fetchers={
             "harbor": static_fetcher({"not_modified": True}),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             self.assertFalse(store.refresh_source("harbor"))
@@ -2314,7 +2244,7 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             bad_source = snapshot([entry("tb4", "Model", 10.0)])
@@ -2531,7 +2461,6 @@ class SnapshotPersistenceTests(unittest.TestCase):
             "harbor": static_fetcher(snapshot([entry("tb4", "Model", 10.0)])),
             "epoch": static_fetcher(benchmarks.SourceError("invalid JSON response")),
             "livebench": static_fetcher(benchmarks.SourceError("empty feed")),
-            "deepswe": static_fetcher(benchmarks.SourceError("empty feed")),
         })
         try:
             store.refresh_now()
@@ -2548,14 +2477,14 @@ class SnapshotPersistenceTests(unittest.TestCase):
         directory, store, path = temp_store(fetchers={
             "harbor": static_fetcher(RuntimeError(secret)),
             **{name: static_fetcher(benchmarks.SourceError("empty feed"))
-               for name in ("epoch", "livebench", "deepswe")},
+               for name in ("epoch", "livebench")},
         })
         try:
             store.refresh_source("harbor")
             state = store.read_state(now=NOW)
             self.assertNotIn("secret", json.dumps(state))
             payload = benchmarks.build_payload(
-                [inventory_model("m", "openai/m")], state, deepswe_enabled=False)
+                [inventory_model("m", "openai/m")], state)
             serialized = json.dumps(payload)
             self.assertNotIn("fixture-secret", serialized)
             self.assertNotIn("internal.invalid", serialized)
@@ -2734,7 +2663,7 @@ class RefreshConcurrencyTests(unittest.TestCase):
             state = store.read_state(now=NOW)
             self.assertFalse(called)
             payload = benchmarks.build_payload(
-                [inventory_model("m", "openai/m")], state, deepswe_enabled=False)
+                [inventory_model("m", "openai/m")], state)
             self.assertFalse(called)
             self.assertEqual(payload["models"][0]["missing"]["tb4"], "source unavailable")
         finally:
@@ -2745,11 +2674,9 @@ class RefreshConcurrencyTests(unittest.TestCase):
             "harbor": static_fetcher(snapshot([entry("tb4", "A", 10.0)])),
             "epoch": static_fetcher(benchmarks.SourceError("empty feed")),
             "livebench": static_fetcher(benchmarks.SourceError("empty feed")),
-            "deepswe": static_fetcher(benchmarks.SourceError("empty feed")),
         })
         try:
-            with patch.object(benchmarks, "LIVEBENCH_ENABLED", True), \
-                    patch.object(benchmarks, "DEEPSWE_ENABLED", True):
+            with patch.object(benchmarks, "LIVEBENCH_ENABLED", True):
                 store._refresh_worker()
             state = store.read_state(now=NOW)
             self.assertFalse(state["harbor"]["stale"])
@@ -2856,8 +2783,7 @@ class ManualRefreshPolicyTests(unittest.TestCase):
                         return SourceThread(target, name)
 
                     store._thread_factory = factory
-                    with patch.object(benchmarks, "LIVEBENCH_ENABLED", False), \
-                            patch.object(benchmarks, "DEEPSWE_ENABLED", False):
+                    with patch.object(benchmarks, "LIVEBENCH_ENABLED", False):
                         store._refresh_worker()
                     state = store.read_state()
                     self.assertFalse(store.refreshing)
@@ -3000,12 +2926,9 @@ class ManualRefreshPolicyTests(unittest.TestCase):
 class PayloadContractTests(unittest.TestCase):
     def setUp(self):
         self.livebench_patch = patch.object(benchmarks, "LIVEBENCH_ENABLED", True)
-        self.deepswe_patch = patch.object(benchmarks, "DEEPSWE_ENABLED", True)
         self.livebench_patch.start()
-        self.deepswe_patch.start()
 
     def tearDown(self):
-        self.deepswe_patch.stop()
         self.livebench_patch.stop()
 
     def state(self, entries):
@@ -3016,7 +2939,6 @@ class PayloadContractTests(unittest.TestCase):
             "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
             "epoch": [entry("eci", "GPT-6.1 Sol", 168.37)],
             "livebench": [entry("livebench_coding", "gpt-6.1-sol", 96.0)],
-            "deepswe": [entry("deepswe", "gpt-6-astra", 74.1)],
         })
         payload = benchmarks.build_payload(
             [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state)
@@ -3033,7 +2955,6 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(model["bench"]["tb4"], 58.18)
         self.assertEqual(model["bench"]["eci"], 168.37)
         self.assertEqual(model["bench"]["livebench_coding"], 96.0)
-        self.assertEqual(model["missing"]["deepswe"], "unmatched identity")
         result = model["results"]["tb4"][0]
         for key in ("model", "agent", "effort", "evaluator", "version", "date",
                     "date_kind", "value", "ci", "configuration", "source",
@@ -3058,7 +2979,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("tb4", "Model", 50.0, date="2026-09-01", effort="low"),
                 entry("tb4", "Model", 48.0, date="2026-09-01", effort="max"),
             ],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("model", "x/model")], state)["models"][0]
@@ -3093,7 +3014,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("tb4", "Model", 90.0, date="2026-08-01", effort="max"),
                 entry("tb4", "Model", 70.0, date="2026-09-01", effort="max"),
             ],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         payload = benchmarks.build_payload(
             [inventory_model("model", "x/model")], state)
@@ -3111,7 +3032,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("tb4", "Model", 52.0, date="2026-09-01", effort="medium"),
                 entry("tb4", "Model", 48.0, date="2026-09-01", effort="max"),
             ],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         payload = benchmarks.build_payload([inventory_model("model", "x/model")], state)
         model = payload["models"][0]
@@ -3120,28 +3041,13 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["effort"], "max")
 
-    def test_undated_deepswe_scores_are_retained_but_never_summarized(self):
-        state = self.state({
-            "deepswe": [entry("deepswe", "gpt-6-astra", 74.1)],
-            "harbor": [], "epoch": [], "livebench": [],
-        })
-        model = benchmarks.build_payload(
-            [inventory_model("gpt-6-astra", "openai/gpt-6-astra")], state)["models"][0]
-        self.assertNotIn("deepswe", model["bench"])
-        self.assertEqual(model["missing"]["deepswe"], "not evaluated")
-        result = model["results"]["deepswe"][0]
-        self.assertEqual(result["value"], 74.1)
-        self.assertIsNone(result["date"])
-        self.assertIsNone(result["date_kind"])
-        self.assertNotIn("date_kind", result["metadata"])
-
     def test_multiple_undated_configurations_never_get_a_summary(self):
         state = self.state({
             "harbor": [
                 entry("tb4", "Model", 60.0, date=None, effort="max"),
                 entry("tb4", "Model", 70.0, date=None, effort="low"),
             ],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("model", "x/model")], state)["models"][0]
@@ -3166,7 +3072,6 @@ class PayloadContractTests(unittest.TestCase):
                 entry("livebench_coding", "gpt-6.1-sol", 96.0),
                 entry("livebench_coding", "claude-opus-5.5", 96.3),
             ],
-            "deepswe": [entry("deepswe", "glm-5-3", 68.96)],
         })
         models = benchmarks.build_payload([
             inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol"),
@@ -3181,12 +3086,6 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(models[1]["bench"]["livebench_coding"], 96.3)
         self.assertEqual(models[2]["bench"]["tb4"], 41.82)
         self.assertEqual(models[2]["bench"]["eci"], 155.99)
-        # DeepSWE rows are undated, so no summary is invented; the result value
-        # remains available in the per-configuration list.
-        self.assertNotIn("deepswe", models[2]["bench"])
-        self.assertEqual(models[2]["missing"]["deepswe"], "not evaluated")
-        self.assertEqual(models[2]["results"]["deepswe"][0]["value"], 68.96)
-        self.assertIsNone(models[2]["results"]["deepswe"][0]["date"])
         # LiveBench has no glm-5.3 row: missing, not silently borrowed.
         self.assertEqual(models[2]["missing"]["livebench_coding"], "unmatched identity")
 
@@ -3208,10 +3107,6 @@ class PayloadContractTests(unittest.TestCase):
                 # curated alias and needs no source mapping.
                 entry("livebench_coding", "mistral-large-4", 60.0),
             ],
-            "deepswe": [
-                entry("deepswe", "glm-5-3", 68.96),
-                entry("deepswe", "glm-5-3-flash", 63.39),
-            ],
         })
         models = benchmarks.build_payload([
             inventory_model("zai-glm-5-3", "mistral/zai-glm-5-3"),
@@ -3225,23 +3120,16 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(models[1]["bench"], {
             "tb4": 35.76, "livebench_coding": 80.6, "eci": 153.08,
         })
-        # DeepSWE aliases resolve, but its rows are undated, so the values stay
-        # in results and the summary remains "not evaluated" by contract.
-        self.assertEqual(models[0]["results"]["deepswe"][0]["value"], 68.96)
-        self.assertEqual(models[1]["results"]["deepswe"][0]["value"], 63.39)
-        self.assertEqual(models[0]["missing"]["deepswe"], "not evaluated")
         # Only the reviewed Epoch alias was added for Mistral Large 4.
         self.assertEqual(models[2]["bench"],
                          {"eci": 150.03, "livebench_coding": 60.0})
         self.assertEqual(models[2]["missing"]["tb4"], "unmatched identity")
-        self.assertEqual(models[2]["missing"]["deepswe"], "unmatched identity")
 
     def test_mistral_rolling_latest_and_undocumented_variants_stay_unmatched(self):
         state = self.state({
             "harbor": [entry("tb4", "GLM-5.3", 41.82)],
             "epoch": [entry("eci", "Mistral Large 4", 150.03)],
             "livebench": [entry("livebench_coding", "glm-5.3", 80.0)],
-            "deepswe": [entry("deepswe", "glm-5-3", 68.96)],
         })
         candidates = [
             ("mistral-large-latest", "mistral/mistral-large-latest"),
@@ -3264,7 +3152,6 @@ class PayloadContractTests(unittest.TestCase):
             "harbor": [entry("tb4", "GLM-5.3", 41.82)],
             "epoch": [entry("eci", "GLM-5.3", 155.99)],
             "livebench": [entry("livebench_coding", "glm-5.3", 80.0)],
-            "deepswe": [entry("deepswe", "glm-5-3", 68.96)],
         })
         stock = benchmarks.build_payload([
             inventory_model(
@@ -3291,13 +3178,12 @@ class PayloadContractTests(unittest.TestCase):
         self.assertEqual(normal["bench"]["tb4"], 41.82)
         self.assertEqual(normal["bench"]["eci"], 155.99)
         self.assertEqual(normal["bench"]["livebench_coding"], 80.0)
-        self.assertEqual(normal["results"]["deepswe"][0]["value"], 68.96)
 
     def test_mistral_alias_routes_still_exclude_noncoding_and_abliterated(self):
         state = self.state({
             "harbor": [entry("tb4", "GLM-5.3", 41.82)],
             "epoch": [entry("eci", "GLM-5.3", 155.99)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         models = benchmarks.build_payload([
             inventory_model("audio", "mistral/voxtral-mini-latest",
@@ -3318,7 +3204,7 @@ class PayloadContractTests(unittest.TestCase):
         state = self.state({
             "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
             "epoch": [entry("eci", "GPT-6.1 Sol", 168.37)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         model = benchmarks.build_payload([
             inventory_model("chatgpt-gpt-6.1-sol", "chatgpt/gpt-6.1-sol",
@@ -3336,7 +3222,7 @@ class PayloadContractTests(unittest.TestCase):
         state = self.state({
             "harbor": [entry("tb4", "GPT-5.6 Luna", 52.12)],
             "epoch": [entry("eci", "GPT-5.6 Luna", 156.5)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         model = benchmarks.build_payload([
             inventory_model("gpt-5.6-luna", "openai/responses/gpt-5.6-luna"),
@@ -3358,7 +3244,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("eci", "Muse Spark 1.3", 157.21),
             ],
             "harbor": [entry("tb4", "Muse Spark 1.3", 46.02)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         cases = [
             ("kimi-k3", "openai/kimi-k3", 157.86),
@@ -3390,7 +3276,7 @@ class PayloadContractTests(unittest.TestCase):
         # route (2026-10-29) and considers it the same model.
         state = self.state({
             "harbor": [entry("tb4", "Qwen3.8-Max-0902", 51.6)],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("qwen3.8-max", "openai/qwen3.8-max")], state)["models"][0]
@@ -3408,7 +3294,7 @@ class PayloadContractTests(unittest.TestCase):
                 entry("livebench_coding", "qwen3.8-27b", 86.8),
                 entry("livebench_coding", "muse-spark-1.3", 90.2),
             ],
-            "harbor": [], "epoch": [], "deepswe": [],
+            "harbor": [], "epoch": [],
         })
         cases = [
             ("deepseek-v4.1-flash-mistral", "mistral/deepseek-v4-1-flash-1017", 96.0),
@@ -3430,7 +3316,6 @@ class PayloadContractTests(unittest.TestCase):
             "harbor": [entry("tb4", "Opus 5.5", 64.85)],
             "epoch": [entry("eci", "Claude Opus 5.5", 168.83)],
             "livebench": [entry("livebench_coding", "claude-opus-5.5", 96.3)],
-            "deepswe": [],
         })
         names = ["claude-opus-5.5-abliterated", "claude-opus-5.5-preview",
                  "claude-opus-5", "claude-opus-latest", "claudeopus55"]
@@ -3448,7 +3333,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_case_insensitive_exact_identity_is_supported_without_punctuation_collapsing(self):
         state = self.state({
             "harbor": [entry("tb4", "GLM-5.3", 41.82)],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         upper = benchmarks.build_payload(
             [inventory_model("GLM-5.3", "zai/GLM-5.3")], state)["models"][0]
@@ -3460,7 +3345,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_unsupported_modalities_remain_rows_without_scores(self):
         state = self.state({
             "harbor": [entry("tb4", "Embed 1", 50.0)],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         models = benchmarks.build_payload([
             inventory_model("audio", "mistral/voxtral-mini-latest", mode="audio_transcription"),
@@ -3476,7 +3361,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_missing_reasons_are_specific_and_source_scoped(self):
         state = self.state({
             "livebench": [entry("livebench_coding", "matched", 80.0)],
-            "harbor": [], "epoch": None, "deepswe": [],
+            "harbor": [], "epoch": None,
         })
         models = benchmarks.build_payload([
             inventory_model("absent", "x/absent"),
@@ -3494,7 +3379,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_identity_match_but_missing_suite_is_not_evaluated(self):
         state = self.state({
             "livebench": [entry("livebench_reasoning", "model", 90.0)],
-            "harbor": [], "epoch": [], "deepswe": [],
+            "harbor": [], "epoch": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("model", "x/model")], state)["models"][0]
@@ -3504,7 +3389,7 @@ class PayloadContractTests(unittest.TestCase):
     def test_openai_is_a_transport_provider_not_an_identity_source(self):
         state = self.state({
             "harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)],
-            "epoch": [], "livebench": [], "deepswe": [],
+            "epoch": [], "livebench": [],
         })
         model = benchmarks.build_payload(
             [inventory_model("azure-route", "openai/gpt-6.1-sol")], state)["models"][0]
@@ -3515,7 +3400,7 @@ class PayloadContractTests(unittest.TestCase):
         with patch.object(benchmarks, "LIVEBENCH_ENABLED", False):
             state = self.state({
                 "livebench": [entry("livebench_coding", "gpt-6.1-sol", 96.0)],
-                "harbor": [], "epoch": [], "deepswe": [],
+                "harbor": [], "epoch": [],
             })
             payload = benchmarks.build_payload(
                 [inventory_model("gpt-6.1-sol", "openai/gpt-6.1-sol")], state)
@@ -3529,19 +3414,6 @@ class PayloadContractTests(unittest.TestCase):
         self.assertIn("reuse terms unverified", source["warning"])
         self.assertNotIn("96.0", json.dumps(payload))
 
-    def test_disabled_deepswe_is_optional_and_hides_cached_rows(self):
-        with patch.object(benchmarks, "DEEPSWE_ENABLED", False):
-            state = self.state({
-                "deepswe": [entry("deepswe", "gpt-6-astra", 74.1)],
-                "harbor": [], "epoch": [], "livebench": [],
-            })
-            payload = benchmarks.build_payload(
-                [inventory_model("gpt-6-astra", "openai/gpt-6-astra")], state)
-        self.assertNotIn("deepswe", [m["key"] for m in payload["metrics"]])
-        self.assertTrue(payload["sources"]["deepswe"]["disabled"])
-        self.assertEqual(payload["models"][0]["bench"], {})
-        self.assertNotIn("deepswe", payload["models"][0]["missing"])
-
     def test_source_provenance_never_includes_model_supplied_urls(self):
         row = harbor_row(model_url="https://evil.invalid/secret-path")
         state = self.state({"harbor": [entry("tb4", "GPT-6.1 Sol", 1.0)]})
@@ -3554,7 +3426,7 @@ class PayloadContractTests(unittest.TestCase):
         state = self.state({
             "harbor": [entry("tb4", "Model", 10.0)],
             "epoch": [entry("eci", "Model", 120.0)],
-            "livebench": [], "deepswe": [],
+            "livebench": [],
         })
         payload = benchmarks.build_payload([inventory_model("model", "x/model")], state)
         for model in payload["models"]:
@@ -4163,14 +4035,12 @@ class ApiContractTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         store = benchmarks.BenchmarkStore(
             path=str(Path(directory.name) / "b.json"), clock=lambda: NOW,
-            fetchers={"livebench": fetcher, "deepswe": fetcher})
+            fetchers={"livebench": fetcher})
         try:
-            with patch.object(benchmarks, "LIVEBENCH_ENABLED", False), \
-                    patch.object(benchmarks, "DEEPSWE_ENABLED", False):
+            with patch.object(benchmarks, "LIVEBENCH_ENABLED", False):
                 enabled = store._enabled_sources()
                 self.assertEqual(set(enabled), {"harbor", "epoch"})
                 self.assertFalse(store.refresh_source("livebench"))
-                self.assertFalse(store.refresh_source("deepswe"))
             self.assertFalse(called)
         finally:
             directory.cleanup()

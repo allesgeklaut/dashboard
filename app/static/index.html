@@ -3259,7 +3259,7 @@ const AI_METRIC_ORDER = [
   'tb4', 'eci',
   'livebench_coding', 'livebench_long_agentic', 'livebench_reasoning',
   'livebench_browser', 'livebench_data_analysis', 'livebench_research',
-  'livebench_design', 'deepswe',
+  'livebench_design',
   'benchalign_overall', 'benchalign_coding', 'benchalign_agentic', 'benchalign_knowledge',
 ];
 const AI_METRIC_FALLBACK = {
@@ -3272,14 +3272,13 @@ const AI_METRIC_FALLBACK = {
   livebench_data_analysis: { key: 'livebench_data_analysis', label: 'LB-DA', name: 'LiveBench Data Analysis', unit: 'pct', source: 'livebench' },
   livebench_research: { key: 'livebench_research', label: 'LB-RE', name: 'LiveBench Research', unit: 'pct', source: 'livebench' },
   livebench_design: { key: 'livebench_design', label: 'LB-DE', name: 'LiveBench Design', unit: 'pct', source: 'livebench' },
-  deepswe: { key: 'deepswe', label: 'DSWE', name: 'DeepSWE pass@1', unit: 'pct', source: 'deepswe' },
   benchalign_overall: { key: 'benchalign_overall', label: 'BAL-ALL', name: 'BenchAlign Overall', unit: 'index', source: 'benchlm' },
   benchalign_coding: { key: 'benchalign_coding', label: 'BAL-CODE', name: 'BenchAlign Coding', unit: 'index', source: 'benchlm' },
   benchalign_agentic: { key: 'benchalign_agentic', label: 'BAL-AGENT', name: 'BenchAlign Agentic', unit: 'index', source: 'benchlm' },
   benchalign_knowledge: { key: 'benchalign_knowledge', label: 'BAL-KNOW', name: 'BenchAlign Knowledge', unit: 'index', source: 'benchlm' },
 };
 const AI_METRIC_SOURCE_FALLBACK = {
-  tb4: 'harbor', livebench_coding: 'livebench', eci: 'epoch', deepswe: 'deepswe',
+  tb4: 'harbor', livebench_coding: 'livebench', eci: 'epoch',
   livebench_long_agentic: 'livebench', livebench_reasoning: 'livebench',
   livebench_browser: 'livebench', livebench_data_analysis: 'livebench',
   livebench_research: 'livebench', livebench_design: 'livebench',
@@ -3475,7 +3474,7 @@ function aiBenchState(model, key) {
   const missing = aiObject(model && model.missing);
   if (missing[key] != null && missing[key] !== '') return { missing: aiMessage(missing[key]) };
   // Only guess "ambiguous" when the backend gave no reason; undated results
-  // (for example DeepSWE rows) must stay "no summary" without inventing one.
+  // must stay "no summary" without inventing one.
   if (aiHasResults(model, key)) return { ambiguous: true };
   return {};
 }

@@ -14,7 +14,6 @@ responsive browser UI, and optional integrations controlled by environment setti
   model and mode. A dropdown selects its single benchmark score column.
 - Versioned benchmark snapshots from Harbor Terminal-Bench 4 and Epoch ECI by
   default; LiveBench's seven suites are opt-in (enabled on this private install).
-  DeepSWE is optional and off by default, with documented grading defects.
    BenchLM (BenchAlign composites) is optional, enabled only when
    `BENCHLM_DATA_KEY` is set.
 - Read-only SECURITY tab for the host watch's daily report (optional, off by default).
@@ -105,15 +104,6 @@ HTML/JavaScript:
   percentage. Epoch AI's data is
   [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); attribution is
   shown.
-- **DeepSWE** (optional, off by default) — Datacurve
-  [v1.1 artifact](https://deepswe.datacurve.ai/artifacts/v1.1/leaderboard-live.json),
-  which has no express license; the project repository's Apache-2.0 license
-  covers original contributions and curation, but does not explicitly license
-  the website leaderboard artifact. Cite Datacurve 2026 (Wenqi Huang, Charley
-  Lee, Leonard Tng, Serena Ge).
-  Epoch AI found grading defects in at least 23 of 113 v1.1 tasks
-  ([review](https://epoch.ai/benchmarks/deepswe/review)); the API preserves that
-  warning and no invented correction. Current undated rows have no summary score.
 - **BenchLM (BenchLM.ai Data API)** (optional, off unless `BENCHLM_DATA_KEY` is
   set) —
   [rankings API](https://data.benchlm.ai/v1/rankings/current?surface=overall|coding|agentic|knowledge)
@@ -136,8 +126,7 @@ HTML/JavaScript:
 
 Each dated result carries a `date_kind`: Harbor's Release Date
 and Epoch's `date` are model releases (`model_release`), and LiveBench's pin is
-a benchmark release (`benchmark_release`). DeepSWE's `generated_at` is
-source-level `source_updated`, not a per-result date, so its rows stay undated.
+a benchmark release (`benchmark_release`).
 The score column uses the latest published dated result — ties break on
 reasoning effort, then agent/configuration lexical order, never on score — and
 the API keeps every configuration's own value. Terminal-Bench 4.0 is the one
@@ -153,10 +142,8 @@ no configuration panels, provider filters, source cards or multi-column picker.
 
 Harbor's website-display documentation is not a broader redistribution
 license. Epoch AI's data is CC BY 4.0. The scope of LiveBench's older dataset/code
-licensing for the newer published scores remains unconfirmed. The DeepSWE
-artifact has no express license, and the repository's
-Apache-2.0 terms cover only original contributions/curation without explicitly
-licensing the website leaderboard artifact. These notes record current terms,
+licensing for the newer published scores remains unconfirmed. These notes
+record current terms,
 not a verification of all reuse permissions or legal advice. Verify each
 publisher's terms before republishing the data or exposing the dashboard beyond
 personal use, and do not copy benchmark tasks, test data, or training material.

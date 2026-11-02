@@ -1,12 +1,10 @@
 """Benchmark source adapters, snapshots, and AI Services payload assembly.
 
-Five fixed sources replace the removed Artificial Analysis scraping:
+Four fixed sources replace the removed Artificial Analysis scraping:
 
 * Harbor (Terminal-Bench 4.0), a documented public JSON leaderboard read.
 * Epoch AI's ECI CSV (abstract composite index; CC BY 4.0 attribution).
 * LiveBench, pinned to the explicitly released ``20261025`` table.
-* DeepSWE (optional, disabled by default because of documented task grading
-  defects; see ``DEEPSWE_WARNING``).
 * BenchLM (BenchLM.ai Data API; optional, credentialed, disabled by default;
   see ``BENCHLM_WARNING``).  It contributes the BenchAlign composite indexes
   and Terminal-Bench 4.0 rows from its two TB4 boards; the displayed TB4
@@ -31,13 +29,13 @@ explicit manual action starts a refresh run, at most once per rolling 24 hours
 across all enabled sources. The reservation is persisted before outbound work;
 failed runs count and reads never schedule a refresh.
 
-Default source availability: Harbor and Epoch are enabled.  LiveBench,
-DeepSWE, and BenchLM are opt-in (``HOMELAB_LIVEBENCH_ENABLED`` /
-``HOMELAB_DEEPSWE_ENABLED`` / the BenchLM data key, all false by default)
-because their scores' reuse terms could not be verified here, or — for BenchLM
-— because the source needs an operator-supplied data key; disabled sources
-are never fetched and their cached rows are never exposed. API definitions
-remain available, while disabled suites are omitted from the UI dropdown.
+Default source availability: Harbor and Epoch are enabled.  LiveBench and
+BenchLM are opt-in (``HOMELAB_LIVEBENCH_ENABLED`` / the BenchLM data key, all
+false by default) because their scores' reuse terms could not be verified
+here, or — for BenchLM — because the source needs an operator-supplied data
+key; disabled sources are never fetched and their cached rows are never
+exposed. API definitions remain available, while disabled suites are omitted
+from the UI dropdown.
 
 Dates are semantic, never inferred: every dated entry carries ``date_kind``
 (``model_release`` for Harbor/Epoch, ``benchmark_release`` for LiveBench,
@@ -45,7 +43,7 @@ Dates are semantic, never inferred: every dated entry carries ``date_kind``
 when a source actually supplies an eval date).  Summary selection uses the
 latest published dated result and never relabels it as an evaluation.
 ``source_updated`` is feed mutation metadata only (Harbor leaderboard/row
-timestamps, Epoch Last-Modified, DeepSWE generated_at, BenchLM ``dataAsOf``),
+timestamps, Epoch Last-Modified, BenchLM ``dataAsOf``),
 never a model-release or evaluation date.
 """
 from __future__ import annotations
@@ -92,15 +90,6 @@ LIVEBENCH_VERSION = "20261025"
 LIVEBENCH_CSV_URL = f"https://livebench.ai/data/{LIVEBENCH_VERSION}/table.csv"
 LIVEBENCH_CATEGORIES_URL = f"https://livebench.ai/data/{LIVEBENCH_VERSION}/categories.json"
 
-DEEPSWE_VERSION = "v1.1"
-DEEPSWE_JSON_URL = (
-    "https://deepswe.datacurve.ai/artifacts/v1.1/leaderboard-live.json"
-)
-DEEPSWE_URL = "https://deepswe.datacurve.ai/"
-DEEPSWE_TASKS = 113
-DEEPSWE_KNOWN_DEFECTIVE_TASKS = 23
-DEEPSWE_REVIEW_URL = "https://epoch.ai/benchmarks/deepswe/review"
-
 BENCHLM_RANKINGS_URL = "https://data.benchlm.ai/v1/rankings/current"
 BENCHLM_MCP_URL = "https://data.benchlm.ai/mcp"
 BENCHLM_PAGE_SIZE = 100
@@ -139,7 +128,6 @@ ALLOWED_HOSTS = frozenset({
     "api.harborframework.com",
     "epoch.ai",
     "livebench.ai",
-    "deepswe.datacurve.ai",
     "data.benchlm.ai",
 })
 
@@ -159,15 +147,14 @@ SOURCE_SCHEMA_VERSION = 2
 CACHE_TTL = 24 * 60 * 60        # per-source freshness target
 REFRESH_INTERVAL = 24 * 60 * 60 # hard limit between manual refresh runs
 
-# Opt-in flags.  LiveBench 2.0 score reuse terms and DeepSWE artifact terms
-# could not be verified; both sources stay disabled (no fetching, no scores
-# exposed) until an operator reviews them and enables the flag deliberately.
+# Opt-in flag.  LiveBench 2.0 score reuse terms could not be verified; the
+# source stays disabled (no fetching, no scores exposed) until an operator
+# reviews them and enables the flag deliberately.
 def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 LIVEBENCH_ENABLED = _env_flag("HOMELAB_LIVEBENCH_ENABLED")
-DEEPSWE_ENABLED = _env_flag("HOMELAB_DEEPSWE_ENABLED")
 # BenchLM is the only credentialed source: the data key gates the source at
 # import time and is read again when a request header is built.  The key is
 # never stored on the module, in snapshots, in logs, or in error text.
@@ -232,7 +219,6 @@ METRICS: tuple[MetricSpec, ...] = (
     MetricSpec("livebench_data_analysis", "LB-DATA", "LiveBench Data Analysis", "pct", "livebench"),
     MetricSpec("livebench_research", "LB-RESEARCH", "LiveBench Research", "pct", "livebench"),
     MetricSpec("livebench_design", "LB-DESIGN", "LiveBench Design", "pct", "livebench"),
-    MetricSpec("deepswe", "DSWE", "DeepSWE pass@1", "pct", "deepswe"),
     MetricSpec("benchalign_overall", "BAL-ALL", "BenchAlign Overall", "index", "benchlm"),
     MetricSpec("benchalign_coding", "BAL-CODE", "BenchAlign Coding", "index", "benchlm"),
     MetricSpec("benchalign_agentic", "BAL-AGENT", "BenchAlign Agentic", "index", "benchlm"),
@@ -275,20 +261,9 @@ LIVEBENCH_WARNING = (
     "Pinned LiveBench release 20261025. Coding scores can saturate near 100; "
     "research and design involve rubric or visual grading."
 )
-DEEPSWE_WARNING = (
-    f"Datacurve DeepSWE (2026; Wenqi Huang, Charley Lee, Leonard Tng, Serena Ge). "
-    f"Artifact reuse terms are unverified and this source is opt-in. Epoch AI "
-    f"documents grading defects in at least {DEEPSWE_KNOWN_DEFECTIVE_TASKS} of "
-    f"{DEEPSWE_TASKS} tasks (mainly agent/hidden-test collisions); scores are not "
-    f"corrected here. Review: {DEEPSWE_REVIEW_URL}"
-)
 LIVEBENCH_DISABLED_WARNING = (
     "LiveBench 2.0 reuse terms unverified; opt-in after review "
     "(HOMELAB_LIVEBENCH_ENABLED). Cached scores are hidden while disabled."
-)
-DEEPSWE_DISABLED_WARNING = (
-    f"{DEEPSWE_WARNING} Disabled: set HOMELAB_DEEPSWE_ENABLED only after reviewing "
-    "the artifact terms."
 )
 BENCHLM_WARNING = (
     "BenchLM.ai BenchAlign scores are composite 0-100 point estimates, not "
@@ -305,7 +280,6 @@ BENCHLM_DISABLED_WARNING = (
 )
 SOURCE_DISABLED_WARNINGS = {
     "livebench": LIVEBENCH_DISABLED_WARNING,
-    "deepswe": DEEPSWE_DISABLED_WARNING,
     "benchlm": BENCHLM_DISABLED_WARNING,
 }
 
@@ -313,7 +287,6 @@ SOURCES: dict[str, SourceSpec] = {
     "harbor": SourceSpec("harbor", HARBOR_LEADERBOARD, HARBOR_DOC_URL, HARBOR_WARNING),
     "epoch": SourceSpec("epoch", "eci_scores", EPOCH_PROVENANCE_URL, EPOCH_WARNING),
     "livebench": SourceSpec("livebench", LIVEBENCH_VERSION, LIVEBENCH_CSV_URL, LIVEBENCH_WARNING),
-    "deepswe": SourceSpec("deepswe", DEEPSWE_VERSION, DEEPSWE_URL, DEEPSWE_WARNING),
     "benchlm": SourceSpec("benchlm", "v1", "https://data.benchlm.ai/", BENCHLM_WARNING),
 }
 SOURCE_NAMES = tuple(SOURCES)
@@ -436,21 +409,6 @@ SOURCE_ALIASES: dict[str, dict[str, str]] = {
         # 2026-10-29 during branch review. The route may serve a newer snapshot
         # than LiveBench's 1017 evaluation; no other rolling alias is inferred.
         "deepseek-v4.1-flash": "deepseek-v4.1-flash-1017",
-    },
-    "deepswe": {
-        "claude-opus-4.8": "claude-opus-4-8",
-        "glm-5.3": "glm-5-3",
-        "glm-5.3-flash": "glm-5-3-flash",
-        # Mistral-hosted ZAI API IDs -> DeepSWE's published exact keys.
-        "zai-glm-5-3": "glm-5-3",
-        "zai-glm-5-3-flash": "glm-5-3-flash",
-        "gpt-5.6-luna": "gpt-5-6-luna",
-        "gpt-5.6-sol": "gpt-5-6-sol",
-        "gpt-5.6-terra": "gpt-5-6-terra",
-        "gemini-3.7-flash": "gemini-3-7-flash",
-        "gemini-3.8-flash": "gemini-3-8-flash",
-        "grok-4.5": "grok-4-5",
-        "grok-4.6": "grok-4-6",
     },
     # BenchLM indexes models by its own modelKey values.  The entries below
     # are reviewed one-to-one identities only; there is no punctuation or
@@ -1504,87 +1462,6 @@ def fetch_livebench(client: HttpClient, previous: dict | None, deadline: Deadlin
     }
 
 
-# ── DeepSWE (optional) ──────────────────────────────────────────────────────
-def fetch_deepswe(client: HttpClient, previous: dict | None, deadline: Deadline) -> dict:
-    validators = _clean_validators((previous or {}).get("validators"))
-    response = client.request("GET", DEEPSWE_JSON_URL,
-                              headers=_conditional_headers(validators),
-                              deadline=deadline)
-    if response.status_code == 304:
-        return {"not_modified": True}
-    payload = _load_json(response.body)
-    if not isinstance(payload, dict):
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    task_count = _integer(payload.get("n_tasks_in_set"), minimum=1, maximum=10000)
-    if task_count != DEEPSWE_TASKS:
-        raise SourceError(_SOURCE_ERROR_SCHEMA)  # v1.1 is pinned at 113 tasks
-    generated_at = _date_from_iso(payload.get("generated_at"))
-    if generated_at is None:
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    rows = payload.get("rows")
-    if not isinstance(rows, list) or not rows:
-        raise SourceError(_SOURCE_ERROR_EMPTY)
-    if len(rows) > MAX_ENTRIES:
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    entries = []
-    for row in rows:
-        if not isinstance(row, dict):
-            raise SourceError(_SOURCE_ERROR_SCHEMA)
-        model = _text(row.get("model"), required=True)
-        harness = _text(row.get("harness"), maximum=100)
-        effort = _text(row.get("reasoning_effort"), maximum=40)
-        config = _text(row.get("config"), maximum=200)
-        # pass_at_1 is a 0..1 attempt pass rate; store/display percent.
-        pass_at_1 = _number(row.get("pass_at_1"), low=0.0, high=1.0) * 100.0
-        low = _optional_number(row.get("ci_lo"), low=0.0, high=1.0)
-        high = _optional_number(row.get("ci_hi"), low=0.0, high=1.0)
-        half = _optional_number(row.get("ci_half"), low=0.0, high=1.0)
-        if low is not None and high is not None and low > high:
-            raise SourceError(_SOURCE_ERROR_SCHEMA)
-        ci = None
-        if low is not None or high is not None or half is not None:
-            ci = {}
-            if low is not None:
-                ci["low"] = round(low * 100.0, 4)
-            if high is not None:
-                ci["high"] = round(high * 100.0, 4)
-            if half is not None:
-                ci["half_width"] = round(half * 100.0, 4)
-        metadata = {}
-        n_runs = row.get("n_runs")
-        if n_runs is not None:
-            metadata["n_runs"] = _integer(n_runs, minimum=1, maximum=10**6)
-        ci_method = _text(row.get("ci_method"), maximum=100)
-        if ci_method:
-            metadata["ci_method"] = ci_method
-        metadata["task_count"] = task_count
-        # The current artifact has no per-row date field.  Only a date the row
-        # actually supplies is used, and it is labelled as an evaluation date;
-        # the feed-wide generated_at is never copied onto rows.
-        row_date = None
-        for key in ("evaluated_at", "eval_date", "date"):
-            if key in row:
-                row_date = _date_from_iso(row.get(key))
-                break
-        entries.append(_make_entry(
-            "deepswe", model, round(pass_at_1, 4), evaluator="DeepSWE",
-            version=DEEPSWE_VERSION, date=row_date,
-            date_kind=DATE_KIND_EVALUATION if row_date else None,
-            agent=harness, effort=effort, configuration=config,
-            ci=ci, metadata=metadata,
-        ))
-    return {
-        "entries": entries,
-        "version": DEEPSWE_VERSION,
-        # generated_at describes when the artifact was produced, not a per-row
-        # evaluation date; rows carry no eval date, so results stay undated.
-        "source_updated": generated_at,
-        "validators": _validators_from(response),
-        "meta": {"rows": len(entries), "task_count": task_count,
-                 "known_defective_tasks": DEEPSWE_KNOWN_DEFECTIVE_TASKS},
-    }
-
-
 # ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
 def _benchlm_request_headers(*, mcp: bool = False) -> dict:
     """Build the BenchLM request headers.
@@ -1847,7 +1724,6 @@ FETCHERS = {
     "harbor": fetch_harbor,
     "epoch": fetch_epoch,
     "livebench": fetch_livebench,
-    "deepswe": fetch_deepswe,
     "benchlm": fetch_benchlm,
 }
 
@@ -2397,26 +2273,21 @@ def refresh_policy() -> dict:
 
 
 # ── Payload assembly ───────────────────────────────────────────────────────
-def _source_enabled(name: str, *, deepswe_enabled: bool | None = None,
-                    livebench_enabled: bool | None = None,
+def _source_enabled(name: str, *, livebench_enabled: bool | None = None,
                     benchlm_enabled: bool | None = None) -> bool:
     if name == "harbor" or name == "epoch":
         return True
     if name == "livebench":
         return LIVEBENCH_ENABLED if livebench_enabled is None else livebench_enabled
-    if name == "deepswe":
-        return DEEPSWE_ENABLED if deepswe_enabled is None else deepswe_enabled
     if name == "benchlm":
         return BENCHLM_ENABLED if benchlm_enabled is None else benchlm_enabled
     return False
 
 
-def _enabled_metrics(deepswe_enabled: bool | None = None) -> list[MetricSpec]:
+def _enabled_metrics() -> list[MetricSpec]:
     # Keep LiveBench definitions in the API contract even while disabled;
     # clients use sources.livebench.disabled to omit them from the dropdown.
-    # DeepSWE is fully optional and only appears once enabled.
-    enabled = DEEPSWE_ENABLED if deepswe_enabled is None else deepswe_enabled
-    return [spec for spec in METRICS if spec.source != "deepswe" or enabled]
+    return list(METRICS)
 
 
 def _build_index(source_state: dict | None) -> dict:
@@ -2548,14 +2419,12 @@ def _select_latest(results: list[dict]) -> int | None:
 
 
 def build_payload(inventory: list[dict], state: dict, *,
-                  deepswe_enabled: bool | None = None,
                   benchlm_enabled: bool | None = None,
                   include_sources: bool = True) -> dict:
     """Assemble the AI Services contract from inventory rows and cache state."""
-    metrics = _enabled_metrics(deepswe_enabled)
+    metrics = _enabled_metrics()
     enabled_sources = {source for source in SOURCE_NAMES
-                       if _source_enabled(source, deepswe_enabled=deepswe_enabled,
-                                          benchlm_enabled=benchlm_enabled)}
+                       if _source_enabled(source, benchlm_enabled=benchlm_enabled)}
     # Disabled sources never contribute cached rows, even if an earlier run
     # (or another deployment) left data in the cache file.
     indexes = {
@@ -2712,8 +2581,8 @@ def build_payload(inventory: list[dict], state: dict, *,
     return payload
 
 
-def metrics_metadata(deepswe_enabled: bool | None = None) -> list[dict]:
-    return [spec.as_dict() for spec in _enabled_metrics(deepswe_enabled)]
+def metrics_metadata() -> list[dict]:
+    return [spec.as_dict() for spec in _enabled_metrics()]
 
 
 def last_success(state: dict) -> float | None:
@@ -2727,8 +2596,7 @@ def last_success(state: dict) -> float | None:
 
 __all__ = [
     "BenchmarkStore", "Deadline", "HttpClient", "METRICS", "SOURCES",
-    "SOURCE_ALIASES", "BENCHLM_ENABLED", "BENCHLM_WARNING", "DEEPSWE_ENABLED",
-    "DEEPSWE_WARNING", "DEEPSWE_REVIEW_URL",
+    "SOURCE_ALIASES", "BENCHLM_ENABLED", "BENCHLM_WARNING",
     "build_payload", "ensure_refresh_scheduled", "get_store", "is_refreshing",
     "last_success", "metrics_metadata", "read_state", "request_refresh", "refresh_policy",
 ]
