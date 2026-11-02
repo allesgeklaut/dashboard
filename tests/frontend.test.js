@@ -1733,7 +1733,7 @@ test('an explicit missing reason wins over present results', async () => {
   assert.doesNotMatch(tbody, /54\.2%|51\.8%/);
 });
 
-test('the score column sorts; switching benchmarks resets the sort', async () => {
+test('the score column sorts; switching benchmarks keeps the score sort', async () => {
   const d = await loadAI();
   d.run("aiSort('tb4')");
   assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'tb4', dir: -1 }));
@@ -1747,13 +1747,45 @@ test('the score column sorts; switching benchmarks resets the sort', async () =>
   d.run("aiSort('model')");
   assert.equal(d.run('_aiSort.key'), 'model');
   assert.match(d.element('ai-thead').innerHTML, /data-ai-key="model"[^>]*aria-sort="ascending"/);
-  // Switching benchmarks restarts the sort; the old column is gone.
-  d.run("aiSort('tb4')");
+  // The score column survives a benchmark switch: the sort is re-pointed at
+  // the new metric in the same direction, not reset.
+  d.run("aiSort('tb4')");              // -> { key: 'tb4', dir: -1 }
   d.run("aiSetMetric('eci')");
-  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'model', dir: 1 }));
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'eci', dir: -1 }));
+  const head = d.element('ai-thead').innerHTML;
+  assert.match(head, /data-ai-key="eci"[^>]*aria-sort="descending"/);
+  assert.doesNotMatch(head, /data-ai-key="tb4"/);
+  rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('alpha') < rows.indexOf('gamma'), 'highest eci value sorts first after the switch');
   // The routes column is not sortable.
   d.run("aiSort('routes')");
-  assert.equal(d.run('_aiSort.key'), 'model');
+  assert.equal(d.run('_aiSort.key'), 'eci');
+});
+
+test('switching benchmarks keeps an ascending score sort ascending', async () => {
+  // tb4 and eci order these two models oppositely, so the rendered row order
+  // proves the new metric — not the old one — drives the sort.
+  const report = aiServicesReport({
+    models: [
+      { name: 'low-eci', upstream_model: 'x/low-eci', provider: 'x', mode: 'chat',
+        routes: [{ name: 'low-eci-route', provider: 'x' }],
+        bench: { tb4: 90, eci: 10 }, results: {}, missing: {} },
+      { name: 'high-eci', upstream_model: 'x/high-eci', provider: 'x', mode: 'chat',
+        routes: [{ name: 'high-eci-route', provider: 'x' }],
+        bench: { tb4: 10, eci: 90 }, results: {}, missing: {} },
+    ],
+  });
+  const d = await loadAI(report);
+  d.run("aiSort('tb4')");              // -> { key: 'tb4', dir: -1 }
+  d.run("aiSort('tb4')");              // -> { key: 'tb4', dir: 1 }
+  assert.equal(d.run('_aiSort.dir'), 1);
+  let rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('high-eci') < rows.indexOf('low-eci'), 'ascending tb4 puts the lowest tb4 first');
+  d.run("aiSetMetric('eci')");
+  assert.equal(JSON.stringify(d.run('_aiSort')), JSON.stringify({ key: 'eci', dir: 1 }));
+  assert.match(d.element('ai-thead').innerHTML, /data-ai-key="eci"[^>]*aria-sort="ascending"/);
+  rows = d.element('ai-tbody').innerHTML;
+  assert.ok(rows.indexOf('low-eci') < rows.indexOf('high-eci'), 'ascending eci puts the lowest eci first');
 });
 
 test('a payload that drops the sorted benchmark restores the model sort', async () => {

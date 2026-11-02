@@ -3444,8 +3444,11 @@ function aiSetMetric(key) {
   if (!aiAvailableMetrics().includes(next)) return;
   _aiMetric = next;
   aiSaveMetric();
-  // Switching benchmarks restarts the sort; the old column is gone.
-  _aiSort = { key: 'model', dir: 1 };
+  // The score column survives a benchmark switch: keep sorting by it, in the
+  // same direction, and re-point the key at the newly selected metric.
+  if (_aiSort.key !== 'model' && _aiSort.key !== 'routes') {
+    _aiSort = { key: next, dir: _aiSort.dir };
+  }
   aiRenderMetricSelect();
   aiRenderTable();
 }
