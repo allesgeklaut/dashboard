@@ -396,6 +396,33 @@ Without the host watch (or to disable it), remove both the
 `SECURITY_REPORT_DIR` entry and the security bind mount from the Compose file;
 setting the variable empty alone leaves the required mount in place.
 
+### Server health report (HEALTH tab)
+
+The optional **HEALTH** tab reads the host `server-health.sh` run's fixed
+`latest.json` through `GET /api/health` (`no-store`, 8 MiB cap). It is
+read-only: no changes are made to the host from the dashboard. The tab is
+feature-gated — `HEALTH_REPORT_DIR` unset or empty keeps it hidden; a
+configured directory shows it even before a report exists, reporting it
+unavailable until then.
+
+Local development points at a synthetic or copied report outside the repository
+(e.g. `/tmp/opencode/health-report`, never a real report in the checkout):
+
+```bash
+HEALTH_REPORT_DIR=/tmp/opencode/health-report \
+  uv run uvicorn main:app --app-dir app --host 127.0.0.1 --port 7681
+```
+
+Docker sets `HEALTH_REPORT_DIR=/run/server-health` and bind-mounts
+`${HOME}/.local/state/server-health` there read-only. Override the source with
+`HEALTH_REPORT_HOST_PATH` in the repo's gitignored `.env` or the Compose
+shell — **not** `/opt/secrets/dashboard.env`. The state directory must already
+exist before `docker compose up` (`create_host_path: false` fails the
+container start otherwise): run `scripts/server-health.sh --json` once on the
+host first. Mount the whole directory, never `latest.json` alone: the script
+replaces the report atomically (`os.replace`), so a single-file mount would
+keep serving the old inode.
+
 ---
 
 ## 1 — Configure

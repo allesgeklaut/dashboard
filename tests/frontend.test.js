@@ -18,7 +18,11 @@ function dashboard(options = {}) {
         setAttribute: (name, value) => { attributes[name] = String(value); },
         getAttribute: name => attributes[name],
         addEventListener: () => {}, removeEventListener: () => {},
-        appendChild: () => {}, remove: () => {}, click() { this.clicked = true; },
+        appendChild: (child) => {
+          const self = elements.get(id);
+          if (self) { self.children = self.children || []; self.children.push(child); }
+        },
+        remove: () => {}, click() { this.clicked = true; },
         focus() { this.focused = true; },
         classList: {
           add: x => classes.add(x), remove: x => classes.delete(x),
@@ -1144,6 +1148,273 @@ test('boot wiring keeps the 60s poll, feature sync and resize re-sync', () => {
   assert.match(html, /visibilitychange[\s\S]{0,120}securityTick\(\)/);
   assert.match(html, /async function fetchFeatures\(\)[\s\S]{0,6000}?securitySyncFeature\(\);/);
   assert.match(html, /window\.addEventListener\('resize', syncTabBarAfterFonts/);
+});
+
+// ── HEALTH TAB ────────────────────────────────────────────────────────────────
+function healthReport(overrides = {}) {
+  return {
+    host: 'pop-os',
+    time: '2026-11-04 07:00:03',
+    status: 'warn',
+    warnings: 1,
+    critical: 1,
+    load: '0.42 0.35 0.31',
+    cpus: 8,
+    memory_percent: 43,
+    disks: [
+      { mount: '/', used_percent: 41, free_kb: 104857600 },
+      { mount: '/mnt/nas', used_percent: 92, free_kb: 32457280 },
+    ],
+    issues: [
+      { level: 'WARN', message: 'disk /mnt/nas 92% used (31.3G free)' },
+      { level: 'CRIT', message: 'service nginx down' },
+    ],
+    details: [
+      { level: 'OK', message: 'SSD /dev/nvme0n1: 39C' },
+      { level: 'info', message: 'no swap configured' },
+    ],
+    ...overrides,
+  };
+}
+
+const acceptHealth = (d, report) => d.run(`healthAcceptReport(${JSON.stringify(report)})`);
+const childrenOf = (d, id) => (d.element(id).children || []);
+const listItems = (d, id) => {
+  const ul = childrenOf(d, id).find(node => String(node.className || '').includes('sec-list'));
+  return ul ? (ul.children || []) : [];
+};
+
+test('health tab is feature-gated and a restored hidden tab falls back to server', () => {
+  const d = dashboard({ savedTab: 'health' });
+  const healthTab = d.context.document.querySelector('.tab-btn[data-tab="health"]');
+  assert.equal(d.run('_activeTab'), 'health');
+  d.run('healthSyncFeature()');
+  assert.equal(healthTab.style.display, 'none');
+  assert.equal(d.run('_activeTab'), 'server');
+  d.run('_features.health=true; healthSyncFeature()');
+  assert.equal(healthTab.style.display, 'inline-block');
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('the health report endpoint is never requested while the feature flag is off', async () => {
+  const d = dashboard();
+  let requests = 0;
+  d.context.fetch = async () => { requests++; return response({}); };
+  d.run(`_features.health=false;
+         switchTab('health', document.querySelector('.tab-btn[data-tab="health"]'));
+         healthTick();
+         healthSyncFeature();`);
+  await settle();
+  assert.equal(requests, 0);
+  assert.equal(d.run('_activeTab'), 'server');
+});
+
+test('restored health tab fetches only after enabling, over a GET without mutations, and renders the report', async () => {
+  const d = dashboard({ savedTab: 'health' });
+  const requests = [];
+  d.context.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return response({ report: healthReport() });
+  };
+  d.run('_features.health=true; healthSyncFeature()');
+  await settle();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/health');
+  assert.equal(requests[0].options.method, undefined);
+  assert.equal(requests[0].options.cache, 'no-store');
+  assert.equal(requests[0].options.headers.has('X-Homelab-Request'), false);
+  assert.equal(d.run('_activeTab'), 'health');
+
+  assert.equal(d.element('health-content').style.display, 'block');
+  assert.equal(d.element('health-unavailable').style.display, 'none');
+  assert.equal(d.element('health-status').textContent, 'STATUS WARNING');
+  assert.match(d.element('health-status').className, /warn/);
+  const meta = d.element('health-meta').textContent;
+  assert.match(meta, /host pop-os/);
+  assert.match(meta, /checked 2026-11-04 07:00:03/);
+  assert.match(meta, /load 0\.42 0\.35 0\.31/);
+  assert.match(meta, /8 cpus/);
+  assert.match(meta, /mem 43%/);
+  assert.equal(d.element('health-counts').textContent, '1 warning, 1 critical');
+  assert.match(d.element('health-findings-total').textContent, /2 issues/);
+
+  const issues = listItems(d, 'health-issues');
+  assert.equal(issues.length, 2);
+  assert.equal(issues[0].textContent, 'disk /mnt/nas 92% used (31.3G free)');
+  assert.equal(issues[0].className, 'warn');
+  assert.equal(issues[1].textContent, 'service nginx down');
+  assert.equal(issues[1].className, 'crit');
+
+  const detailsUl = childrenOf(d, 'health-details')[0];
+  assert.match(String(detailsUl.className), /sec-list dim/);
+  const details = detailsUl.children || [];
+  assert.equal(details.length, 2);
+  assert.equal(details[0].textContent, 'SSD /dev/nvme0n1: 39C');
+  assert.equal(details[1].textContent, 'no swap configured');
+
+  const rows = childrenOf(d, 'health-disks');
+  assert.equal(rows.length, 2);
+  const cells = row => (row.children || []).map(td => td.textContent);
+  assert.deepEqual(cells(rows[0]), ['/', '41%', '100 GiB']);
+  assert.deepEqual(cells(rows[1]), ['/mnt/nas', '92%', '31 GiB']);
+  assert.match((rows[1].children || [])[1].className, /health-used alert/);
+  assert.doesNotMatch((rows[0].children || [])[1].className, /warn|alert/);
+});
+
+test('switching to the health tab fetches the report once the feature is enabled', async () => {
+  const d = dashboard();
+  const requests = [];
+  d.context.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return response({ report: healthReport() });
+  };
+  d.run(`_features.health=true;
+         switchTab('health', document.querySelector('.tab-btn[data-tab="health"]'))`);
+  await settle();
+  assert.equal(d.run('_activeTab'), 'health');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/health');
+  assert.equal(d.element('health-content').style.display, 'block');
+});
+
+test('health polling is active/visible-only and dedupes an inflight request', async () => {
+  const d = dashboard();
+  let requests = 0;
+  let complete;
+  d.context.fetch = () => {
+    requests++;
+    return new Promise(resolve => { complete = resolve; });
+  };
+  d.run('_features.health=true; document.hidden=false; _activeTab="server"; healthTick()');
+  assert.equal(requests, 0);
+  d.run('_activeTab="health"; document.hidden=true; healthTick()');
+  assert.equal(requests, 0);
+  d.run('document.hidden=false; healthTick(); healthTick()');
+  assert.equal(requests, 1);
+  complete(response({ report: healthReport() }));
+  await settle();
+  assert.equal(d.run('_healthInFlight'), null);
+  d.context.fetch = async () => { requests++; return response({ report: healthReport() }); };
+  d.run('healthTick()');
+  await settle();
+  assert.equal(requests, 2);
+});
+
+test('a health API error shows the unavailable card with the API message and hides the content', async () => {
+  const d = dashboard();
+  d.run('_features.health=true');
+  d.context.fetch = async () => ({
+    ok: false, status: 503,
+    json: async () => ({ error: 'Report file missing on disk', code: 'missing' }),
+  });
+  await d.run('healthRefresh()');
+  assert.equal(d.run('_healthLoadError.code'), 'missing');
+  assert.equal(d.element('health-content').style.display, 'none');
+  assert.equal(d.element('health-unavailable').style.display, 'block');
+  assert.equal(d.element('health-unavailable-title').textContent, 'HEALTH REPORT UNAVAILABLE');
+  assert.match(d.element('health-unavailable-msg').textContent, /No health report has been generated yet\./);
+  assert.equal(d.element('health-unavailable-detail').textContent, 'Report file missing on disk');
+  assert.equal(d.element('health-unavailable-code').textContent, 'code: missing');
+  assert.equal(d.element('btn-health-retry').disabled, false);
+  assert.equal(d.element('btn-health-refresh').disabled, false);
+});
+
+test('a deadline-variant report with null metrics, no details and no disks renders without throwing', async () => {
+  const d = dashboard();
+  d.run('_features.health=true');
+  d.context.fetch = async () => response({
+    report: healthReport({
+      status: 'ok', warnings: 0, critical: 0,
+      load: null, cpus: null, memory_percent: null,
+      disks: [], issues: [], details: undefined,
+    }),
+  });
+  await d.run('healthRefresh()');
+  assert.equal(d.element('health-content').style.display, 'block');
+  assert.equal(d.element('health-unavailable').style.display, 'none');
+  assert.equal(d.element('health-status').textContent, 'STATUS OK');
+  assert.match(d.element('health-status').className, /health-status ok/);
+  assert.equal(d.element('health-counts').textContent, '0 warnings, 0 criticals');
+  assert.equal(d.element('health-findings-total').textContent, '');
+  const meta = d.element('health-meta').textContent;
+  assert.match(meta, /host pop-os/);
+  assert.doesNotMatch(meta, /load|cpus|mem/);
+  assert.equal(childrenOf(d, 'health-issues')[0].textContent, 'No issues reported.');
+  assert.equal(childrenOf(d, 'health-details')[0].textContent, 'No check details reported.');
+  const diskRows = childrenOf(d, 'health-disks');
+  assert.equal(diskRows.length, 1);
+  assert.equal((diskRows[0].children || [])[0].textContent, 'no disks reported');
+});
+
+test('health report strings are rendered via textContent only (no HTML injection)', async () => {
+  const d = dashboard();
+  d.run('_features.health=true');
+  d.context.fetch = async () => response({
+    report: healthReport({
+      host: '<img src=x onerror="host()">',
+      time: '<script>time()</script>',
+      issues: [{ level: 'WARN', message: '<svg onload="issue()">' }],
+      details: [{ level: 'OK', message: '<b>detail</b>' }],
+      disks: [{ mount: '<img src=x onerror="mnt()">', used_percent: 50, free_kb: 2048 }],
+    }),
+  });
+  await d.run('healthRefresh()');
+  const meta = d.element('health-meta');
+  assert.match(meta.textContent, /<img src=x onerror="host\(\)">/);
+  assert.equal(meta.innerHTML, '');
+  assert.match(d.element('health-status').textContent, /STATUS/);
+  const issues = listItems(d, 'health-issues');
+  assert.equal(issues[0].textContent, '<svg onload="issue()">');
+  assert.equal(issues[0].innerHTML, '');
+  const details = listItems(d, 'health-details');
+  assert.equal(details[0].textContent, '<b>detail</b>');
+  assert.equal(details[0].innerHTML, '');
+  const rows = childrenOf(d, 'health-disks');
+  const cells = rows[0].children || [];
+  assert.equal(cells[0].textContent, '<img src=x onerror="mnt()">');
+  assert.equal(cells[0].innerHTML, '');
+  assert.equal(cells[2].textContent, '2.0 MiB');
+});
+
+test('healthFreeText humanizes KiB values', () => {
+  const d = dashboard();
+  const f = v => d.run(`healthFreeText(${JSON.stringify(v)})`);
+  assert.equal(f(512), '512 KiB');
+  assert.equal(f(2048), '2.0 MiB');
+  assert.equal(f(104857600), '100 GiB');
+  assert.equal(f(32457280), '31 GiB');
+  assert.equal(f(1073741824), '1.0 TiB');
+  assert.equal(f(null), '—');
+  assert.equal(f('bogus'), '—');
+  assert.equal(f(-5), '—');
+});
+
+test('health JSON download snapshots exactly the currently displayed report', () => {
+  const d = dashboard();
+  d.run('_features.health=true');
+  const report = healthReport();
+  acceptHealth(d, report);
+  const snapshot = d.run('healthReportJSON()');
+  assert.equal(JSON.parse(snapshot).host, 'pop-os');
+  let captured = null;
+  d.context.Blob = function (parts, options) { captured = { parts, options }; };
+  d.context.URL = { createObjectURL: () => 'blob:fixture', revokeObjectURL: () => {} };
+  assert.equal(d.run('healthDownload()'), true);
+  assert.ok(captured);
+  assert.equal(String(captured.parts[0]), snapshot);
+  assert.equal(captured.options.type, 'application/json');
+  assert.equal(d.run('healthDownload()'), true);
+});
+
+test('health boot wiring mirrors the security tab (button, pane, poll, feature sync, tab switch)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
+  assert.match(html, /id="tab-btn-health"[^>]*aria-controls="tab-health"[^>]*data-tab="health"[^>]*onclick="switchTab\('health',this\)"[^>]*style="display:none">HEALTH</);
+  assert.match(html, /id="tab-health" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-health"/);
+  assert.match(html, /setInterval\(healthTick, 60000\)/);
+  assert.match(html, /visibilitychange[\s\S]{0,120}healthTick\(\)/);
+  assert.match(html, /async function fetchFeatures\(\)[\s\S]{0,6000}?healthSyncFeature\(\);/);
+  assert.match(html, /if \(name === 'health'\) healthOnEnter\(\);/);
+  assert.match(html, /apiFetch\('\/api\/health', \{ cache: 'no-store', signal: controller\.signal \}\)/);
 });
 
 test('summary, coverage, dependabot, details and provenance escape report strings', () => {

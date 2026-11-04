@@ -20,6 +20,8 @@ services:
       - LITELLM_CONFIG_FILE=/run/litellm/config.yaml
       # SECURITY tab — host security-watch report directory, read-only.
       - SECURITY_REPORT_DIR=/run/security-watch
+      # HEALTH tab — host server-health state directory, read-only.
+      - HEALTH_REPORT_DIR=/run/server-health
       # feature flag — set STREAM_SPOOL_DIR= in .env to disable the stream feature
       - STREAM_SPOOL_DIR=${STREAM_SPOOL_DIR-/stream-spool}
       # desktop wake/poweroff request spool (host handler acts on it)
@@ -49,6 +51,15 @@ services:
       - type: bind
         source: "${SECURITY_REPORT_HOST_PATH:-${HOME}/.local/state/security-watch}"
         target: /run/security-watch
+        read_only: true
+        bind:
+          create_host_path: false
+      # Whole state directory, same atomic-replace reason as the security
+      # watch: server-health.sh replaces latest.json via os.replace, so a
+      # single-file mount would keep serving the old inode. Source must exist.
+      - type: bind
+        source: "${HEALTH_REPORT_HOST_PATH:-${HOME}/.local/state/server-health}"
+        target: /run/server-health
         read_only: true
         bind:
           create_host_path: false

@@ -1,0 +1,38 @@
+{
+  "host": "sample-host",
+  "time": "2026-11-04 07:00:03",
+  "status": "ok",
+  "warnings": 1,
+  "critical": 0,
+  "load": "0.42 0.35 0.31",
+  "cpus": 8,
+  "memory_percent": 43,
+  "disks": [
+    {
+      "mount": "/",
+      "used_percent": 41,
+      "free_kb": 104857600
+    },
+    {
+      "mount": "/mnt/sample-nas",
+      "used_percent": 67,
+      "free_kb": 52428800
+    }
+  ],
+  "issues": [
+    {
+      "level": "WARN",
+      "message": "disk /mnt/sample-nas 67% used (50.0G free)"
+    }
+  ],
+  "details": [
+    {
+      "level": "OK",
+      "message": "SSD /dev/sample-nvme0: 39C"
+    },
+    {
+      "level": "info",
+      "message": "no swap configured"
+    }
+  ]
+}

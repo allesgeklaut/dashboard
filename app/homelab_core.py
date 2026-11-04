@@ -18,6 +18,7 @@ import yaml
 load_dotenv()
 
 import benchmarks
+import health_report
 import security_report
 
 _log = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ LLAMA_BOLT_URL = os.getenv("LLAMA_BOLT_URL")              # None if not set → 
 LLAMA_COMPANION_URL = os.getenv("LLAMA_COMPANION_URL")    # None if not set → feature disabled
 STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
 SECURITY_REPORT_DIR = os.getenv("SECURITY_REPORT_DIR")  # None if not set → feature disabled
+HEALTH_REPORT_DIR = os.getenv("HEALTH_REPORT_DIR")  # None if not set → feature disabled
 # ── OpenCode Go usage (opencode go card) ─────────────────────────────────────
 # The key normally comes from OPENCODE_GO_API_KEY.  For local development the
 # fallback reads opencode's own auth store (the same token the CLI uses) —
@@ -1821,6 +1823,22 @@ def get_security_report() -> dict:
     return security_report.read_report(_security_report_dir())
 
 
+def _health_report_dir() -> str | None:
+    """Return the configured report directory without checking its existence."""
+    value = HEALTH_REPORT_DIR
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def get_health_report() -> dict:
+    """Read the fixed latest.json via health_report; HEALTH_REPORT_DIR gates the feature."""
+    return health_report.read_report(_health_report_dir())
+
+
 def get_features() -> dict:
     """Return which optional integrations are configured via .env."""
     return {
@@ -1831,6 +1849,7 @@ def get_features() -> dict:
         "llama":   bool(LLAMA_SERVER_URL or LLAMA_BOLT_URL or LLAMA_COMPANION_URL),
         "stream":  bool(STREAM_SPOOL_DIR),
         "security": _security_report_dir() is not None,
+        "health": _health_report_dir() is not None,
         "wake":           bool(WOL_DESKTOP_MAC) and bool(DESKTOP_SPOOL_DIR),
         "desktop_power":  bool(DESKTOP_SPOOL_DIR),
         "desktop_status": bool(WOL_DESKTOP_IP),

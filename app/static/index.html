@@ -890,6 +890,22 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 @media (max-width:360px) {
   .sec-grid { grid-template-columns:1fr; }
 }
+
+/* ── HEALTH TAB ── */
+#tab-health { min-width:0; }
+.health-status.ok   { color:var(--g);      font-weight:700; }
+.health-status.warn { color:var(--yellow); font-weight:700; }
+.health-status.crit { color:var(--red);    font-weight:700; }
+.sec-list.dim li { color:var(--g-dim); }
+.sec-list.dim li::before { color:var(--g-faint); }
+.sec-list li.warn { color:var(--yellow); }
+.sec-list li.warn::before { color:rgba(255,170,0,0.6); }
+.sec-list li.crit { color:var(--red); }
+.sec-list li.crit::before { color:var(--red-dim); }
+.health-table .col-mount { white-space:normal; overflow-wrap:anywhere; }
+.health-table .health-num { width:76px; text-align:right; white-space:nowrap; }
+.health-used.warn  { color:var(--yellow); }
+.health-used.alert { color:var(--red); }
 </style>
 </head>
 <body>
@@ -913,6 +929,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
       <button class="tab-btn"        id="tab-btn-containers" role="tab" aria-selected="false" aria-controls="tab-containers" data-tab="containers" tabindex="-1" onclick="switchTab('containers',this)">CONTAINERS</button>
       <button class="tab-btn"        id="tab-btn-processes"  role="tab" aria-selected="false" aria-controls="tab-processes"  data-tab="processes"  tabindex="-1" onclick="switchTab('processes',this)">PROCESSES</button>
       <button class="tab-btn"        id="tab-btn-security"   role="tab" aria-selected="false" aria-controls="tab-security"   data-tab="security"   tabindex="-1" onclick="switchTab('security',this)" style="display:none">SECURITY</button>
+      <button class="tab-btn"        id="tab-btn-health"     role="tab" aria-selected="false" aria-controls="tab-health"     data-tab="health"     tabindex="-1" onclick="switchTab('health',this)" style="display:none">HEALTH</button>
     </nav>
   </div>
 
@@ -1175,6 +1192,56 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
     </div>
   </div><!-- /#tab-security -->
 
+  <!-- ═══════════ HEALTH TAB (read-only server health report) ═══════════ -->
+  <div id="tab-health" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-health" style="display:none">
+    <div class="sec-label">
+      server health <span id="health-findings-total" style="font-weight:400;text-transform:none;letter-spacing:0"></span>
+    </div>
+
+    <div id="health-unavailable" class="sec-unavailable" role="status" aria-live="polite">
+      <div class="sec-unavailable-title" id="health-unavailable-title">LOADING HEALTH REPORT…</div>
+      <p id="health-unavailable-msg">Requesting the latest report from this dashboard.</p>
+      <p id="health-unavailable-detail" style="display:none"></p>
+      <div class="sec-code" id="health-unavailable-code" style="display:none"></div>
+      <button class="btn-stream" id="btn-health-retry" onclick="healthRefresh()" style="display:none">⟳ REFRESH REPORT</button>
+    </div>
+
+    <div id="health-content" class="sec-content" style="display:none">
+      <div class="sec-summary-card">
+        <div class="sec-meta" id="health-meta"></div>
+        <p class="sec-summary"><span id="health-status" class="health-status">—</span></p>
+        <p class="sec-summary" id="health-counts"></p>
+      </div>
+
+      <div class="sec-toolbar">
+        <div class="sec-tools">
+          <button class="btn-stream" id="btn-health-refresh" onclick="healthRefresh()" aria-label="Refresh the health report">⟳ REFRESH REPORT</button>
+          <button class="btn-stream" id="btn-health-json" onclick="healthDownload()" aria-label="Download the displayed health report as JSON">⤓ JSON</button>
+        </div>
+      </div>
+
+      <div class="sec-label">issues</div>
+      <div id="health-issues"></div>
+
+      <div class="sec-label">check details</div>
+      <div id="health-details"></div>
+
+      <div class="sec-label">disks</div>
+      <div class="proc-table-wrap">
+        <table class="proc-table health-table">
+          <thead>
+            <tr>
+              <th class="col-mount">MOUNT</th>
+              <th class="health-num">USED</th>
+              <th class="health-num">FREE</th>
+            </tr>
+          </thead>
+          <tbody id="health-disks"></tbody>
+        </table>
+      </div>
+    </div>
+  </div><!-- /#tab-health -->
+
 </main>
 
 <!-- Bottom action bar (containers tab only) -->
@@ -1261,7 +1328,7 @@ async function fetchJSON(path) {
 // ── feature flags ─────────────────────────────────────────────────────────────
 let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false,
                   wake:false, desktop_power:false, desktop_status:false, opencode_go:false, mistral:false,
-                  ai_services:false, security:false };
+                  ai_services:false, security:false, health:false };
 
 async function fetchFeatures() {
   try { _features = await fetchJSON('/api/features'); } catch(e) {}
@@ -1293,6 +1360,7 @@ async function fetchFeatures() {
   if (_features.stream)  { fetchStream();  setInterval(fetchStream,   5000); }
   if (_features.wake || _features.desktop_power) { fetchDesktop(); setInterval(fetchDesktop, 5000); }
   securitySyncFeature();
+  healthSyncFeature();
   // Optional tabs may have just become visible: refresh the swipe cues and
   // make sure the restored/active tab is still on screen.
   updateTabOverflowCues();
@@ -2450,6 +2518,454 @@ if (typeof document.addEventListener === 'function') {
   });
 }
 
+// ── SERVER HEALTH (read-only report) ──────────────────────────────────────────
+// Report strings are only ever rendered via textContent/createElement — never
+// interpolated into innerHTML (same discipline as the security tab).
+const HEALTH_ERROR_LABELS = {
+  not_configured: 'Health reporting is not configured.',
+  missing: 'No health report has been generated yet.',
+  unreadable: 'The health report could not be read.',
+  invalid: 'The health report failed validation.',
+  too_large: 'The health report is too large to display.',
+  timeout: 'The report request timed out.',
+};
+const HEALTH_STATUS_CLASS = { ok: 'ok', warn: 'warn', crit: 'crit' };
+
+let _healthReport = null;
+let _healthSnapshot = '';
+let _healthSignature = '';
+let _healthLoadError = null;
+let _healthLoadedAt = 0;
+let _healthInFlight = null;
+let _healthBusy = false;
+
+function healthText(value) { return value == null ? '' : String(value); }
+function healthList(value) { return Array.isArray(value) ? value : []; }
+function healthObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+function healthJson(value) {
+  try {
+    const text = JSON.stringify(value, null, 2);
+    return text == null ? 'null' : text;
+  } catch(e) {
+    return 'unavailable';
+  }
+}
+function healthTabButton() {
+  try { return document.querySelector('.tab-btn[data-tab="health"]'); }
+  catch(e) { return null; }
+}
+// free_kb is KiB; no shared bytes humanizer exists in this file (storage/RAM
+// come pre-formatted from the API), so keep a small local KiB→TiB formatter.
+function healthFreeText(freeKb) {
+  if (freeKb == null || freeKb === '') return '—';
+  const kb = Number(freeKb);
+  if (!Number.isFinite(kb) || kb < 0) return '—';
+  if (kb < 1024) return `${Math.round(kb)} KiB`;
+  const mib = kb / 1024;
+  if (mib < 1024) return `${mib < 10 ? mib.toFixed(1) : Math.round(mib)} MiB`;
+  const gib = mib / 1024;
+  if (gib < 1024) return `${gib < 10 ? gib.toFixed(1) : Math.round(gib)} GiB`;
+  return `${(gib / 1024).toFixed(1)} TiB`;
+}
+function healthReportValid(report) {
+  return !!report && typeof report === 'object' && !Array.isArray(report)
+    && typeof report.status === 'string'
+    && Array.isArray(report.issues);
+}
+function healthCounts(report) {
+  const issues = healthList(report && report.issues);
+  const levelOf = entry => healthText(healthObject(entry).level).toUpperCase();
+  const warn = typeof report.warnings === 'number'
+    ? report.warnings : issues.filter(entry => levelOf(entry) === 'WARN').length;
+  const crit = typeof report.critical === 'number'
+    ? report.critical : issues.filter(entry => levelOf(entry) === 'CRIT').length;
+  return { warn, crit };
+}
+function healthFailure(message, code) {
+  const error = new Error(message);
+  if (code) error.code = String(code);
+  return error;
+}
+function healthErrorMessage(error) {
+  const code = error && typeof error.code === 'string' ? error.code : '';
+  const mapped = HEALTH_ERROR_LABELS[code];
+  const raw = healthText(error && error.message);
+  if (mapped) {
+    return {
+      label: mapped,
+      detail: raw && raw !== mapped && !/^HTTP \d+$/.test(raw) ? raw : '',
+      code,
+    };
+  }
+  return {
+    label: 'The health report is unavailable.',
+    detail: raw || 'Check the connection and try again.',
+    code,
+  };
+}
+
+function healthEl(id) { return document.getElementById(id); }
+
+function healthRenderSummary() {
+  const report = _healthReport;
+  if (!report) return;
+  const meta = healthEl('health-meta');
+  if (meta) {
+    const host = healthText(report.host) || 'unknown host';
+    const time = healthText(report.time);
+    const bits = [`host ${host}`, time ? `checked ${time}` : 'checked at an unknown time'];
+    if (report.load != null) bits.push(`load ${healthText(report.load)}`);
+    if (report.cpus != null) bits.push(`${healthText(report.cpus)} cpus`);
+    if (report.memory_percent != null) bits.push(`mem ${healthText(report.memory_percent)}%`);
+    meta.textContent = bits.join(' · ');
+  }
+  const statusEl = healthEl('health-status');
+  if (statusEl) {
+    const status = healthText(report.status).toLowerCase();
+    const label = status === 'ok' ? 'OK'
+      : status === 'warn' ? 'WARNING'
+      : status === 'crit' ? 'CRITICAL'
+      : healthText(report.status).toUpperCase() || 'UNKNOWN';
+    statusEl.className = `health-status ${HEALTH_STATUS_CLASS[status] || 'ok'}`;
+    statusEl.textContent = `STATUS ${label}`;
+  }
+  const { warn, crit } = healthCounts(report);
+  const counts = healthEl('health-counts');
+  if (counts) {
+    counts.textContent = `${warn} warning${warn === 1 ? '' : 's'}, ${crit} critical${crit === 1 ? '' : 's'}`;
+  }
+  const total = healthEl('health-findings-total');
+  if (total) {
+    const n = warn + crit;
+    total.textContent = n ? `— ${n} issue${n === 1 ? '' : 's'}` : '';
+  }
+}
+
+function healthRenderList(containerId, items, dim, emptyText) {
+  const container = healthEl(containerId);
+  if (!container) return;
+  container.textContent = '';
+  if (!items.length) {
+    const note = document.createElement('div');
+    note.className = 'sec-note sec-zero';
+    note.textContent = emptyText;
+    container.appendChild(note);
+    return;
+  }
+  const ul = document.createElement('ul');
+  ul.className = dim ? 'sec-list dim' : 'sec-list';
+  for (const entry of items) {
+    const item = healthObject(entry);
+    const li = document.createElement('li');
+    if (!dim) {
+      const level = healthText(item.level).toUpperCase();
+      if (level === 'CRIT') li.className = 'crit';
+      else if (level === 'WARN') li.className = 'warn';
+    }
+    li.textContent = healthText(item.message);
+    ul.appendChild(li);
+  }
+  container.appendChild(ul);
+}
+
+function healthRenderIssues() {
+  healthRenderList('health-issues', healthList(_healthReport && _healthReport.issues), false,
+    'No issues reported.');
+}
+
+function healthRenderDetails() {
+  healthRenderList('health-details', healthList(_healthReport && _healthReport.details), true,
+    'No check details reported.');
+}
+
+function healthRenderDisks() {
+  const tbody = healthEl('health-disks');
+  if (!tbody) return;
+  tbody.textContent = '';
+  const disks = healthList(_healthReport && _healthReport.disks);
+  if (!disks.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 3;
+    td.className = 'empty';
+    td.textContent = 'no disks reported';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const entry of disks) {
+    const disk = healthObject(entry);
+    const tr = document.createElement('tr');
+    const mount = document.createElement('td');
+    mount.className = 'col-mount';
+    mount.textContent = healthText(disk.mount) || '—';
+    const used = document.createElement('td');
+    used.className = 'health-num';
+    const pct = Number(disk.used_percent);
+    if (Number.isFinite(pct)) {
+      used.textContent = `${Math.round(pct)}%`;
+      used.className += pct >= 90 ? ' health-used alert' : pct >= 75 ? ' health-used warn' : ' health-used';
+    } else {
+      used.textContent = '—';
+      used.className += ' health-used';
+    }
+    const free = document.createElement('td');
+    free.className = 'health-num';
+    free.textContent = healthFreeText(disk.free_kb);
+    tr.appendChild(mount);
+    tr.appendChild(used);
+    tr.appendChild(free);
+    tbody.appendChild(tr);
+  }
+}
+
+function healthShowUnavailable() {
+  const content = healthEl('health-content');
+  const box = healthEl('health-unavailable');
+  if (content) content.style.display = 'none';
+  if (box) box.style.display = 'block';
+}
+
+function healthRenderUnavailable() {
+  const title = healthEl('health-unavailable-title');
+  const msg = healthEl('health-unavailable-msg');
+  const detail = healthEl('health-unavailable-detail');
+  const code = healthEl('health-unavailable-code');
+  const retry = healthEl('btn-health-retry');
+  if (_healthBusy) {
+    if (title) title.textContent = _healthLoadError ? 'RETRYING HEALTH REPORT…' : 'LOADING HEALTH REPORT…';
+    if (msg) msg.textContent = 'Requesting the latest report from this dashboard. The refresh control is disabled until the request finishes.';
+    if (detail) { detail.textContent = ''; detail.style.display = 'none'; }
+    if (code) { code.textContent = ''; code.style.display = 'none'; }
+    if (retry) {
+      retry.style.display = '';
+      retry.disabled = true;
+      retry.textContent = '⟳ REFRESHING…';
+      setAria(retry, 'aria-busy', 'true');
+    }
+    return;
+  }
+  if (_healthLoadError) {
+    if (title) title.textContent = 'HEALTH REPORT UNAVAILABLE';
+    if (msg) msg.textContent = _healthLoadError.label;
+    if (detail) {
+      detail.textContent = _healthLoadError.detail || '';
+      detail.style.display = _healthLoadError.detail ? '' : 'none';
+    }
+    if (code) {
+      code.textContent = _healthLoadError.code ? `code: ${_healthLoadError.code}` : '';
+      code.style.display = _healthLoadError.code ? '' : 'none';
+    }
+    if (retry) {
+      retry.style.display = '';
+      retry.disabled = false;
+      retry.textContent = '⟳ REFRESH REPORT';
+      setAria(retry, 'aria-busy', 'false');
+    }
+    return;
+  }
+  if (title) title.textContent = 'HEALTH REPORT NOT LOADED';
+  if (msg) msg.textContent = 'The health report has not been requested yet.';
+  if (detail) { detail.textContent = ''; detail.style.display = 'none'; }
+  if (code) { code.textContent = ''; code.style.display = 'none'; }
+  if (retry) {
+    retry.style.display = '';
+    retry.disabled = false;
+    retry.textContent = '⟳ REFRESH REPORT';
+    setAria(retry, 'aria-busy', 'false');
+  }
+}
+
+function healthRenderState() {
+  if (_healthReport) {
+    const content = healthEl('health-content');
+    const box = healthEl('health-unavailable');
+    if (content) content.style.display = 'block';
+    if (box) box.style.display = 'none';
+    healthRenderSummary();
+  } else {
+    healthShowUnavailable();
+    healthRenderUnavailable();
+  }
+  healthSetBusy(_healthBusy);
+}
+
+function healthRenderAll() {
+  const content = healthEl('health-content');
+  const box = healthEl('health-unavailable');
+  if (content) content.style.display = 'block';
+  if (box) box.style.display = 'none';
+  healthRenderSummary();
+  healthRenderIssues();
+  healthRenderDetails();
+  healthRenderDisks();
+  healthSetBusy(_healthBusy);
+}
+
+function healthSetBusy(busy) {
+  _healthBusy = busy;
+  const refresh = healthEl('btn-health-refresh');
+  if (refresh) {
+    refresh.disabled = busy;
+    refresh.textContent = busy ? '⟳ REFRESHING…' : '⟳ REFRESH REPORT';
+    setAria(refresh, 'aria-busy', busy ? 'true' : 'false');
+  }
+  const json = healthEl('btn-health-json');
+  if (json) json.disabled = !_healthSnapshot;
+  const retry = healthEl('btn-health-retry');
+  if (retry) {
+    retry.disabled = busy;
+    retry.textContent = busy ? '⟳ REFRESHING…' : '⟳ REFRESH REPORT';
+    setAria(retry, 'aria-busy', busy ? 'true' : 'false');
+  }
+}
+
+function healthAcceptReport(report) {
+  const signature = healthJson(report);
+  const unchanged = signature === _healthSignature && !!_healthReport;
+  _healthReport = report;
+  _healthLoadedAt = Date.now();
+  _healthLoadError = null;
+  if (unchanged) {
+    healthRenderState();
+    return;
+  }
+  _healthSignature = signature;
+  _healthSnapshot = healthJson(report);
+  healthRenderAll();
+}
+
+function healthHandleLoadError(error, manual) {
+  const info = healthErrorMessage(error);
+  _healthLoadError = {
+    label: info.label,
+    detail: info.detail,
+    code: info.code,
+    at: Date.now(),
+  };
+  healthRenderState();
+  if (manual) toast('health refresh failed', true);
+}
+
+function healthFetch(manual = false) {
+  if (!_features.health) return Promise.resolve(null);
+  if (_healthInFlight) return _healthInFlight;
+  const request = (async () => {
+    healthSetBusy(true);
+    if (!_healthReport) healthRenderState();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+    try {
+      const response = await apiFetch('/api/health', { cache: 'no-store', signal: controller.signal });
+      let data = null;
+      try { data = await response.json(); } catch(e) { data = null; }
+      if (!response.ok || (data && typeof data.error === 'string')) {
+        const code = data && typeof data.code === 'string' ? data.code : '';
+        const message = data && typeof data.error === 'string'
+          ? data.error : `HTTP ${response.status}`;
+        throw healthFailure(message, code);
+      }
+      if (!data || typeof data !== 'object' || !healthReportValid(data.report)) {
+        throw healthFailure('The /api/health response did not contain a valid report.', 'invalid');
+      }
+      healthAcceptReport(data.report);
+      return data.report;
+    } catch(error) {
+      const failure = error && error.name === 'AbortError'
+        ? healthFailure(HEALTH_ERROR_LABELS.timeout, 'timeout')
+        : error;
+      healthHandleLoadError(failure, manual);
+      return null;
+    } finally {
+      clearTimeout(timer);
+      healthSetBusy(false);
+      // Re-render the initial-load panel after the request settles: the error
+      // path rendered the busy state while the request was still failing.
+      if (!_healthReport) healthRenderState();
+    }
+  })();
+  _healthInFlight = request;
+  request.finally(() => {
+    if (_healthInFlight === request) _healthInFlight = null;
+  });
+  return request;
+}
+
+function healthRefresh() {
+  if (!_features.health) return Promise.resolve(null);
+  return healthFetch(true);
+}
+
+function healthTick() {
+  if (!_features.health) return;
+  if (_activeTab !== 'health') return;
+  if (document.hidden) return;
+  healthFetch(false);
+}
+
+function healthOnEnter() {
+  if (!_features.health) return;
+  if (_activeTab !== 'health') return;
+  if (document.hidden) return;
+  healthFetch(false);
+}
+
+function healthSyncFeature() {
+  const button = healthTabButton();
+  if (_features.health) {
+    if (button) button.style.display = 'inline-block';
+    if (_activeTab === 'health') {
+      revealActiveTab(button);
+      healthOnEnter();
+    }
+  } else {
+    if (button) button.style.display = 'none';
+    if (_activeTab === 'health') {
+      switchTab('server', document.querySelector('.tab-btn[data-tab="server"]'));
+    }
+  }
+}
+
+function healthDownload() {
+  if (!_healthSnapshot) {
+    toast('no health report to download', true);
+    return false;
+  }
+  const stamp = healthText(_healthReport && _healthReport.time)
+    .replace(/[^0-9A-Za-z]+/g, '-').replace(/^-+|-+$/g, '') || 'report';
+  const filename = `health-report-${stamp}.json`;
+  try {
+    const blob = new Blob([_healthSnapshot], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => {
+      try { URL.revokeObjectURL(url); } catch(e) {}
+    }, 0);
+    return true;
+  } catch(e) {
+    toast('JSON download unavailable in this browser', true);
+    return false;
+  }
+}
+
+function healthReportJSON() {
+  return _healthSnapshot;
+}
+
+if (typeof document.addEventListener === 'function') {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) healthTick();
+  });
+}
+
 // ── tab switching ─────────────────────────────────────────────────────────────
 // The old OPENCODE and MISTRAL tabs were merged into AI SERVICES. Keep reading
 // the old names (and migrate the stored value) so an existing saved tab works.
@@ -2490,6 +3006,7 @@ function switchTab(name, btn) {
   revealActiveTab(btn);
   if (name === 'ai-services') aiServicesOnEnter();
   if (name === 'security') securityOnEnter();
+  if (name === 'health') healthOnEnter();
 }
 
 // Restore saved tab on load; migrate the legacy names to the unified tab.
@@ -4355,6 +4872,8 @@ setInterval(() => {
 // Security report: polls only while its tab is active and the page is visible.
 // Entering the tab / regaining visibility also triggers a fresh check.
 setInterval(securityTick, 60000);
+// Health report: same gating (active tab + visible page only).
+setInterval(healthTick, 60000);
 // AI inventory: same gating. A visible tab on screen at least once a minute is
 // enough to surface a 24h source TTL expiry, backoff or stale-source state.
 setInterval(aiServicesTick, 60000);
