@@ -411,6 +411,11 @@ def _validate_report(report) -> None:
 
     if "assessments" in report:
         _validate_findings(report["assessments"])
+    if "resolved_findings" in report:
+        _validate_findings(report["resolved_findings"])
+        for finding in report["resolved_findings"]:
+            _string(finding.get("resolution"), nonempty=True)
+            _timestamp(finding.get("resolved_at"))
     if "rejected_assessments" in report:
         _validate_rejected(report["rejected_assessments"])
     if "inventory" in report:

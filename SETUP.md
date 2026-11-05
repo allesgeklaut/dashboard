@@ -358,6 +358,13 @@ read-only: no scans, paid API calls, or package updates. `SECURITY_REPORT_DIR`
 empty keeps the tab off; a configured directory shows it even before a report
 exists, reporting it unavailable until then.
 
+Priority counters apply to current findings only. Unrechecked items live in a
+separate historical review backlog; verified resolutions show their evidence
+and timestamp. Older reports without resolution data display “not reported”.
+Cards and supplementary sections start collapsed; **EXPAND ALL** / **COLLAPSE
+ALL** control the Security tab. Search includes historical and resolved items;
+priority filters affect current findings only. Original report JSON is unchanged.
+
 Local development points at a synthetic or copied report outside the repository
 (e.g. `/tmp/opencode/security-report`, never a real report in the checkout):
 

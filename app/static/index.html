@@ -1144,10 +1144,12 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
       <div class="sec-summary-card">
         <div class="sec-meta" id="sec-meta"></div>
         <div class="sec-alerts" id="sec-alerts" role="status" aria-live="polite"></div>
-        <p class="sec-summary" id="sec-summary"></p>
+        <details class="sec-tech"><summary>research summary</summary>
+          <p class="sec-summary" id="sec-summary"></p>
+        </details>
       </div>
 
-      <div class="sec-label">findings</div>
+      <div class="sec-label">current findings</div>
       <div class="sec-toolbar">
         <div class="sec-tools">
           <button class="btn-stream" id="btn-sec-refresh" onclick="securityRefresh()" aria-label="Refresh the security report">⟳ REFRESH REPORT</button>
@@ -1168,27 +1170,32 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
       </div>
       <div id="sec-findings"></div>
 
-      <div class="sec-label">assessed as not affected <span style="font-weight:400;text-transform:none;letter-spacing:0">evidence</span></div>
-      <div class="sec-note">Explicit not-affected assessments are evidence, not active findings. A not-affected
-        assessment clears an existing finding only when source and inventory checks are complete, no claims
-        were excluded, confidence is high, and the component was checked this run. Review the stated reason
-        and sources before relying on them.</div>
-      <div id="sec-assessments"></div>
-
-      <div class="sec-label">excluded claims <span style="font-weight:400;text-transform:none;letter-spacing:0">not active</span></div>
-      <div id="sec-rejected"></div>
-
-      <div class="sec-label">coverage &amp; source checks</div>
-      <div id="sec-coverage"></div>
-
-      <div class="sec-label">dependabot branches</div>
-      <div id="sec-dependabot"></div>
-
-      <div class="sec-label">inventory &amp; advisory details</div>
-      <div id="sec-details"></div>
-
-      <div class="sec-label">research provenance</div>
-      <div id="sec-provenance"></div>
+      <details class="sec-tech" id="sec-history-section">
+        <summary>historical — needs review <span id="sec-history-count"></span></summary>
+        <div id="sec-history"></div>
+      </details>
+      <details class="sec-tech" id="sec-resolved-section">
+        <summary>resolved by verified evidence <span id="sec-resolved-count"></span></summary>
+        <div id="sec-resolved"></div>
+      </details>
+      <details class="sec-tech"><summary>assessed as not affected</summary>
+        <div id="sec-assessments"></div>
+      </details>
+      <details class="sec-tech"><summary>excluded claims</summary>
+        <div id="sec-rejected"></div>
+      </details>
+      <details class="sec-tech"><summary>coverage &amp; source checks</summary>
+        <div id="sec-coverage"></div>
+      </details>
+      <details class="sec-tech"><summary>dependabot branches</summary>
+        <div id="sec-dependabot"></div>
+      </details>
+      <details class="sec-tech"><summary>inventory &amp; advisory details</summary>
+        <div id="sec-details"></div>
+      </details>
+      <details class="sec-tech"><summary>research provenance</summary>
+        <div id="sec-provenance"></div>
+      </details>
     </div>
   </div><!-- /#tab-security -->
 
@@ -1659,6 +1666,7 @@ function securityPriorityIndex(value) {
 
 function securitySortedFindings(report = _securityReport) {
   return securityList(report && report.findings)
+    .filter(finding => finding && finding.not_rechecked !== true)
     .map((finding, index) => ({ finding, index }))
     .sort((a, b) => {
       const pa = securityPriorityIndex(a.finding && a.finding.priority);
@@ -1694,7 +1702,8 @@ function securityBadge(map, value) {
 
 function securityFindingCard(finding, index, kind = 'finding', prefix = 'f') {
   const item = securityObject(finding);
-  const priority = SECURITY_PRIORITIES.some(entry => entry[0] === item.priority)
+  const historical = kind === 'historical';
+  const priority = !historical && SECURITY_PRIORITIES.some(entry => entry[0] === item.priority)
     ? item.priority : 'unknown';
   const key = prefix + index;
   const open = _securityOpen.has(key);
@@ -1707,7 +1716,7 @@ function securityFindingCard(finding, index, kind = 'finding', prefix = 'f') {
     <summary class="sec-card-sum">
       <span class="sec-card-head">
         <span class="sec-card-pri p-${escAttr(priority)}">${
-          escHtml(kind === 'assessment' ? 'ASSESSED' : securityPriorityLabel(priority))
+          escHtml(historical ? 'REVIEW' : kind === 'assessment' ? 'ASSESSED' : securityPriorityLabel(priority))
         }</span>
         <span class="sec-card-top">
           <span class="sec-card-id">${escHtml(component)} / ${escHtml(advisory)}</span>
@@ -1716,25 +1725,25 @@ function securityFindingCard(finding, index, kind = 'finding', prefix = 'f') {
         <span class="sec-card-chevron" aria-hidden="true">▾</span>
       </span>
       <span class="sec-badges">
-        ${securityBadge(SECURITY_STATUS, item.status)}
-        ${securityBadge(SECURITY_CONFIDENCE, item.confidence)}
-        ${securityBadge(SECURITY_EXPLOITED, item.exploited)}
+        ${historical ? '' : securityBadge(SECURITY_STATUS, item.status)}
+        ${historical ? '' : securityBadge(SECURITY_CONFIDENCE, item.confidence)}
+        ${historical ? '' : securityBadge(SECURITY_EXPLOITED, item.exploited)}
         ${notRechecked ? '<span class="sec-badge not-rechecked">NOT RECHECKED</span>' : ''}
       </span>
     </summary>
     <div class="sec-card-body">
-      ${notRechecked ? '<div class="sec-not-rechecked">Carried forward from an earlier report — this finding was not rechecked in the report above. Verify it before acting.</div>' : ''}
+      ${notRechecked ? '<div class="sec-not-rechecked">Historical evidence; verify before acting.</div>' : ''}
       <div class="sec-grid">
-        ${securityField('STATUS', item.status)}
-        ${securityField('CONFIDENCE', item.confidence)}
-        ${securityField('EXPLOITED', item.exploited)}
-        ${securityField('INSTALLED', item.installed_version)}
-        ${securityField('AFFECTED', item.affected_versions)}
-        ${securityField('FIXED', item.fixed_version)}
+        ${securityField(historical ? 'PREVIOUS STATUS' : 'STATUS', item.status)}
+        ${securityField(historical ? 'PREVIOUS CONFIDENCE' : 'CONFIDENCE', item.confidence)}
+        ${securityField(historical ? 'PREVIOUS PRIORITY' : 'EXPLOITED', historical ? item.priority : item.exploited)}
+        ${securityField(historical ? 'PREVIOUSLY OBSERVED VERSION' : 'INSTALLED', item.installed_version)}
+        ${securityField(historical ? 'RECORDED AFFECTED' : 'AFFECTED', item.affected_versions)}
+        ${securityField(historical ? 'RECORDED FIX' : 'FIXED', item.fixed_version)}
       </div>
       <div class="sec-prose"><span class="sec-k">TITLE</span>${escHtml(securityText(item.title) || 'not provided')}</div>
-      <div class="sec-prose"><span class="sec-k">REASON</span>${escHtml(securityText(item.reason) || 'not provided')}</div>
-      <div class="sec-prose"><span class="sec-k">ACTION</span>${escHtml(securityText(item.action) || 'not provided')}</div>
+      <div class="sec-prose"><span class="sec-k">${historical ? 'HISTORICAL RATIONALE' : 'REASON'}</span>${escHtml(securityText(item.reason) || 'not provided')}</div>
+      <div class="sec-prose"><span class="sec-k">${historical ? 'HISTORICAL ADVICE — NOT REVALIDATED' : 'ACTION'}</span>${escHtml(securityText(item.action) || 'not provided')}</div>
       ${securitySourcesHtml(item.sources)}
     </div>
   </details>`;
@@ -1749,8 +1758,40 @@ function securityToggleCard(element) {
 
 function securityInitOpen(report) {
   _securityOpen = new Set();
-  securitySortedFindings(report).forEach((finding, index) => {
-    if (finding && finding.priority === 'act_now') _securityOpen.add('f' + index);
+}
+
+function securityHistoricalFindings() {
+  return securityList(_securityReport && _securityReport.findings)
+    .filter(finding => finding && finding.not_rechecked === true);
+}
+
+function securityRenderArchives() {
+  const query = securityQuery();
+  const history = securityHistoricalFindings();
+  const resolvedKnown = securityHas(_securityReport, 'resolved_findings');
+  const resolved = securityList(_securityReport && _securityReport.resolved_findings);
+  const render = (id, entries, prefix, card) => {
+    const shown = entries.map((item, index) => ({ item: securityObject(item), index })).filter(({ item }) =>
+      !query || (securityFindingSearchText(item) + ' ' + securityText(item.resolution).toLowerCase()).includes(query));
+    const count = document.getElementById(id + '-count');
+    if (count) count.textContent = id === 'sec-resolved' && !resolvedKnown ? '— not reported'
+      : query ? `— ${shown.length} / ${entries.length}` : `— ${entries.length}`;
+    const container = document.getElementById(id);
+    if (container) container.innerHTML = shown.length
+      ? shown.map(({ item, index }) => card(item, index, prefix)).join('')
+      : `<div class="sec-note">${id === 'sec-resolved' && !resolvedKnown ? 'Resolution evidence not reported.'
+        : query ? 'No matches.' : id === 'sec-history' ? 'No historical findings.' : 'No resolutions reported this run.'}</div>`;
+  };
+  render('sec-history', history, 'h', (item, index, prefix) => securityFindingCard(item, index, 'historical', prefix));
+  render('sec-resolved', resolved, 'r', (item, index, prefix) => {
+    const key = prefix + index;
+    return `<details class="sec-card sec-resolved" data-key="${escAttr(key)}"${_securityOpen.has(key) ? ' open' : ''}
+      ontoggle="securityToggleCard(this)">
+      <summary class="sec-card-sum"><span class="sec-card-id">${escHtml(securityText(item.component))} / ${escHtml(securityText(item.advisory))}</span>
+        <span class="sec-badge">RESOLVED</span></summary>
+      <div class="sec-card-body">${securityField('RESOLVED AT', item.resolved_at)}
+        <div class="sec-prose"><span class="sec-k">VERIFIED EVIDENCE</span>${escHtml(securityText(item.resolution) || 'not provided')}</div>
+        ${securitySourcesHtml(item.sources)}</div></details>`;
   });
 }
 
@@ -1800,9 +1841,7 @@ function securityApplyView() {
     if (!sorted.length) {
       findings.innerHTML = `<div class="sec-note sec-zero">
         <span class="sec-k">NO ACTIONABLE FINDINGS IN THIS REPORT</span>
-        No actionable findings were identified within the checked sources. Coverage is limited: review the
-        limitations, source-check errors and excluded claims below. This report is advisory synthesis, not a
-        full vulnerability scan.
+         No current findings; coverage is limited. Historical items may still need review.
       </div>`;
     } else if (!filtered.length) {
       findings.innerHTML = '<div class="sec-note">No findings match the current filter or search.</div>';
@@ -1822,8 +1861,9 @@ function securityApplyView() {
   }
   const total = document.getElementById('sec-findings-total');
   if (total) {
-    total.textContent = `— ${sorted.length} finding${sorted.length === 1 ? '' : 's'}`;
+    total.textContent = `— ${sorted.length} current · ${securityHistoricalFindings().length} historical`;
   }
+  securityRenderArchives();
   securityUpdateFilterButtons();
 }
 
@@ -1842,6 +1882,14 @@ function securityExpandAll(open) {
     if (open) _securityOpen.add(key);
     else _securityOpen.delete(key);
   });
+  [securityHistoricalFindings(), securityList(_securityReport && _securityReport.resolved_findings)].forEach((entries, group) => {
+    entries.forEach((_item, index) => {
+      const key = (group === 0 ? 'h' : 'r') + index;
+      if (open) _securityOpen.add(key);
+      else _securityOpen.delete(key);
+    });
+  });
+  document.querySelectorAll('#tab-security details').forEach(element => { element.open = open; });
   securityList(_securityReport && _securityReport.assessments)
     .filter(finding => finding && typeof finding === 'object' && finding.status === 'not_affected')
     .forEach((_finding, index) => {
@@ -1857,14 +1905,7 @@ function securityRenderSummary() {
   const summary = document.getElementById('sec-summary');
   if (!summary) return;
   const text = securityText(_securityReport && _securityReport.summary).trim();
-  const empty = securityList(_securityReport && _securityReport.findings).length === 0;
-  const note = empty
-    ? `No actionable findings are listed, but that does not establish that nothing is affected.
-       Coverage is limited. This report is advisory synthesis, not a full vulnerability scan;
-       retained findings were not rechecked.`
-    : `Advisory synthesis, not a full vulnerability scan. Accepted assessments were locally validated
-       against their cited sources in this run; retained findings were not rechecked.
-       Excluded claims appear separately.`;
+  const note = 'Research from this run, before reconciliation. Historical findings were not rechecked; not an all-clear.';
   summary.innerHTML = `<span class="sec-k">SUMMARY</span>${
     escHtml(text || 'No summary provided.')
   }<div class="sec-summary-note">${note}</div>`;
@@ -1938,9 +1979,7 @@ function securityAlertItems(age) {
     items.push({
       level: 'warn',
       label: 'RESEARCH PARTIAL COVERAGE',
-      body: `${rejected.length} claim${rejected.length === 1 ? '' : 's'} excluded by local validation.
-        Excluded claims are not active findings, and they block all not-affected dismissals in this
-        report. They are listed below.`,
+      body: `${rejected.length} unverified claim${rejected.length === 1 ? '' : 's'} excluded; see evidence below.`,
     });
   } else if (unchecked.length) {
     items.push({
@@ -1956,8 +1995,7 @@ function securityAlertItems(age) {
     items.push({
       level: 'warn',
       label: 'CARRIED FORWARD — NOT RECHECKED',
-      body: `${carried} finding${carried === 1 ? '' : 's'} not rechecked in this report.
-        They remain listed but may be outdated; verify before acting.`,
+      body: `${carried} historical item${carried === 1 ? '' : 's'} need review; excluded from current priority counts.`,
     });
   }
   return items;
@@ -2014,12 +2052,9 @@ function securityRenderAssessments() {
     const retained = securityAssessmentMatchesRetained(finding);
     const activeThisRun = retained.some(entry => securityObject(entry).not_rechecked !== true);
     const note = retained.length ? `<div class="sec-note sec-assessment-blocked">
-      <b>NOT DISMISSED</b> — ${escHtml(securityText(item.component) || 'this component')} /
-      ${escHtml(securityText(item.advisory) || 'this advisory')} is still listed as an active finding
-      ${activeThisRun ? 'in this report' : '(retained from an earlier report and not rechecked this run)'}.
-      The existing finding remains active; this assessment did not dismiss it. A not-affected assessment
-      clears an existing finding only when source and inventory checks are complete, no claims were
-      excluded, confidence is high, and the component was checked this run.
+      <b>NOT DISMISSED</b> — ${escHtml(securityText(item.component))} / ${escHtml(securityText(item.advisory))}
+      remains ${activeThisRun ? 'a current finding' : 'in the historical review backlog'}.
+      This assessment did not dismiss it.
     </div>` : '';
     return securityFindingCard(finding, index, 'assessment', 'a') + note;
   }).join('');
@@ -2038,10 +2073,9 @@ function securityRenderRejected() {
     container.innerHTML = '<div class="sec-note">No claims were excluded by local validation in this report.</div>';
     return;
   }
-  container.innerHTML = `<div class="sec-note sec-resolution-blocked">
-    <b>RESOLUTION BLOCKED</b> — excluded claims are not active findings, and while any claim is
-    excluded no not-affected assessment in this report can dismiss an existing finding. Source-check
-    completeness does not remove this block.
+  container.innerHTML = `<div class="sec-note">
+    Excluded claims are not active findings. Same-finding rejections block research-based dismissals;
+    independent package evidence can still resolve findings.
   </div>` + rejected.map(item => {
     const rejectedItem = securityObject(item);
     return `<div class="sec-rejected">
@@ -2096,7 +2130,7 @@ function securityRenderCoverage() {
   }
   if (!hasAdvisory) chips.push('<span class="sec-chip">advisory checks: not reported</span>');
   if (rejected.length) {
-    chips.push(`<span class="sec-chip" style="color:var(--red);border-color:var(--red-dim)">resolution blocked — ${escHtml(String(rejected.length))} excluded claim${rejected.length === 1 ? '' : 's'}</span>`);
+    chips.push(`<span class="sec-chip">${escHtml(String(rejected.length))} excluded claim${rejected.length === 1 ? '' : 's'}</span>`);
   } else if (!securityHas(report, 'rejected_assessments')) {
     chips.push('<span class="sec-chip">resolution status: not reported</span>');
   }
@@ -2105,8 +2139,7 @@ function securityRenderCoverage() {
       <span class="sec-k">COVERAGE SUMMARY</span>
       ${chips.join('')}
     </div>
-    <div class="sec-note">Source-check status reflects advisory and inventory checks only. It is
-      not proof of coverage, does not resolve findings, and is not an all-clear.</div>
+    <div class="sec-note">Check status only, not an all-clear.</div>
     <span class="sec-k">CHECKED COMPONENTS</span>
     ${checked.length
       ? `<div class="sec-chips">${checked.map(component => `<span class="sec-chip">${escHtml(securityText(component))}</span>`).join('')}</div>`

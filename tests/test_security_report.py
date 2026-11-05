@@ -90,6 +90,21 @@ class SecurityReportReadTests(unittest.TestCase):
         self.write_report(minimal)
         self.assertEqual(self.read(), {"report": minimal})
 
+    def test_resolved_evidence_requires_valid_finding_reason_and_timestamp(self):
+        resolved = {**copy.deepcopy(REPORT["findings"][0]),
+                    "resolution": "Current package is fixed; authoritative ranges and OSV receipt verified.",
+                    "resolved_at": "2026-11-05T07:00:00+00:00"}
+        extended = {**copy.deepcopy(REPORT), "resolved_findings": [resolved]}
+        self.write_report(extended)
+        self.assertEqual(self.read(), {"report": extended})
+        for changes in [{"resolution": ""}, {"resolution": None}, {"resolved_at": "yesterday"},
+                        {"resolved_at": "2026-11-05T07:00:00"}, {"component": None}]:
+            with self.subTest(changes=changes):
+                self.assert_invalid({**extended, "resolved_findings": [{**resolved, **changes}]})
+        for invalid in [None, {}, [None], [{"resolution": "fixed"}]]:
+            with self.subTest(invalid=invalid):
+                self.assert_invalid({**extended, "resolved_findings": invalid})
+
     def test_merged_retained_findings_may_exceed_the_per_run_limit(self):
         merged = copy.deepcopy(REPORT)
         template = merged["findings"][1]

@@ -490,7 +490,7 @@ test('security polling is active/visible-only and dedupes an inflight request', 
   assert.equal(requests, 2);
 });
 
-test('security counts, filters and search report shown/total and keep default urgent cards open', () => {
+test('security counts, filters and search report shown/total and all cards start collapsed', () => {
   const d = dashboard();
   d.run('_features.security=true');
   acceptReport(d, securityReport());
@@ -499,7 +499,7 @@ test('security counts, filters and search report shown/total and keep default ur
   assert.equal(d.element('sec-count-monitor').textContent, '1');
   assert.equal(d.element('sec-shown').textContent, '3 / 3 shown');
   const html = d.element('sec-findings').innerHTML;
-  assert.match(html, /data-priority="act_now"[^>]*\bopen\b/);
+  assert.doesNotMatch(html, /<details[^>]*\bopen\b/);
   assert.doesNotMatch(html, /data-priority="monitor"[^>]*\bopen\b/);
 
   d.run("securitySetFilter('act_now')");
@@ -564,6 +564,87 @@ test('report strings are escaped and only safe public https sources become links
   for (const url of unsafe) assert.equal(safe(url), false);
   assert.equal(safe('https://10.0.0.5/x'), false);
   assert.equal(safe('https://169.254.169.254/latest/meta-data'), false);
+});
+
+test('historical findings are a quiet review backlog, never current priority counts', () => {
+  const d = dashboard();
+  d.run('_features.security=true');
+  acceptReport(d, securityReport({ findings: [
+    finding({ advisory: 'CURRENT', priority: 'monitor' }),
+    finding({ advisory: 'OLD-URGENT', priority: 'act_now', not_rechecked: true }),
+  ] }));
+  assert.equal(d.element('sec-count-act_now').textContent, '0');
+  assert.equal(d.element('sec-count-monitor').textContent, '1');
+  assert.equal(d.element('sec-shown').textContent, '1 / 1 shown');
+  assert.match(d.element('sec-findings-total').textContent, /1 current · 1 historical/);
+  assert.doesNotMatch(d.element('sec-findings').innerHTML, /OLD-URGENT/);
+  const history = d.element('sec-history').innerHTML;
+  assert.match(history, /OLD-URGENT/);
+  assert.match(history, /PREVIOUSLY OBSERVED VERSION/);
+  assert.match(history, /HISTORICAL ADVICE — NOT REVALIDATED/);
+  assert.doesNotMatch(history, /p-act_now|>ACT NOW<|<details[^>]*\bopen\b/);
+  assert.match(d.element('sec-history-count').textContent, /1/);
+  d.run("securitySetFilter('act_now')");
+  assert.match(d.element('sec-history').innerHTML, /OLD-URGENT/);
+  assert.match(d.element('sec-findings').innerHTML, /No findings match/);
+  d.element('sec-search').value = 'does-not-exist';
+  d.run('securitySearchChanged()');
+  assert.equal(d.element('sec-history-count').textContent, '— 0 / 1');
+  assert.match(d.element('sec-history').innerHTML, /No matches/);
+});
+
+test('verified resolutions show escaped evidence and time without obsolete remediation advice', () => {
+  const d = dashboard();
+  d.run('_features.security=true');
+  const resolved = { ...finding({ advisory: 'FIXED-ONE', action: 'obsolete-action' }),
+    resolution: 'Observed <img src=x onerror="boom()"> package 1.2.1', resolved_at: '2026-11-05T07:00:00Z' };
+  acceptReport(d, securityReport({ findings: [], resolved_findings: [resolved] }));
+  const html = d.element('sec-resolved').innerHTML;
+  assert.match(html, /RESOLVED AT/);
+  assert.match(html, /2026-11-05T07:00:00Z/);
+  assert.match(html, /FIXED-ONE/);
+  assert.match(html, /VERIFIED EVIDENCE/);
+  assert.match(html, /&lt;img/);
+  assert.doesNotMatch(html, /<img|obsolete-action|<details[^>]*\bopen\b/);
+  assert.equal(d.element('sec-resolved-count').textContent, '— 1');
+  assert.equal(d.element('sec-count-update_soon').textContent, '0');
+  d.run('securityExpandAll(true)');
+  assert.match(d.element('sec-resolved').innerHTML, /data-key="r0"[^>]*\bopen\b/);
+  d.run('securityExpandAll(false)');
+  assert.doesNotMatch(d.element('sec-resolved').innerHTML, /<details[^>]*\bopen\b/);
+  assert.deepEqual(JSON.parse(d.run('securityReportJSON()')).resolved_findings, [resolved]);
+});
+
+test('absent resolution data stays unknown while an explicit empty list means none reported', () => {
+  const d = dashboard();
+  d.run('_features.security=true');
+  acceptReport(d, securityReport());
+  assert.match(d.element('sec-resolved-count').textContent, /not reported/);
+  assert.match(d.element('sec-resolved').innerHTML, /evidence not reported/);
+  acceptReport(d, securityReport({ resolved_findings: [] }));
+  assert.equal(d.element('sec-resolved-count').textContent, '— 0');
+  assert.match(d.element('sec-resolved').innerHTML, /No resolutions reported this run/);
+});
+
+test('all Security evidence sections start collapsed and no longer carry global dismissal claims', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
+  const pane = html.slice(html.indexOf('id="tab-security"'), html.indexOf('<!-- /#tab-security -->'));
+  assert.doesNotMatch(pane, /<details[^>]*\sopen(?:\s|>)/);
+  for (const section of ['historical — needs review', 'resolved by verified evidence',
+    'assessed as not affected', 'excluded claims', 'coverage &amp; source checks',
+    'dependabot branches', 'inventory &amp; advisory details', 'research provenance']) {
+    assert.ok(pane.includes(`<summary>${section}`), section);
+  }
+  const d = dashboard();
+  d.run('_features.security=true');
+  acceptReport(d, securityReport({ findings: [finding({ not_rechecked: true })] }));
+  assert.match(d.element('sec-findings').innerHTML, /No current findings/);
+  assert.match(d.element('sec-history').innerHTML, /NOT RECHECKED/);
+  assert.equal(d.run('_securityOpen.size'), 0);
+  d.run('securityExpandAll(true)');
+  assert.match(d.element('sec-history').innerHTML, /data-key="h0"[^>]*\bopen\b/);
+  d.run('securityExpandAll(false)');
+  assert.equal(d.run('_securityOpen.size'), 0);
 });
 
 test('a zero-finding report never reads as an all-clear', () => {
@@ -679,7 +760,8 @@ test('assessment evidence, excluded claims, coverage, dependabot and provenance 
   const coverage = d.element('sec-coverage').innerHTML;
   assert.match(coverage, /source checks: errors reported/);
   assert.match(coverage, /status only/);
-  assert.match(coverage, /resolution blocked/);
+  assert.match(coverage, /1 excluded claim/);
+  assert.doesNotMatch(coverage, /resolution blocked/);
   assert.match(coverage, /OSV returned incomplete results/);
   assert.match(coverage, /remote: SSH inventory failed/);
   assert.match(coverage, /Selected host and Python packages only/);
@@ -707,8 +789,8 @@ test('assessment evidence, excluded claims, coverage, dependabot and provenance 
   assert.match(d.element('sec-alerts').innerHTML, /SOURCE CHECK ERRORS/);
   assert.match(d.element('sec-alerts').innerHTML, /RESEARCH PARTIAL COVERAGE/);
   assert.match(d.element('sec-alerts').innerHTML, /NOT RECHECKED/);
-  assert.match(d.element('sec-findings').innerHTML, /NOT RECHECKED/);
-  assert.match(d.element('sec-findings').innerHTML, /Carried forward from an earlier report/);
+  assert.match(d.element('sec-history').innerHTML, /NOT RECHECKED/);
+  assert.match(d.element('sec-history').innerHTML, /Historical evidence; verify before acting/);
 });
 
 test('JSON download snapshots exactly the currently displayed report', () => {
@@ -918,21 +1000,18 @@ test('a not-affected assessment never dismisses a retained matching finding', ()
 
   const html = d.element('sec-assessments').innerHTML;
   assert.match(html, /NOT DISMISSED/);
-  assert.match(html, /still listed as an active finding/);
-  assert.match(html, /retained from an earlier report and not rechecked this run/);
-  assert.match(html, /remains active; this assessment did not dismiss it/);
-  assert.match(html, /source and inventory checks are complete/);
-  assert.match(html, /no claims were\s+excluded/);
-  assert.match(html, /confidence is high/);
-  assert.match(html, /component was checked this run/);
+  assert.match(html, /historical review backlog/);
+  assert.match(html, /This assessment did not dismiss it/);
+  assert.doesNotMatch(html, /no claims were\s+excluded/);
   assert.doesNotMatch(html, /RESOLVED/);
   assert.doesNotMatch(html, />DISMISSED</);
   assert.match(html, /&lt;img/);
   assert.doesNotMatch(html, /<img/);
-  assert.match(d.element('sec-findings').innerHTML, /GHSA-aaaa/);
+  assert.match(d.element('sec-history').innerHTML, /GHSA-aaaa/);
+  assert.doesNotMatch(d.element('sec-findings').innerHTML, /GHSA-aaaa/);
 });
 
-test('excluded claims are inactive and block every not-affected dismissal', () => {
+test('excluded claims describe scoped research vetoes without blocking independent resolutions', () => {
   const d = dashboard();
   d.run('_features.security=true');
   acceptReport(d, securityReport({
@@ -950,15 +1029,16 @@ test('excluded claims are inactive and block every not-affected dismissal', () =
   const coverage = d.element('sec-coverage').innerHTML;
   assert.match(coverage, /source checks: reported complete/);
   assert.match(coverage, /status only, not an all-clear/);
-  assert.match(coverage, /resolution blocked — 1 excluded claim/);
+  assert.match(coverage, /1 excluded claim/);
+  assert.doesNotMatch(coverage, /resolution blocked/);
 
   const rejected = d.element('sec-rejected').innerHTML;
-  assert.match(rejected, /RESOLUTION BLOCKED/);
   assert.match(rejected, /not active findings/);
-  assert.match(rejected, /no not-affected assessment in this report can dismiss/);
-  assert.match(rejected, /Source-check\s+completeness does not remove this block/);
+  assert.match(rejected, /Same-finding rejections block research-based dismissals/);
+  assert.match(rejected, /independent package evidence can still resolve findings/);
+  assert.doesNotMatch(rejected, /RESOLUTION BLOCKED/);
   assert.match(d.element('sec-assessments').innerHTML, /NOT DISMISSED/);
-  assert.match(d.element('sec-alerts').innerHTML, /block all not-affected dismissals/);
+  assert.doesNotMatch(d.element('sec-alerts').innerHTML, /block all not-affected dismissals/);
 });
 
 test('dependabot badges mean unannounced and fetch failures are unknown, never none', () => {
@@ -999,12 +1079,12 @@ test('summary is plain SUMMARY and local validation is scoped to this run', () =
   assert.match(summary, /class="sec-k">SUMMARY</);
   assert.doesNotMatch(summary, /MODEL-GENERATED/);
   assert.match(summary, /this run/);
-  assert.match(summary, /retained findings were not rechecked/);
+  assert.match(summary, /Historical findings were not rechecked/);
 
   acceptReport(d, securityReport({ findings: [], summary: 'Nothing actionable.' }));
   const empty = d.element('sec-summary').innerHTML;
   assert.doesNotMatch(empty, /MODEL-GENERATED/);
-  assert.match(empty, /retained findings were not rechecked/);
+  assert.match(empty, /Historical findings were not rechecked/);
 });
 
 test('a future report timestamp warns about clocks without implying freshness', () => {
