@@ -440,30 +440,36 @@ interpolation (host identity, optional spool flags and desktop identifiers),
 not application credentials.
 
 Docker loads `/opt/secrets/dashboard.env` (integration URLs, AdGuard credentials,
-optional OpenCode key, etc.) and `/opt/secrets/portainer.env` (Portainer token
-and, if needed, `PORTAINER_URL`). Provision both files outside the repository,
-restrict access to the deploying administrator, and never commit them. The
-Portainer file is also shared with LiteLLM. Container control uses Portainer
-only; there is no Docker CLI or socket fallback.
+optional OpenCode key, etc.) and `/opt/secrets/lifecycle-dashboard.env` (the
+dashboard's independent `LIFECYCLE_API_KEY`). It connects to the restricted
+HTTPS lifecycle gateway, not directly to Portainer. Provision both files outside
+the repository and never commit them. Remove any legacy `PORTAINER_API_KEY`
+from the dashboard's env files. There is no Docker CLI or socket fallback.
 
-### Get a Portainer API key
+Deploy the gateway first and follow [LIFECYCLE.md](LIFECYCLE.md) and the gateway
+README for coordinated migration, TLS provisioning and revocation. Compose
+mounts only its public certificate at `/run/secrets/lifecycle-server.pem`;
+hostname verification and certificate verification are required. Recreate the
+dashboard after env-file changes: restarting alone does not reload them.
+
+### Legacy direct Portainer access (local development only)
 
 Portainer → username (top right) → My account → Access tokens → Add access token
 
-### Portainer HTTPS verification
+The instructions below do **not** apply to production Compose. Never add a
+Portainer administrator token to the production dashboard. Direct access is
+available only when `LIFECYCLE_URL` is absent.
 
-In Docker, replace `PORTAINER_API_KEY` in `/opt/secrets/portainer.env`. The
-repository `.env` is for Compose interpolation and local development; it is
-not the container's credential file. Recreate consumers after token changes;
-a restart does not reload `env_file` values. LiteLLM and its ComfyUI proxy also
-consume this shared file and must be recreated separately if the old token is
-revoked.
+### Direct Portainer HTTPS verification (local development only)
+
+For deliberate direct-API development, set `PORTAINER_URL`, `PORTAINER_API_KEY`
+and optionally `PORTAINER_CA_FILE` in the local development environment. Do not
+reuse or distribute the production administrator token.
 
 Place **one trusted Portainer server certificate**, never a private key or a
 general CA bundle, at `/opt/secrets/portainer-ca.pem`. Obtain it through a
-trusted channel, not from an unverified network connection. Compose mounts
-only this file read-only at `/run/secrets/portainer-ca.pem` and refuses to
-create a missing source. It must be readable by the container's uid 1000.
+trusted channel, not from an unverified network connection. Set
+`PORTAINER_CA_FILE` to that file; it is not mounted by production Compose.
 
 The dashboard requires HTTPS and pins the certificate's SHA256 fingerprint
 while also requiring certificate verification against that PEM. Exact

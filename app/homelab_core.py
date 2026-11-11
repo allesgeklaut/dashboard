@@ -28,6 +28,9 @@ PORTAINER_URL     = os.getenv("PORTAINER_URL", "https://192.168.0.46:9443")
 PORTAINER_API_KEY = os.getenv("PORTAINER_API_KEY", "")
 PORTAINER_CA_FILE = os.getenv("PORTAINER_CA_FILE", "").strip()
 PORTAINER_ENVS: list[int] | None = None  # None = auto-discover; or e.g. [1, 2]
+LIFECYCLE_URL = os.getenv("LIFECYCLE_URL", "").strip()
+LIFECYCLE_API_KEY = os.getenv("LIFECYCLE_API_KEY", "")
+LIFECYCLE_CA_FILE = os.getenv("LIFECYCLE_CA_FILE", "").strip()
 ADGUARD_URL  = os.getenv("ADGUARD_URL")          # None if not set → feature disabled
 ADGUARD_USER = os.getenv("ADGUARD_USER", "")
 ADGUARD_PASS = os.getenv("ADGUARD_PASS", "")
@@ -93,6 +96,21 @@ class _PortainerPinnedAdapter(requests.adapters.HTTPAdapter):
 
 
 def _portainer_request(method: str, path: str, timeout: float):
+    if LIFECYCLE_URL:
+        parsed = urlsplit(LIFECYCLE_URL)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+            raise ValueError("Lifecycle gateway requires an HTTPS origin")
+        if not LIFECYCLE_API_KEY or not LIFECYCLE_CA_FILE:
+            raise ValueError("Lifecycle gateway requires credentials and a trusted certificate")
+        with requests.Session() as session:
+            session.trust_env = False
+            return session.request(
+                method, f"{LIFECYCLE_URL.rstrip('/')}{path}",
+                headers={"X-API-Key": LIFECYCLE_API_KEY}, timeout=timeout,
+                verify=LIFECYCLE_CA_FILE, allow_redirects=False,
+            )
+    # Explicit legacy local-development mode only; never fall back after failure.
     if urlsplit(PORTAINER_URL).scheme != "https":
         raise ValueError("Portainer requires an HTTPS URL")
     # Sessions are request-local: FastAPI handlers run in multiple threads.
@@ -367,6 +385,7 @@ def _parse_container(c: dict, host: str, eid: int) -> dict:
         "host":   host,
         "eid":    eid,
         "ports":  ports,
+        "critical": bool(c.get("LifecycleCritical", False)),
     }
 
 def portainer_containers() -> tuple[list[dict], bool]:
@@ -396,7 +415,7 @@ def get_containers() -> tuple[list[dict], str]:
     """Return (containers, source): 'portainer' (data), 'none' (not
     configured / empty), or 'error' (configured but unreachable)."""
     containers, ok = portainer_containers()
-    if PORTAINER_API_KEY and not ok:
+    if (PORTAINER_API_KEY or LIFECYCLE_URL) and not ok:
         return containers, "error"
     if containers:
         return containers, "portainer"
@@ -406,6 +425,8 @@ def get_containers() -> tuple[list[dict], str]:
 
 def container_action(cid: str, action: str, eid: int | None = None) -> tuple[bool, str]:
     """Start, stop, or restart a container via Portainer."""
+    if action not in ("start", "stop", "restart") or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", cid):
+        return False, "invalid container action"
     if eid is None:
         eids = get_eids()
         eid  = eids[0] if eids else None
