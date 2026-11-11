@@ -1,7 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 import homelab_core as core
@@ -35,6 +35,14 @@ class LifecycleClientTests(unittest.TestCase):
                 core._portainer_request("GET", "/api/endpoints", 3)
         factory.assert_not_called()
 
+    def test_missing_gateway_does_not_use_legacy_admin_configuration(self):
+        with patch.object(core, "LIFECYCLE_URL", ""), \
+                patch.dict("os.environ", {"PORTAINER_URL": "https://portainer.invalid", "PORTAINER_API_KEY": "admin-fixture"}), \
+                patch.object(core.requests, "Session") as factory:
+            with self.assertRaises(ValueError):
+                core._portainer_request("GET", "/api/endpoints", 3)
+        factory.assert_not_called()
+
     def test_action_validation_before_network(self):
         with patch.object(core, "_portainer_request") as send:
             for cid, action in (("fixture", "exec"), ("../fixture", "stop"), ("name?x=1", "start")):
@@ -47,7 +55,6 @@ class LifecycleClientTests(unittest.TestCase):
 
     def test_gateway_failure_is_reported_not_empty_or_direct_fallback(self):
         with patch.object(core, "LIFECYCLE_URL", "https://lifecycle-gateway:8443"), \
-                patch.object(core, "PORTAINER_API_KEY", ""), \
                 patch.object(core, "portainer_containers", return_value=([], False)):
             self.assertEqual(core.get_containers(), ([], "error"))
 

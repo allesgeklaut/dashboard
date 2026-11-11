@@ -452,39 +452,6 @@ mounts only its public certificate at `/run/secrets/lifecycle-server.pem`;
 hostname verification and certificate verification are required. Recreate the
 dashboard after env-file changes: restarting alone does not reload them.
 
-### Legacy direct Portainer access (local development only)
-
-Portainer → username (top right) → My account → Access tokens → Add access token
-
-The instructions below do **not** apply to production Compose. Never add a
-Portainer administrator token to the production dashboard. Direct access is
-available only when `LIFECYCLE_URL` is absent.
-
-### Direct Portainer HTTPS verification (local development only)
-
-For deliberate direct-API development, set `PORTAINER_URL`, `PORTAINER_API_KEY`
-and optionally `PORTAINER_CA_FILE` in the local development environment. Do not
-reuse or distribute the production administrator token.
-
-Place **one trusted Portainer server certificate**, never a private key or a
-general CA bundle, at `/opt/secrets/portainer-ca.pem`. Obtain it through a
-trusted channel, not from an unverified network connection. Set
-`PORTAINER_CA_FILE` to that file; it is not mounted by production Compose.
-
-The dashboard requires HTTPS and pins the certificate's SHA256 fingerprint
-while also requiring certificate verification against that PEM. Exact
-certificate identity replaces hostname matching for Portainer's existing
-localhost-only self-signed certificate. The configured URL must still reach
-Portainer (a container's `localhost` is not the host's loopback). Missing,
-unreadable, invalid, expired, or changed certificates fail closed; redirects
-are not followed and no integration falls back to `verify=False`.
-
-For local development, `PORTAINER_CA_FILE` can point at the same trusted
-server certificate. When unset, Portainer uses ordinary Requests CA and
-hostname verification instead. This trust setting applies only to Portainer;
-other integrations keep their existing TLS behavior. When rotating the
-server certificate, update the trusted PEM too.
-
 ---
 
 ## 2 — Build & Run

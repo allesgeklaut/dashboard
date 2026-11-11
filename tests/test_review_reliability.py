@@ -126,7 +126,7 @@ class IntegrationOutageTests(unittest.TestCase):
         ok_response = Mock(ok=True, json=lambda: [{"Id": "fixture" * 10, "Names": ["/fixture"],
                                                    "State": "running", "Status": "Up",
                                                    "Image": "fixture/img:1", "Ports": []}])
-        with patch.object(core, "PORTAINER_API_KEY", "fixture-key"):
+        with patch.object(core, "LIFECYCLE_URL", "https://gateway.invalid"):
             with patch.object(core, "_eids", [1]), \
                     patch.object(core, "_portainer_request", side_effect=OSError("mock outage")):
                 self.assertEqual(core.get_containers(), ([], "error"))
@@ -141,7 +141,7 @@ class IntegrationOutageTests(unittest.TestCase):
                                  side_effect=[ok_response, OSError("mock outage")]):
                 containers, source = core.get_containers()
                 self.assertEqual((len(containers), source), (1, "portainer"))
-        with patch.object(core, "PORTAINER_API_KEY", ""), \
+        with patch.object(core, "LIFECYCLE_URL", ""), \
                 patch.object(core, "get_eids", return_value=[]):
             self.assertEqual(core.get_containers(), ([], "none"))
 
