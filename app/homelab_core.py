@@ -2,8 +2,6 @@
 from __future__ import annotations
 import os, re, socket, threading, time, json
 import math
-import hashlib
-import ssl
 import logging
 import tempfile
 from datetime import datetime, timedelta
@@ -24,10 +22,9 @@ import security_report
 _log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PORTAINER_URL     = os.getenv("PORTAINER_URL", "https://192.168.0.46:9443")
-PORTAINER_API_KEY = os.getenv("PORTAINER_API_KEY", "")
-PORTAINER_CA_FILE = os.getenv("PORTAINER_CA_FILE", "").strip()
-PORTAINER_ENVS: list[int] | None = None  # None = auto-discover; or e.g. [1, 2]
+LIFECYCLE_URL = os.getenv("LIFECYCLE_URL", "").strip()
+LIFECYCLE_API_KEY = os.getenv("LIFECYCLE_API_KEY", "")
+LIFECYCLE_CA_FILE = os.getenv("LIFECYCLE_CA_FILE", "").strip()
 ADGUARD_URL  = os.getenv("ADGUARD_URL")          # None if not set → feature disabled
 ADGUARD_USER = os.getenv("ADGUARD_USER", "")
 ADGUARD_PASS = os.getenv("ADGUARD_PASS", "")
@@ -75,43 +72,20 @@ WOL_DESKTOP_MAC   = _WOL_RAW_MAC if _WOL_RAW_MAC and not WOL_MAC_ERROR else None
 WOL_DESKTOP_IP    = os.getenv("WOL_DESKTOP_IP")           # None → status probe disabled
 DESKTOP_SPOOL_DIR = os.getenv("DESKTOP_SPOOL_DIR")        # None → wake/poweroff disabled
 
-_HDR = {"X-API-Key": PORTAINER_API_KEY}
-
-
-class _PortainerPinnedAdapter(requests.adapters.HTTPAdapter):
-    """Match the exact server certificate instead of its localhost-only SAN."""
-
-    def __init__(self, fingerprint: str):
-        self._fingerprint = fingerprint
-        super().__init__()
-
-    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
-        # urllib3 checks this fingerprint instead of the hostname, while
-        # requests still requires certificate verification against our PEM.
-        pool_kwargs["assert_fingerprint"] = self._fingerprint
-        return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
-
-
 def _portainer_request(method: str, path: str, timeout: float):
-    if urlsplit(PORTAINER_URL).scheme != "https":
-        raise ValueError("Portainer requires an HTTPS URL")
+    parsed = urlsplit(LIFECYCLE_URL)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+            or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+        raise ValueError("Lifecycle gateway requires an HTTPS origin")
+    if not LIFECYCLE_API_KEY or not LIFECYCLE_CA_FILE:
+        raise ValueError("Lifecycle gateway requires credentials and a trusted certificate")
     # Sessions are request-local: FastAPI handlers run in multiple threads.
     with requests.Session() as session:
         session.trust_env = False  # no proxy, netrc, or environment CA overrides
-        if PORTAINER_CA_FILE:
-            with open(PORTAINER_CA_FILE, encoding="ascii") as fh:
-                certificate = fh.read()
-            if (certificate.count("-----BEGIN CERTIFICATE-----") != 1
-                    or certificate.count("-----END CERTIFICATE-----") != 1):
-                raise ValueError("Portainer pin must contain exactly one server certificate")
-            fingerprint = hashlib.sha256(
-                ssl.PEM_cert_to_DER_cert(certificate)
-            ).hexdigest()
-            session.mount("https://", _PortainerPinnedAdapter(fingerprint))
         return session.request(
-            method, f"{PORTAINER_URL.rstrip('/')}{path}", headers=_HDR,
-            timeout=timeout, verify=PORTAINER_CA_FILE or True,
-            allow_redirects=False,
+            method, f"{LIFECYCLE_URL.rstrip('/')}{path}",
+            headers={"X-API-Key": LIFECYCLE_API_KEY}, timeout=timeout,
+            verify=LIFECYCLE_CA_FILE, allow_redirects=False,
         )
 
 
@@ -329,10 +303,6 @@ def get_eids() -> list[int]:
     with _eid_lock:
         if _eids is not None:
             return _eids
-    if PORTAINER_ENVS:
-        with _eid_lock:
-            _eids = list(PORTAINER_ENVS)
-        return _eids
     try:
         r = _portainer_request("GET", "/api/endpoints", timeout=3)
         if r.ok and r.json():
@@ -367,6 +337,7 @@ def _parse_container(c: dict, host: str, eid: int) -> dict:
         "host":   host,
         "eid":    eid,
         "ports":  ports,
+        "critical": bool(c.get("LifecycleCritical", False)),
     }
 
 def portainer_containers() -> tuple[list[dict], bool]:
@@ -396,7 +367,7 @@ def get_containers() -> tuple[list[dict], str]:
     """Return (containers, source): 'portainer' (data), 'none' (not
     configured / empty), or 'error' (configured but unreachable)."""
     containers, ok = portainer_containers()
-    if PORTAINER_API_KEY and not ok:
+    if LIFECYCLE_URL and not ok:
         return containers, "error"
     if containers:
         return containers, "portainer"
@@ -406,6 +377,8 @@ def get_containers() -> tuple[list[dict], str]:
 
 def container_action(cid: str, action: str, eid: int | None = None) -> tuple[bool, str]:
     """Start, stop, or restart a container via Portainer."""
+    if action not in ("start", "stop", "restart") or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", cid):
+        return False, "invalid container action"
     if eid is None:
         eids = get_eids()
         eid  = eids[0] if eids else None

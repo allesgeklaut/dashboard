@@ -15,8 +15,9 @@ services:
       - HOMELAB_LIVEBENCH_ENABLED=${HOMELAB_LIVEBENCH_ENABLED:-false}
       - HOST_NAME=${SYS_HOST_NAME}   # show real host identity (container runs on a bridge net)
       - HOST_IP=${SYS_HOST_IP}
-      # Exact self-signed Portainer server certificate (not a private key).
-      - PORTAINER_CA_FILE=/run/secrets/portainer-ca.pem
+      # Restricted lifecycle gateway; no Portainer admin credential in this app.
+      - LIFECYCLE_URL=https://lifecycle-gateway:8443
+      - LIFECYCLE_CA_FILE=/run/secrets/lifecycle-server.pem
       - LITELLM_CONFIG_FILE=/run/litellm/config.yaml
       # SECURITY tab — host security-watch report directory, read-only.
       - SECURITY_REPORT_DIR=/run/security-watch
@@ -41,8 +42,8 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: /opt/secrets/portainer-ca.pem
-        target: /run/secrets/portainer-ca.pem
+        source: /opt/secrets/lifecycle-server.pem
+        target: /run/secrets/lifecycle-server.pem
         read_only: true
         bind:
           create_host_path: false
@@ -71,4 +72,10 @@ services:
       - /sys/class/hwmon:/sys/class/hwmon:ro          # AMD GPU hwmon (temp, fan, power)
     env_file:
       - /opt/secrets/dashboard.env
-      - /opt/secrets/portainer.env
+      - /opt/secrets/lifecycle-dashboard.env
+    networks: [default, lifecycle_control]
+
+networks:
+  lifecycle_control:
+    external: true
+    name: lifecycle_control

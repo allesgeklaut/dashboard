@@ -4798,6 +4798,8 @@ function updateActionBar() {
 async function doAction(action) {
   if (!selected || busy || !_containersFresh) return;
   const target = selected;
+  if (target.critical && (action === 'stop' || action === 'restart') &&
+      !window.confirm(`${action} ${target.name} on ${target.host}? This is infrastructure. You may lose dashboard, DNS or container-management access. Recovery may require host SSH.`)) return;
   busy = true;
   updateActionBar();
   const eid = target.eid ?? 'null';

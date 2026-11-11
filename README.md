@@ -54,11 +54,7 @@ persisted before network work, survives restarts, and is shared by the legacy
 refresh endpoint too. A run can require multiple feed/page requests and bounded
 HTTP retries. Cached scores remain readable during the cooldown.
 
-Docker loads credentials from `/opt/secrets/dashboard.env` and
-`/opt/secrets/portainer.env`, not the repository's local-development `.env`.
-It mounts the trusted Portainer server certificate read-only from
-`/opt/secrets/portainer-ca.pem`. Portainer HTTPS verifies that exact certificate
-and refuses redirects; see [SETUP.md](SETUP.md#portainer-https-verification).
+For container-control credentials and TLS setup, see [LIFECYCLE.md](LIFECYCLE.md).
 
 The main Compose file includes the AI Services inventory and its read-only
 LiteLLM configuration mount:
