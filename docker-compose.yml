@@ -19,6 +19,8 @@ services:
       - LIFECYCLE_URL=https://lifecycle-gateway:8443
       - LIFECYCLE_CA_FILE=/run/secrets/lifecycle-server.pem
       - LITELLM_CONFIG_FILE=/run/litellm/config.yaml
+      # Go subscription panel is opt-in; LiteLLM inventory stays configured.
+      - OPENCODE_GO_ENABLED=${OPENCODE_GO_ENABLED:-false}
       # SECURITY tab — host security-watch report directory, read-only.
       - SECURITY_REPORT_DIR=/run/security-watch
       # HEALTH tab — host server-health state directory, read-only.

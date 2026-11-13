@@ -68,9 +68,17 @@ and a Mistral console link preserved above it:
 
 - **OpenCode Go usage and limits** — the Go plan's rolling 5h / weekly /
   monthly usage plus the per-model limits table (est. requests per 5h and
-  monthly $). Usage is always visible; only **allowances · go plan** is collapsed
+  monthly $). When enabled, usage is shown without expanding anything; only
+  **allowances · go plan** is collapsed
   by default. Limits still come from the opencode docs source (1 h cache). Both
-  sections stay hidden when no key is available. Use the same token the CLI uses
+  sections are disabled by default. Set `OPENCODE_GO_ENABLED=true` in the
+  project `.env` or shell to enable them, then restart the local app or recreate
+  the container. For Compose, do not put this flag in
+  `/opt/secrets/dashboard.env`: the explicit Compose environment setting
+  overrides that file. The sections stay hidden when no key is available.
+  Setting the flag to `false` also prevents usage/limits requests, even with a
+  saved key. LiteLLM configuration and the inventory remain independent and
+  can be kept for future use. Use the same token the CLI uses
   (read it on the server from `~/.local/share/opencode/auth.json`, see
   `.env.example`); locally it can fall back to the dev machine's auth store
   (`OPENCODE_AUTH_FILE` overrides the path). Usage polls only while the page

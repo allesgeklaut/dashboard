@@ -51,6 +51,25 @@ def state_with(entries_by_source):
     return state
 
 
+class OpenCodeGoToggleTests(unittest.TestCase):
+    def test_disabled_ignores_saved_key_and_blocks_requests(self):
+        with patch.object(core, "OPENCODE_GO_ENABLED", False), \
+             patch.object(core, "OPENCODE_GO_API_KEY", "saved-key"), \
+             patch("builtins.open") as auth_file, \
+             patch.object(core.requests, "get") as request:
+            self.assertIsNone(core._read_opencode_go_key())
+            self.assertFalse(core.get_features()["opencode_go"])
+            self.assertEqual(core.get_opencode_go_usage(), {"error": "not configured"})
+            self.assertEqual(core.get_opencode_go_limits(), {"error": "not configured"})
+            auth_file.assert_not_called()
+            request.assert_not_called()
+
+    def test_enabled_uses_existing_key(self):
+        with patch.object(core, "OPENCODE_GO_ENABLED", True), \
+             patch.object(core, "OPENCODE_GO_API_KEY", "saved-key"):
+            self.assertEqual(core._read_opencode_go_key(), "saved-key")
+
+
 class MistralCompatibilityTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()

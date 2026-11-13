@@ -9,7 +9,7 @@ responsive browser UI, and optional integrations controlled by environment setti
 - Portainer container status and start/stop/restart controls.
 - Optional AdGuard, Shelly energy/power, llama.cpp, and Ollama monitoring.
 - Optional host-side streaming and desktop wake/power controls.
-- AI Services tab: always-visible OpenCode Go usage, collapsed allowances, a
+- AI Services tab: opt-in OpenCode Go usage, collapsed allowances, a
   Mistral console link, and one LiteLLM-backed inventory table grouped by upstream
   model and mode. A dropdown selects its single benchmark score column.
 - Versioned benchmark snapshots from Harbor Terminal-Bench 4 and Epoch ECI by

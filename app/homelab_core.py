@@ -39,6 +39,7 @@ STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature 
 SECURITY_REPORT_DIR = os.getenv("SECURITY_REPORT_DIR")  # None if not set → feature disabled
 HEALTH_REPORT_DIR = os.getenv("HEALTH_REPORT_DIR")  # None if not set → feature disabled
 # ── OpenCode Go usage (opencode go card) ─────────────────────────────────────
+OPENCODE_GO_ENABLED = os.getenv("OPENCODE_GO_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 # The key normally comes from OPENCODE_GO_API_KEY.  For local development the
 # fallback reads opencode's own auth store (the same token the CLI uses) —
 # the server container should get the env var instead (see .env.example).
@@ -515,7 +516,9 @@ _opencode_cache: dict = {"ts": 0.0, "data": None}
 
 def _read_opencode_go_key() -> str | None:
     """Resolve the OpenCode Go API key: OPENCODE_GO_API_KEY if set, else the
-    'opencode-go' entry in opencode's auth store.  None if neither exists."""
+    'opencode-go' entry in opencode's auth store. None if disabled or neither exists."""
+    if not OPENCODE_GO_ENABLED:
+        return None
     env_key = (OPENCODE_GO_API_KEY or "").strip()
     if env_key:
         return env_key
