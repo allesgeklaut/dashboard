@@ -1322,7 +1322,10 @@ async function fetchJSON(path) {
     const response = await apiFetch(path, { signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    setPollFresh(path, !data.error);
+    // LLM servers are stopped when unused: a current offline result is not
+    // stale data. Dashboard transport/HTTP failures still take the catch path.
+    const llmOffline = path === '/api/llama' && data.error === 'llama servers unreachable';
+    setPollFresh(path, !data.error || llmOffline);
     return data;
   } catch (error) {
     setPollFresh(path, false);
@@ -3688,7 +3691,8 @@ async function fetchLlama() {
   try {
     const d = await fetchJSON('/api/llama');
     if (d.error) {
-      document.getElementById('llama-state').textContent = 'UNREACHABLE';
+      document.getElementById('llama-state').textContent =
+        d.error === 'llama servers unreachable' ? 'OFFLINE' : 'UNREACHABLE';
       ['llama-gen', 'llama-gen-sub', 'llama-prefill', 'llama-tokens', 'llama-draft']
         .forEach(id => document.getElementById(id).textContent = '—');
       return;

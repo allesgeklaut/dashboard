@@ -86,6 +86,65 @@ function dashboard(options = {}) {
 
 const response = data => ({ ok: true, status: 200, json: async () => data });
 
+test('stopped LLM servers show offline without a stale warning and clear metrics', async () => {
+  const d = dashboard();
+  d.run('_features.llama = true');
+  d.element('llama-section').classList.add('poll-stale');
+  d.element('llama-gen').textContent = '42';
+  d.context.fetch = async () => response({error: 'llama servers unreachable'});
+  await d.run('fetchLlama()');
+  assert.equal(d.element('llama-state').textContent, 'OFFLINE');
+  assert.equal(d.element('llama-gen').textContent, '—');
+  assert.equal(d.element('llama-section').classList.contains('poll-stale'), false);
+});
+
+test('LLM recovers from offline to live metrics without a stale warning', async () => {
+  const d = dashboard();
+  d.run('_features.llama = true');
+  d.context.fetch = async () => response({error: 'llama servers unreachable'});
+  await d.run('fetchLlama()');
+  d.context.fetch = async () => response({
+    server: 'llama-server', phase: 'generation', gen_tps: 42,
+    gen_tps_avg: 40, tokens_predicted: 100, prompt_tps: 250,
+  });
+  await d.run('fetchLlama()');
+  assert.equal(d.element('llama-state').textContent, 'GENERATING');
+  assert.equal(d.element('llama-label').textContent, 'llm · llama-server');
+  assert.equal(d.element('llama-gen').textContent, '42.0');
+  assert.equal(d.element('llama-section').classList.contains('poll-stale'), false);
+});
+
+test('missing LLM configuration remains unreachable and stale', async () => {
+  const d = dashboard();
+  d.run('_features.llama = true');
+  d.context.fetch = async () => response({error: 'no llama server configured'});
+  await d.run('fetchLlama()');
+  assert.equal(d.element('llama-state').textContent, 'UNREACHABLE');
+  assert.equal(d.element('llama-section').classList.contains('poll-stale'), true);
+});
+
+test('LLM dashboard transport, HTTP, and other source errors still mark data stale', async () => {
+  const d = dashboard();
+  d.run('_features.llama = true');
+  for (const fetch of [
+    async () => { throw new Error('network down'); },
+    async () => ({ok: false, status: 503}),
+    async () => response({error: 'unexpected failure'}),
+  ]) {
+    d.element('llama-section').classList.remove('poll-stale');
+    d.context.fetch = fetch;
+    await d.run('fetchLlama()');
+    assert.equal(d.element('llama-section').classList.contains('poll-stale'), true);
+  }
+});
+
+test('unreachable errors outside the LLM pane still mark data stale', async () => {
+  const d = dashboard();
+  d.context.fetch = async () => response({error: 'llama servers unreachable'});
+  await d.run("fetchJSON('/api/stats')");
+  assert.equal(d.element('stat-grid').classList.contains('poll-stale'), true);
+});
+
 test('mutations carry the mandatory header; reads do not', async () => {
   const d = dashboard();
   const requests = [];
