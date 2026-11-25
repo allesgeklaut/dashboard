@@ -35,6 +35,8 @@ OLLAMA_URL = os.getenv("OLLAMA_URL")               # None if not set → feature
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → feature disabled
 LLAMA_BOLT_URL = os.getenv("LLAMA_BOLT_URL")              # None if not set → feature disabled
 LLAMA_COMPANION_URL = os.getenv("LLAMA_COMPANION_URL")    # None if not set → feature disabled
+STRATA_URL = os.getenv("STRATA_URL")                      # None if not set → feature disabled
+STRATA_API_KEY = os.getenv("STRATA_API_KEY")              # bearer for Strata's /metrics (not anonymous)
 STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
 SECURITY_REPORT_DIR = os.getenv("SECURITY_REPORT_DIR")  # None if not set → feature disabled
 HEALTH_REPORT_DIR = os.getenv("HEALTH_REPORT_DIR")  # None if not set → feature disabled
@@ -1426,31 +1428,49 @@ _LLM_TRACKED = (
     "llamacpp:tokens_predicted_total", "llamacpp:tokens_predicted_seconds_total",
     "llamacpp:prompt_tokens_total", "llamacpp:prompt_seconds_total",
 )
+# Strata publishes vLLM's metric names instead of llamacpp:'s — its own
+# counter set for restart detection and window deltas.
+_LLM_TRACKED_VLLM = (
+    "vllm:generation_tokens_total", "vllm:prompt_tokens_total",
+    "vllm:prefix_cache_hits_total",
+    "vllm:inter_token_latency_seconds_sum", "vllm:inter_token_latency_seconds_count",
+    "vllm:time_to_first_token_seconds_sum",
+)
 _LLM_LAST: dict[str, float] = {}
+_LLM_SCRAPE = {"t": 0.0}  # wall time of the previous scrape (vLLM has no /slots)
 _LLM_SLOT = {"id_task": None, "t": 0.0, "n_decoded": 0, "n_prompt": 0}
 _LLM_AVG: dict[str, float] = {}  # *_tokens_seconds gauges read 0 mid-request
 _LLM_COUNTERS: dict[str, float] = {}  # immediately preceding cumulative counters
 _LLM_ACTIVE = {"name": None}     # which instance the cached baselines belong to
 
-def _llm_restarted(m: dict[str, float]) -> bool:
+def _llm_restarted(m: dict[str, float], tracked: tuple[str, ...] = _LLM_TRACKED) -> bool:
     """Detect a decrease from the previous scrape, even after an initial zero."""
-    current = {k: m[k] for k in _LLM_TRACKED if k in m}
+    current = {k: m[k] for k in tracked if k in m}
     restarted = any(v < _LLM_COUNTERS.get(k, v) for k, v in current.items())
     _LLM_COUNTERS.update(current)
     return restarted
 
 def _parse_prometheus(text: str) -> dict[str, float]:
+    """Parse Prometheus text lines into {metric_name: value}.
+
+    llama.cpp answers unlabeled, Strata/vLLM label every series (model_name=…)
+    — strip the {…} block so both dialects key by the bare metric name.
+    Several series with one name collapse to the last line: fine for the
+    single-model deployments behind this probe, wrong for multi-series labels.
+    """
     out: dict[str, float] = {}
     for line in text.splitlines():
         if not line or line[0] in "# \t":
             continue
-        name, sep, value = line.rpartition("}")
-        if sep:
-            name = name.rsplit(" ", 1)[0]
+        name, brace, rest = line.partition("{")
+        if brace:
+            _, close, value = rest.partition("}")
+            if not close:
+                continue
         else:
             name, _, value = line.rpartition(" ")
         try:
-            out[name] = float(value.strip())
+            out[name.strip()] = float(value.strip())
         except ValueError:
             continue
     return out
@@ -1497,56 +1517,157 @@ def _slot_rates(slots: list, now: float) -> tuple[float | None, float | None, st
     _LLM_SLOT.update(id_task=task, t=now, n_decoded=n_dec, n_prompt=n_pr)
     return gen_tps, prompt_tps, ("generation" if n_dec > 0 else "prompt")
 
-def get_llama() -> dict:
-    """Scrape /metrics + /slots from whichever llama instance is up.
+def _vllm_stats(m: dict[str, float], prev: dict[str, float], name: str, dt: float) -> dict:
+    """Map Strata's vLLM-named counters onto the llama card's fields.
 
-    llama-server, llama-bolt and llama-companion expose the same stacks but
-    normally only one runs at a time (they share the GPU), so probe them in
-    order and use the first that responds.  Returns
-    ``{"server", "url", "running", ...}`` or ``{"error": ...}``.
+    vLLM has no /slots-style live feed, so the live tok/s comes from counter
+    deltas between scrapes (generation_tokens_total advances every scheduler
+    step, so a 2 s poll sees many steps — a real rate, unlike llama.cpp's
+    batched prompt counters).  Window averages come from the *_seconds
+    histograms: Δcount/Δsum is mean tokens/s for inter-token latency, and the
+    cumulative ratio serves as the idle-time fallback, mirroring the lifetime
+    averages llama.cpp exposes.
     """
-    candidates = [(name, url.rstrip("/")) for name, url in (
-        ("llama-server",    LLAMA_SERVER_URL),
-        ("llama-bolt",      LLAMA_BOLT_URL),
-        ("llama-companion", LLAMA_COMPANION_URL),
+    gen    = m.get("vllm:generation_tokens_total", 0)
+    prompt = m.get("vllm:prompt_tokens_total", 0)
+    d_gen    = gen    - prev.get("vllm:generation_tokens_total", 0) if prev else 0
+    d_prompt = prompt - prev.get("vllm:prompt_tokens_total", 0) if prev else 0
+
+    gen_tps    = d_gen / dt    if dt > 0.2 and d_gen    > 0 else None
+
+    itl_sum = m.get("vllm:inter_token_latency_seconds_sum", 0)
+    itl_cnt = m.get("vllm:inter_token_latency_seconds_count", 0)
+    d_itl_sum = itl_sum - prev.get("vllm:inter_token_latency_seconds_sum", 0) if prev else itl_sum
+    d_itl_cnt = itl_cnt - prev.get("vllm:inter_token_latency_seconds_count", 0) if prev else itl_cnt
+    gen_avg = d_itl_cnt / d_itl_sum if d_itl_cnt > 0 and d_itl_sum > 0 else None
+    if gen_avg is None and itl_cnt > 0 and itl_sum > 0:
+        gen_avg = itl_cnt / itl_sum  # idle window → lifetime ratio, like llama.cpp's gauge
+
+    # prefill speed over the window, counting only tokens that actually ran
+    # through prefill: prefix-cache hits sit in prompt_tokens_total but cost
+    # ~no time (an agent session re-sends cached context at >90% hits, so
+    # dividing ALL prompt tokens by TTFT time reads tens of thousands of t/s)
+    hits = m.get("vllm:prefix_cache_hits_total", 0)
+    d_hits = hits - prev.get("vllm:prefix_cache_hits_total", 0) if prev else 0
+    d_uncached = d_prompt - d_hits
+    ttft_sum = m.get("vllm:time_to_first_token_seconds_sum", 0)
+    d_ttft_sum = ttft_sum - prev.get("vllm:time_to_first_token_seconds_sum", 0) if prev else ttft_sum
+    if d_uncached > 0 and d_ttft_sum > 0:
+        prompt_tps = prompt_avg = d_uncached / d_ttft_sum
+    else:
+        # window without a timed prefill: still count only uncached tokens —
+        # the old all-prompt-tokens fallback read 15k t/s on cached agent prompts
+        prompt_tps = d_uncached / dt if dt > 0.2 and d_uncached > 0 else None
+        prompt_avg = None
+    if prompt_avg:
+        _LLM_AVG["prompt"] = prompt_avg
+
+    running = m.get("vllm:num_requests_running", 0)
+    waiting = m.get("vllm:num_requests_waiting", 0)
+    if d_gen > 0:
+        phase = "generation"
+    elif d_prompt > 0:
+        phase = "prompt"
+    elif running > 0:
+        phase = "processing"
+    else:
+        phase = "idle"
+
+    draft    = m.get("vllm:spec_decode_num_draft_tokens_total", 0)
+    accepted = m.get("vllm:spec_decode_num_accepted_tokens_total", 0)
+    q_hits    = m.get("vllm:prefix_cache_hits_total", 0)
+    q_queries = m.get("vllm:prefix_cache_queries_total", 0)
+    return {
+        "server":              name,
+        "running":             True,
+        "phase":               phase,
+        "gen_tps":             gen_tps,
+        "gen_tps_avg":         gen_avg or _LLM_AVG.get("gen"),
+        "prompt_tps":          prompt_tps,
+        "prompt_tps_avg":      prompt_avg or _LLM_AVG.get("prompt"),
+        "tokens_predicted":    int(gen),
+        "prompt_tokens":       int(prompt),
+        "requests_processing": int(running),
+        "requests_deferred":   int(waiting),
+        "draft_accept":        (accepted / draft) if draft > 0 else None,
+        "draft_tokens":        int(draft),
+        "cache_hit":           (q_hits / q_queries) if q_queries > 0 else None,
+    }
+
+
+def get_llama() -> dict:
+    """Scrape /metrics (+ /slots where available) from whichever LLM is up.
+
+    llama-server, llama-bolt and llama-companion expose the same llama.cpp
+    metrics and normally only one runs at a time (they share the GPU), so
+    probe them in order and use the first that responds.  Strata — the MoE
+    tenant that alternates with them on the card — speaks vLLM's metric names,
+    answers plain /metrics with JSON (its web monitor) so Prometheus text must
+    be requested explicitly, guards /metrics with a bearer key, and has no
+    /slots; its counters are mapped onto the same result fields.  Returns
+    ``{"server", "running", ...}`` or ``{"error": ...}`` — never the URL.
+    """
+    candidates = [(name, url.rstrip("/"), dialect) for name, url, dialect in (
+        ("llama-server",    LLAMA_SERVER_URL,    "llamacpp"),
+        ("llama-bolt",      LLAMA_BOLT_URL,      "llamacpp"),
+        ("llama-companion", LLAMA_COMPANION_URL, "llamacpp"),
+        ("strata",          STRATA_URL,          "vllm"),
     ) if url]
     if not candidates:
         return {"error": "no llama server configured"}
 
-    for name, base in candidates:
+    for name, base, dialect in candidates:
         try:
-            r = requests.get(f"{base}/metrics", timeout=3)
-            r.raise_for_status()
-            m = _parse_prometheus(r.text)
-            slots = requests.get(f"{base}/slots", timeout=3).json()
-            if not isinstance(slots, list):
+            if dialect == "vllm":
+                # same dialect query + bearer key litellm's idle probe uses
+                headers = {"Authorization": f"Bearer {STRATA_API_KEY}"} if STRATA_API_KEY else {}
+                r = requests.get(f"{base}/metrics?format=prometheus", timeout=3, headers=headers)
+                r.raise_for_status()
+                m = _parse_prometheus(r.text)
                 slots = []
+            else:
+                r = requests.get(f"{base}/metrics", timeout=3)
+                r.raise_for_status()
+                m = _parse_prometheus(r.text)
+                slots = requests.get(f"{base}/slots", timeout=3).json()
+                if not isinstance(slots, list):
+                    slots = []
             break
         except Exception as exc:
             _log.debug("Llama probe failed (%s)", type(exc).__name__)
     else:
         _LLM_LAST.clear()
+        _LLM_SCRAPE["t"] = 0.0
         return {"error": "llama servers unreachable"}
 
+    tracked = _LLM_TRACKED_VLLM if dialect == "vllm" else _LLM_TRACKED
     if _LLM_ACTIVE["name"] != name:
         # A different instance answered than last time (they alternate) — its
         # counters belong to an independent process, so drop every derived
         # baseline instead of computing deltas across two servers.
         _LLM_LAST.clear(); _LLM_AVG.clear(); _LLM_COUNTERS.clear()
+        _LLM_SCRAPE["t"] = 0.0
         _LLM_SLOT.update(id_task=None, t=0.0, n_decoded=0, n_prompt=0)
         _LLM_ACTIVE["name"] = name
 
     prev = dict(_LLM_LAST)
-    _LLM_LAST.update({k: m[k] for k in _LLM_TRACKED if k in m})
+    _LLM_LAST.update({k: m[k] for k in tracked if k in m})
 
-    # If llama-server restarted, its counters reset to 0 — drop the old
+    # If the server restarted, its counters reset to 0 — drop the old
     # process's cached averages and slot deltas so we don't surface stale data.
-    if _llm_restarted(m):
+    if _llm_restarted(m, tracked):
         prev = {}  # never compute rates across a process restart
         _LLM_AVG.clear()
+        _LLM_SCRAPE["t"] = 0.0
         _LLM_SLOT.update(id_task=None, t=0.0, n_decoded=0, n_prompt=0)
 
     now = time.monotonic()
+    scrape_dt = now - _LLM_SCRAPE["t"] if _LLM_SCRAPE["t"] else 0.0
+    _LLM_SCRAPE["t"] = now
+
+    if dialect == "vllm":
+        return _vllm_stats(m, prev, name, scrape_dt)
+
     gen_tps, _, slot_phase = _slot_rates(slots, now)
 
     # /slots misses requests shorter than one poll — fall back to /metrics
@@ -1587,6 +1708,9 @@ def get_llama() -> dict:
 
     draft    = m.get("llamacpp:spec_decode_num_draft_tokens_total", 0)
     accepted = m.get("llamacpp:spec_decode_num_accepted_tokens_total", 0)
+    # prompt-cache counters only exist on newer llama.cpp builds — "—" if absent
+    p_queries = m.get("llamacpp:prompt_cache_queries_total", 0)
+    p_hits    = m.get("llamacpp:prompt_cache_hits_total", 0)
     return {
         "server":            name,
         "running":           True,
@@ -1601,6 +1725,7 @@ def get_llama() -> dict:
         "requests_deferred":   int(m.get("llamacpp:requests_deferred", 0)),
         "draft_accept":      (accepted / draft) if draft > 0 else None,
         "draft_tokens":      int(draft),
+        "cache_hit":         (p_hits / p_queries) if p_queries > 0 else None,
     }
 
 
@@ -1822,7 +1947,7 @@ def get_features() -> dict:
         "shelly2": bool(SHELLY_PLUG_2_URL),
         "adguard": bool(ADGUARD_URL),
         "ollama":  bool(OLLAMA_URL),
-        "llama":   bool(LLAMA_SERVER_URL or LLAMA_BOLT_URL or LLAMA_COMPANION_URL),
+        "llama":   bool(LLAMA_SERVER_URL or LLAMA_BOLT_URL or LLAMA_COMPANION_URL or STRATA_URL),
         "stream":  bool(STREAM_SPOOL_DIR),
         "security": _security_report_dir() is not None,
         "health": _health_report_dir() is not None,

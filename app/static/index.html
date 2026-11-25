@@ -966,6 +966,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
           <div class="ag-item"><span class="ag-label">PREFILL</span><span class="ag-val" id="llama-prefill">—</span></div>
           <div class="ag-item"><span class="ag-label">TOKENS</span><span class="ag-val" id="llama-tokens">—</span></div>
           <div class="ag-item"><span class="ag-label">DRAFT</span><span class="ag-val" id="llama-draft">—</span></div>
+          <div class="ag-item"><span class="ag-label">CACHE</span><span class="ag-val" id="llama-cache">—</span></div>
         </div>
       </div>
     </div>
@@ -3693,7 +3694,7 @@ async function fetchLlama() {
     if (d.error) {
       document.getElementById('llama-state').textContent =
         d.error === 'llama servers unreachable' ? 'OFFLINE' : 'UNREACHABLE';
-      ['llama-gen', 'llama-gen-sub', 'llama-prefill', 'llama-tokens', 'llama-draft']
+      ['llama-gen', 'llama-gen-sub', 'llama-prefill', 'llama-tokens', 'llama-draft', 'llama-cache']
         .forEach(id => document.getElementById(id).textContent = '—');
       return;
     }
@@ -3716,6 +3717,8 @@ async function fetchLlama() {
       String(d.tokens_predicted);
     document.getElementById('llama-draft').textContent =
       d.draft_accept != null ? (d.draft_accept * 100).toFixed(0) + '%' : '—';
+    document.getElementById('llama-cache').textContent =
+      d.cache_hit != null ? (d.cache_hit * 100).toFixed(0) + '%' : '—';
   } catch(e) { /* ignore */ }
 }
 
