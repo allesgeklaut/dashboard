@@ -1432,6 +1432,7 @@ _LLM_TRACKED = (
 # counter set for restart detection and window deltas.
 _LLM_TRACKED_VLLM = (
     "vllm:generation_tokens_total", "vllm:prompt_tokens_total",
+    "vllm:prefix_cache_hits_total",
     "vllm:inter_token_latency_seconds_sum", "vllm:inter_token_latency_seconds_count",
     "vllm:time_to_first_token_seconds_sum",
 )
@@ -1540,13 +1541,17 @@ def _vllm_stats(m: dict[str, float], prev: dict[str, float], name: str, dt: floa
     if gen_avg is None and itl_cnt > 0 and itl_sum > 0:
         gen_avg = itl_cnt / itl_sum  # idle window → lifetime ratio, like llama.cpp's gauge
 
-    # prefill speed over the window: prompt tokens ÷ first-token time spent on
-    # them (server-timed like llama.cpp's prompt gauge — the wall delta would
-    # divide a one-shot prefill by the whole poll interval and read ~0)
+    # prefill speed over the window, counting only tokens that actually ran
+    # through prefill: prefix-cache hits sit in prompt_tokens_total but cost
+    # ~no time (an agent session re-sends cached context at >90% hits, so
+    # dividing ALL prompt tokens by TTFT time reads tens of thousands of t/s)
+    hits = m.get("vllm:prefix_cache_hits_total", 0)
+    d_hits = hits - prev.get("vllm:prefix_cache_hits_total", 0) if prev else 0
+    d_uncached = d_prompt - d_hits
     ttft_sum = m.get("vllm:time_to_first_token_seconds_sum", 0)
     d_ttft_sum = ttft_sum - prev.get("vllm:time_to_first_token_seconds_sum", 0) if prev else ttft_sum
-    if d_prompt > 0 and d_ttft_sum > 0:
-        prompt_tps = prompt_avg = d_prompt / d_ttft_sum
+    if d_uncached > 0 and d_ttft_sum > 0:
+        prompt_tps = prompt_avg = d_uncached / d_ttft_sum
     else:
         prompt_tps = d_prompt / dt if dt > 0.2 and d_prompt > 0 else None
         prompt_avg = None

@@ -87,11 +87,25 @@ class PersistenceAndLlamaTests(unittest.TestCase):
         self.assertIsNone(result["gen_tps_avg"])
         self.assertTrue(all(call.args[0] == {} for call in rate.call_args_list))
 
+    def test_strata_prefill_excludes_prefix_cache_hits(self):
+        # 900 prompt tokens arrived, 800 of them were cache hits → only 100
+        # tokens of real prefill over 10 s of TTFT time = 10 t/s, not 90.
+        cur = {"vllm:generation_tokens_total": 10, "vllm:prompt_tokens_total": 1600,
+               "vllm:prefix_cache_hits_total": 900,
+               "vllm:time_to_first_token_seconds_sum": 12.0}
+        prev = {"vllm:prompt_tokens_total": 1100, "vllm:prefix_cache_hits_total": 500,
+                "vllm:time_to_first_token_seconds_sum": 2.0}
+        with patch.object(core, "_LLM_AVG", {}):
+            stats = core._vllm_stats(cur, prev, "strata", 2.0)
+        self.assertEqual(stats["prompt_tps"], 10.0)
+        self.assertEqual(stats["prompt_tps_avg"], 10.0)
+
     def test_strata_metrics_map_onto_the_llama_card_fields(self):
         # Strata/vLLM label every series — the bare metric name must survive.
         metrics = Mock(text=(
             'vllm:generation_tokens_total{model_name="strata-fixture"} 500\n'
             'vllm:prompt_tokens_total{model_name="strata-fixture"} 1000\n'
+            'vllm:prefix_cache_hits_total{model_name="strata-fixture"} 900\n'
             'vllm:num_requests_running{model_name="strata-fixture"} 1\n'
             'vllm:num_requests_waiting{model_name="strata-fixture"} 0\n'
             'vllm:inter_token_latency_seconds_sum{model_name="strata-fixture"} 20\n'
