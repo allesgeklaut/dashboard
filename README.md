@@ -7,7 +7,7 @@ responsive browser UI, and optional integrations controlled by environment setti
 
 - Host CPU, RAM, GPU, network, storage, and process monitoring.
 - Portainer container status and start/stop/restart controls.
-- Optional AdGuard, Shelly energy/power, llama.cpp, and Ollama monitoring.
+- Optional AdGuard, Shelly energy/power, llama.cpp (incl. the Strata MoE tenant), and Ollama monitoring.
 - Optional host-side streaming and desktop wake/power controls.
 - AI Services tab: opt-in OpenCode Go usage, collapsed allowances, a
   Mistral console link, and one LiteLLM-backed inventory table grouped by upstream
