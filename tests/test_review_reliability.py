@@ -88,7 +88,7 @@ class PersistenceAndLlamaTests(unittest.TestCase):
         self.assertTrue(all(call.args[0] == {} for call in rate.call_args_list))
 
     def test_strata_prefill_excludes_prefix_cache_hits(self):
-        # 900 prompt tokens arrived, 800 of them were cache hits → only 100
+        # 500 prompt tokens arrived, 400 of them were cache hits → only 100
         # tokens of real prefill over 10 s of TTFT time = 10 t/s, not 90.
         cur = {"vllm:generation_tokens_total": 10, "vllm:prompt_tokens_total": 1600,
                "vllm:prefix_cache_hits_total": 900,
@@ -99,6 +99,29 @@ class PersistenceAndLlamaTests(unittest.TestCase):
             stats = core._vllm_stats(cur, prev, "strata", 2.0)
         self.assertEqual(stats["prompt_tps"], 10.0)
         self.assertEqual(stats["prompt_tps_avg"], 10.0)
+
+    def test_strata_prefill_never_counts_cached_tokens_in_fallback(self):
+        common = {"vllm:generation_tokens_total": 10}
+        # fully cached window: every arriving prompt token was a hit → no rate
+        cur = dict(common, **{"vllm:prompt_tokens_total": 1500,
+                              "vllm:prefix_cache_hits_total": 1500,
+                              "vllm:time_to_first_token_seconds_sum": 1.1})
+        prev = dict(common, **{"vllm:prompt_tokens_total": 1000,
+                               "vllm:prefix_cache_hits_total": 1000,
+                               "vllm:time_to_first_token_seconds_sum": 1.0})
+        with patch.object(core, "_LLM_AVG", {}):
+            stats = core._vllm_stats(cur, prev, "strata", 2.0)
+        self.assertIsNone(stats["prompt_tps"])
+        self.assertIsNone(stats["prompt_tps_avg"])
+        # cached prompt scheduled but first token not yet timed (ΔTTFT == 0):
+        # the 1000 uncached tokens, never the 29000 hits, may yield a rate
+        cur = {"vllm:prompt_tokens_total": 30000, "vllm:prefix_cache_hits_total": 29000,
+               "vllm:time_to_first_token_seconds_sum": 5.0, "vllm:generation_tokens_total": 0}
+        prev = {"vllm:prompt_tokens_total": 0, "vllm:prefix_cache_hits_total": 0,
+                "vllm:time_to_first_token_seconds_sum": 5.0, "vllm:generation_tokens_total": 0}
+        with patch.object(core, "_LLM_AVG", {}):
+            stats = core._vllm_stats(cur, prev, "strata", 2.0)
+        self.assertEqual(stats["prompt_tps"], 500.0)   # 1000 uncached / 2 s, not 15000
 
     def test_strata_metrics_map_onto_the_llama_card_fields(self):
         # Strata/vLLM label every series — the bare metric name must survive.

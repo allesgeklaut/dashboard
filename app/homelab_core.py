@@ -1455,6 +1455,8 @@ def _parse_prometheus(text: str) -> dict[str, float]:
 
     llama.cpp answers unlabeled, Strata/vLLM label every series (model_name=…)
     — strip the {…} block so both dialects key by the bare metric name.
+    Several series with one name collapse to the last line: fine for the
+    single-model deployments behind this probe, wrong for multi-series labels.
     """
     out: dict[str, float] = {}
     for line in text.splitlines():
@@ -1553,7 +1555,9 @@ def _vllm_stats(m: dict[str, float], prev: dict[str, float], name: str, dt: floa
     if d_uncached > 0 and d_ttft_sum > 0:
         prompt_tps = prompt_avg = d_uncached / d_ttft_sum
     else:
-        prompt_tps = d_prompt / dt if dt > 0.2 and d_prompt > 0 else None
+        # window without a timed prefill: still count only uncached tokens —
+        # the old all-prompt-tokens fallback read 15k t/s on cached agent prompts
+        prompt_tps = d_uncached / dt if dt > 0.2 and d_uncached > 0 else None
         prompt_avg = None
     if prompt_avg:
         _LLM_AVG["prompt"] = prompt_avg
@@ -1601,7 +1605,7 @@ def get_llama() -> dict:
     answers plain /metrics with JSON (its web monitor) so Prometheus text must
     be requested explicitly, guards /metrics with a bearer key, and has no
     /slots; its counters are mapped onto the same result fields.  Returns
-    ``{"server", "url", "running", ...}`` or ``{"error": ...}``.
+    ``{"server", "running", ...}`` or ``{"error": ...}`` — never the URL.
     """
     candidates = [(name, url.rstrip("/"), dialect) for name, url, dialect in (
         ("llama-server",    LLAMA_SERVER_URL,    "llamacpp"),
