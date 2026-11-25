@@ -1571,6 +1571,8 @@ def _vllm_stats(m: dict[str, float], prev: dict[str, float], name: str, dt: floa
 
     draft    = m.get("vllm:spec_decode_num_draft_tokens_total", 0)
     accepted = m.get("vllm:spec_decode_num_accepted_tokens_total", 0)
+    q_hits    = m.get("vllm:prefix_cache_hits_total", 0)
+    q_queries = m.get("vllm:prefix_cache_queries_total", 0)
     return {
         "server":              name,
         "running":             True,
@@ -1585,6 +1587,7 @@ def _vllm_stats(m: dict[str, float], prev: dict[str, float], name: str, dt: floa
         "requests_deferred":   int(waiting),
         "draft_accept":        (accepted / draft) if draft > 0 else None,
         "draft_tokens":        int(draft),
+        "cache_hit":           (q_hits / q_queries) if q_queries > 0 else None,
     }
 
 
@@ -1701,6 +1704,9 @@ def get_llama() -> dict:
 
     draft    = m.get("llamacpp:spec_decode_num_draft_tokens_total", 0)
     accepted = m.get("llamacpp:spec_decode_num_accepted_tokens_total", 0)
+    # prompt-cache counters only exist on newer llama.cpp builds — "—" if absent
+    p_queries = m.get("llamacpp:prompt_cache_queries_total", 0)
+    p_hits    = m.get("llamacpp:prompt_cache_hits_total", 0)
     return {
         "server":            name,
         "running":           True,
@@ -1715,6 +1721,7 @@ def get_llama() -> dict:
         "requests_deferred":   int(m.get("llamacpp:requests_deferred", 0)),
         "draft_accept":      (accepted / draft) if draft > 0 else None,
         "draft_tokens":      int(draft),
+        "cache_hit":         (p_hits / p_queries) if p_queries > 0 else None,
     }
 
 

@@ -106,6 +106,7 @@ class PersistenceAndLlamaTests(unittest.TestCase):
             'vllm:generation_tokens_total{model_name="strata-fixture"} 500\n'
             'vllm:prompt_tokens_total{model_name="strata-fixture"} 1000\n'
             'vllm:prefix_cache_hits_total{model_name="strata-fixture"} 900\n'
+            'vllm:prefix_cache_queries_total{model_name="strata-fixture"} 2000\n'
             'vllm:num_requests_running{model_name="strata-fixture"} 1\n'
             'vllm:num_requests_waiting{model_name="strata-fixture"} 0\n'
             'vllm:inter_token_latency_seconds_sum{model_name="strata-fixture"} 20\n'
@@ -132,6 +133,7 @@ class PersistenceAndLlamaTests(unittest.TestCase):
         self.assertEqual(result["requests_processing"], 1)
         self.assertEqual(result["gen_tps_avg"], 20.0)     # 400 itl samples / 20 s of latency
         self.assertIsNone(result["draft_accept"])         # no speculative-decode counters
+        self.assertEqual(result["cache_hit"], 0.45)       # 900 hits / 2000 queries
 
 
 class CacheConcurrencyTests(unittest.TestCase):
