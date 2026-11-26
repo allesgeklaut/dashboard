@@ -36,7 +36,8 @@ LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL")          # None if not set → 
 LLAMA_BOLT_URL = os.getenv("LLAMA_BOLT_URL")              # None if not set → feature disabled
 LLAMA_COMPANION_URL = os.getenv("LLAMA_COMPANION_URL")    # None if not set → feature disabled
 STRATA_URL = os.getenv("STRATA_URL")                      # None if not set → feature disabled
-STRATA_API_KEY = os.getenv("STRATA_API_KEY")              # bearer for Strata's /metrics (not anonymous)
+STRATA_INKLING_URL = os.getenv("STRATA_INKLING_URL")      # None if not set → feature disabled
+STRATA_API_KEY = os.getenv("STRATA_API_KEY")              # bearer for both Strata tenants' /metrics (not anonymous)
 STREAM_SPOOL_DIR = os.getenv("STREAM_SPOOL_DIR")  # None if not set → feature disabled
 SECURITY_REPORT_DIR = os.getenv("SECURITY_REPORT_DIR")  # None if not set → feature disabled
 HEALTH_REPORT_DIR = os.getenv("HEALTH_REPORT_DIR")  # None if not set → feature disabled
@@ -1600,18 +1601,20 @@ def get_llama() -> dict:
 
     llama-server, llama-bolt and llama-companion expose the same llama.cpp
     metrics and normally only one runs at a time (they share the GPU), so
-    probe them in order and use the first that responds.  Strata — the MoE
-    tenant that alternates with them on the card — speaks vLLM's metric names,
-    answers plain /metrics with JSON (its web monitor) so Prometheus text must
-    be requested explicitly, guards /metrics with a bearer key, and has no
-    /slots; its counters are mapped onto the same result fields.  Returns
-    ``{"server", "running", ...}`` or ``{"error": ...}`` — never the URL.
+    probe them in order and use the first that responds.  The two Strata
+    tenants (Qwen and Inkling) alternate with them on the card, speak vLLM's
+    metric names, answer plain /metrics with JSON (their web monitor) so
+    Prometheus text must be requested explicitly, guard /metrics with a
+    bearer key, and have no /slots; their counters are mapped onto the same
+    result fields.  Returns ``{"server", "running", ...}`` or
+    ``{"error": ...}`` — never the URL.
     """
     candidates = [(name, url.rstrip("/"), dialect) for name, url, dialect in (
         ("llama-server",    LLAMA_SERVER_URL,    "llamacpp"),
         ("llama-bolt",      LLAMA_BOLT_URL,      "llamacpp"),
         ("llama-companion", LLAMA_COMPANION_URL, "llamacpp"),
         ("strata",          STRATA_URL,          "vllm"),
+        ("strata-inkling",  STRATA_INKLING_URL,  "vllm"),
     ) if url]
     if not candidates:
         return {"error": "no llama server configured"}
@@ -1947,7 +1950,8 @@ def get_features() -> dict:
         "shelly2": bool(SHELLY_PLUG_2_URL),
         "adguard": bool(ADGUARD_URL),
         "ollama":  bool(OLLAMA_URL),
-        "llama":   bool(LLAMA_SERVER_URL or LLAMA_BOLT_URL or LLAMA_COMPANION_URL or STRATA_URL),
+        "llama":   bool(LLAMA_SERVER_URL or LLAMA_BOLT_URL or LLAMA_COMPANION_URL
+                        or STRATA_URL or STRATA_INKLING_URL),
         "stream":  bool(STREAM_SPOOL_DIR),
         "security": _security_report_dir() is not None,
         "health": _health_report_dir() is not None,
