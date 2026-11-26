@@ -158,6 +158,40 @@ class PersistenceAndLlamaTests(unittest.TestCase):
         self.assertIsNone(result["draft_accept"])         # no speculative-decode counters
         self.assertEqual(result["cache_hit"], 0.45)       # 900 hits / 2000 queries
 
+    def test_strata_inkling_is_probed_when_the_qwen_tenant_is_down(self):
+        metrics = Mock(text=(
+            'vllm:generation_tokens_total{model_name="inkling-2-mini-sq-15"} 500\n'
+            'vllm:prompt_tokens_total{model_name="inkling-2-mini-sq-15"} 1000\n'
+            'vllm:num_requests_running{model_name="inkling-2-mini-sq-15"} 1\n'
+            'vllm:num_requests_waiting{model_name="inkling-2-mini-sq-15"} 0\n'
+        ))
+        with patch.object(core, "LLAMA_SERVER_URL", ""), \
+                patch.object(core, "LLAMA_BOLT_URL", ""), patch.object(core, "LLAMA_COMPANION_URL", ""), \
+                patch.object(core, "STRATA_URL", "https://strata.invalid"), \
+                patch.object(core, "STRATA_INKLING_URL", "https://strata-inkling.invalid"), \
+                patch.object(core, "STRATA_API_KEY", "fixture-key"), \
+                patch.object(core, "_LLM_LAST", {}), patch.object(core, "_LLM_COUNTERS", {}), \
+                patch.object(core, "_LLM_AVG", {}), patch.object(core, "_LLM_SCRAPE", {"t": 0.0}), \
+                patch.object(core, "_LLM_ACTIVE", {"name": None}), \
+                patch.object(core.requests, "get", side_effect=[OSError("qwen down"), metrics]) as get:
+            result = core.get_llama()
+        self.assertEqual(get.call_count, 2)
+        self.assertTrue(get.call_args.args[0].startswith(
+            "https://strata-inkling.invalid/metrics?format=prometheus"))
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer fixture-key")
+        self.assertEqual(result["server"], "strata-inkling")
+        self.assertEqual(result["phase"], "processing")
+        self.assertEqual(result["tokens_predicted"], 500)
+        self.assertEqual(result["prompt_tokens"], 1000)
+
+    def test_llama_feature_is_enabled_by_the_inkling_url_alone(self):
+        with patch.object(core, "LLAMA_SERVER_URL", ""), \
+                patch.object(core, "LLAMA_BOLT_URL", ""), \
+                patch.object(core, "LLAMA_COMPANION_URL", ""), \
+                patch.object(core, "STRATA_URL", ""), \
+                patch.object(core, "STRATA_INKLING_URL", "https://strata-inkling.invalid"):
+            self.assertTrue(core.get_features()["llama"])
+
 
 class CacheConcurrencyTests(unittest.TestCase):
     def test_usage_misses_are_coalesced(self):
