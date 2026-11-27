@@ -52,9 +52,10 @@ OPENCODE_AUTH_FILE   = os.getenv(
 )
 OPENCODE_USAGE_URL   = "https://opencode.ai/zen/go/v1/usage"
 OPENCODE_GO_TTL      = 60  # seconds to cache a successful upstream response
-# Go plan limits/pricing table — parsed from the docs source that builds
-# https://opencode.ai/docs/go (no JSON API exists for it).  Unofficial, so the
-# parser degrades gracefully: last-known-good is served as "stale".
+# Go plan allowances/pricing table — from the authenticated Go models
+# endpoint (the same feed the usage panel uses; no docs scraping).  On
+# failure the parser degrades gracefully: last-known-good is served as
+# "stale".
 OPENCODE_LIMITS_URL  = "https://opencode.ai/inference/go/v1/models"
 OPENCODE_LIMITS_TTL  = 3600  # seconds between models-endpoint refetches
 OPENCODE_LIMITS_RETRY = 300  # seconds to back off after a failed refetch
@@ -598,14 +599,24 @@ _opencode_limits_fetch_lock = threading.Lock()
 _opencode_limits_cache: dict = {"ts": 0.0, "data": None, "fail_ts": 0.0}
 
 
+def _go_price(value: object) -> float | None:
+    """A non-negative per-million list price; booleans are not numbers."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if value >= 0 else None
+
+
 def _go_limits_from_models_payload(payload: object) -> list[dict]:
     """One row per paid Go model from the models endpoint:
-    {"name", "five_hour", "monthly"}.
+    {"name", "input_price", "output_price", "monthly"}.
 
-    Monthly dollars come from each model's ``go.monthly_usage.go`` entry.
-    The 5-hour window is 20% of the monthly allowance by plan definition,
-    shown as its dollar budget. Free models and entries without a positive
-    Go allowance are skipped.
+    Monthly dollars come from each model's ``go.monthly_usage.go`` entry;
+    the prices are the model's base ``cost.text`` list prices in USD per
+    1M tokens.  Long-context price overrides and time-of-day multipliers
+    are deliberately not applied: the panel shows the base list price.
+    Free models and entries without a positive Go allowance are skipped; a
+    paid model without a usable cost block keeps its row with null prices.
     """
     if not isinstance(payload, dict):
         return []
@@ -615,12 +626,15 @@ def _go_limits_from_models_payload(payload: object) -> list[dict]:
             continue
         usage = (m.get("go") or {}).get("monthly_usage") or {}
         monthly = usage.get("go")
-        if not isinstance(monthly, (int, float)) or monthly <= 0:
+        if not isinstance(monthly, (int, float)) or isinstance(monthly, bool) \
+                or monthly <= 0:
             continue
+        text = (m.get("cost") or {}).get("text") or {}
         out.append({
-            "name":      m.get("id"),
-            "five_hour": int(round(monthly * 0.2)),
-            "monthly":   int(round(monthly)),
+            "name":         m.get("id"),
+            "input_price":  _go_price((text.get("input") or {}).get("price")),
+            "output_price": _go_price((text.get("output") or {}).get("price")),
+            "monthly":      int(round(monthly)),
         })
     out.sort(key=lambda r: r["name"])
     return out
@@ -632,8 +646,9 @@ def get_opencode_go_limits() -> dict:
 
 
 def _get_opencode_go_limits() -> dict:
-    """Go plan per-model limits (monthly $ + the 20%-of-monthly 5-hour budget),
-    from the authenticated Go models endpoint.  Cached for
+    """Go plan per-model allowances and base prices (monthly $ allowance plus
+    $/1M-token input and output list prices), from the authenticated Go
+    models endpoint.  Cached for
     OPENCODE_LIMITS_TTL; on failure the last-known-good copy is served with
     "stale": true (cold start with no source → error)."""
     key = _read_opencode_go_key()

@@ -63,14 +63,17 @@ on purpose.
 ### AI Services tab
 
 The former OPENCODE and MISTRAL tabs are now one **AI SERVICES** tab. It has a
-single LiteLLM-backed inventory table, with the OpenCode Go usage/limits card
+single LiteLLM-backed inventory table, with the OpenCode Go usage/allowances card
 and a Mistral console link preserved above it:
 
-- **OpenCode Go usage and limits** — the Go plan's rolling 5h / weekly /
-  monthly usage plus the per-model limits table (est. requests per 5h and
-  monthly $). When enabled, usage is shown without expanding anything; only
+- **OpenCode Go usage and allowances** — the Go plan's rolling 5h / weekly /
+  monthly usage plus the per-model table: the base $/1M-token input and
+  output list prices and the monthly $ allowance, from the authenticated Go
+  models endpoint (1 h cache). Long-context price overrides and off-peak
+  multipliers are not applied — the table shows base list prices. When
+  enabled, usage is shown without expanding anything; only
   **allowances · go plan** is collapsed
-  by default. Limits still come from the opencode docs source (1 h cache). Both
+  by default. Both
   sections are disabled by default. Set `OPENCODE_GO_ENABLED=true` in the
   project `.env` or shell to enable them, then restart the local app or recreate
   the container. For Compose, do not put this flag in

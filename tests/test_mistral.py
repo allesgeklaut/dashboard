@@ -268,6 +268,63 @@ model_list:
         with patch.object(core, "fetch_benchmarks", return_value={"ok": True}):
             self.assertEqual(main.api_benchmarks_fetch(), {"ok": True})
 
+    def test_go_limits_parser_reads_base_prices_and_skips_free_models(self):
+        payload = {
+            "data": [
+                {   # paid chat model with a full cost block
+                    "id": "zz-last",
+                    "go": {"monthly_usage": {"go": 200}},
+                    "cost": {"text": {"input": {"price": 1.4, "cache": {"read": 0.26}},
+                                      "output": {"price": 4.4}}},
+                },
+                {   # paid model whose long-context overrides must be ignored
+                    "id": "aa-first",
+                    "go": {"monthly_usage": {"go": 15}},
+                    "cost": {"text": {
+                        "input": {"price": 0.1, "cache": {"read": 0.01},
+                                  "overrides": [{"when": {"context": {"gt": 100000}},
+                                                 "price": 0.5}]},
+                        "output": {"price": 0.5,
+                                   "overrides": [{"when": {"context": {"gt": 100000}},
+                                                  "price": 2.5}]}}},
+                },
+                {   # paid model without a cost block: row kept, prices null
+                    "id": "mm-middle",
+                    "go": {"monthly_usage": {"go": 60}},
+                },
+                {   # free model: skipped entirely
+                    "id": "free-model",
+                    "go": {"monthly_usage": {"go": 0}},
+                    "cost": {"text": {"input": {"price": 1}, "output": {"price": 1}}},
+                },
+                {   # negative and boolean prices are not numbers: nulls
+                    "id": "bad-prices",
+                    "go": {"monthly_usage": {"go": 10}},
+                    "cost": {"text": {"input": {"price": True},
+                                      "output": {"price": -1}}},
+                },
+                "not-a-dict",
+            ]
+        }
+        rows = core._go_limits_from_models_payload(payload)
+        self.assertEqual([r["name"] for r in rows],
+                         ["aa-first", "bad-prices", "mm-middle", "zz-last"])
+        by_name = {r["name"]: r for r in rows}
+        self.assertEqual(by_name["zz-last"],
+                         {"name": "zz-last", "input_price": 1.4,
+                          "output_price": 4.4, "monthly": 200})
+        self.assertEqual(by_name["aa-first"]["input_price"], 0.1)
+        self.assertEqual(by_name["aa-first"]["output_price"], 0.5)
+        self.assertIsNone(by_name["mm-middle"]["input_price"])
+        self.assertIsNone(by_name["mm-middle"]["output_price"])
+        self.assertEqual(by_name["mm-middle"]["monthly"], 60)
+        self.assertIsNone(by_name["bad-prices"]["input_price"])
+        self.assertIsNone(by_name["bad-prices"]["output_price"])
+        self.assertNotIn("free-model", by_name)
+        # Defensive shapes: non-dict payload and empty data are both fine.
+        self.assertEqual(core._go_limits_from_models_payload(None), [])
+        self.assertEqual(core._go_limits_from_models_payload({"data": []}), [])
+
     def test_legacy_limits_response_has_no_benchmark_attachment(self):
         with patch.object(core, "_read_opencode_go_key", return_value="dummy"), \
                 patch.object(core, "_opencode_limits_cache",

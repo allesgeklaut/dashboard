@@ -553,7 +553,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
 @media (max-width:480px) {
   /* Keep 11px labels and 44px targets: the row swipes; it never shrinks or wraps. */
   .tab-btn { padding:0 12px; }
-  /* compact limits table so its three columns fit without sideways scrolling */
+  /* compact limits table so its four columns fit without sideways scrolling */
   #ocgl-table th, #ocgl-table td { padding:5px 6px; font-size:10px; }
   .ai-table { min-width:560px; }
   .ai-filter { flex:1 1 44%; }
@@ -1052,12 +1052,13 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
           <thead>
             <tr>
               <th class="proc-sortable" data-key="name" onclick="sortLimits('name')">MODEL</th>
-              <th class="ocg-num proc-sortable" data-key="five_hour" onclick="sortLimits('five_hour')">5H LIMIT</th>
+              <th class="ocg-num proc-sortable" data-key="input_price" onclick="sortLimits('input_price')" title="base list price per 1M input tokens; long-context overrides and off-peak multipliers not applied">IN $/M</th>
+              <th class="ocg-num proc-sortable" data-key="output_price" onclick="sortLimits('output_price')" title="base list price per 1M output tokens">OUT $/M</th>
               <th class="ocg-num proc-sortable" data-key="monthly" onclick="sortLimits('monthly')">MONTHLY</th>
             </tr>
           </thead>
           <tbody id="ocgl-tbody">
-            <tr><td colspan="3" class="empty">loading…</td></tr>
+            <tr><td colspan="4" class="empty">loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -4560,12 +4561,16 @@ function renderLimits() {
                  : v === 'unlimited' ? 'unlimited' : '—';
   const money = v => typeof v === 'number' ? '$' + v
                     : v === 'unlimited' ? 'unlimited' : '—';
+  const price = v => typeof v === 'number'
+                    ? '$' + v.toLocaleString(undefined, {maximumFractionDigits: 3})
+                    : '—';
   const rows = sorted.map(m => `<tr>
       <td>${escHtml(m.name)}</td>
-      <td class="ocg-num">${money(m.five_hour)}</td>
+      <td class="ocg-num">${price(m.input_price)}</td>
+      <td class="ocg-num">${price(m.output_price)}</td>
       <td class="ocg-num">${money(m.monthly)}</td>
     </tr>`);
-  if (_ocglData.stale) rows.push('<tr><td colspan="3" class="ocg-stale">stale — Go models endpoint unreachable</td></tr>');
+  if (_ocglData.stale) rows.push('<tr><td colspan="4" class="ocg-stale">stale — Go models endpoint unreachable</td></tr>');
   document.getElementById('ocgl-tbody').innerHTML = rows.join('');
   document.querySelectorAll('#ocgl-table th').forEach(th => {
     th.classList.toggle('sorted-asc',  th.dataset.key === key && dir === 1);
@@ -4584,7 +4589,7 @@ async function fetchOpenCodeGoLimits(force=false) {
       err.style.display = 'block';
       if (!_ocglData) {
         document.getElementById('ocgl-tbody').innerHTML =
-          '<tr><td colspan="3" class="empty">unavailable</td></tr>';
+          '<tr><td colspan="4" class="empty">unavailable</td></tr>';
       }
       return;
     }
