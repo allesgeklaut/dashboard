@@ -831,26 +831,6 @@ def get_ai_services() -> dict:
     return payload
 
 
-def get_mistral_models() -> dict:
-    """Legacy Mistral-only wrapper over the unified inventory (local reads only)."""
-    inventory, error = _read_litellm_inventory()
-    if error is not None:
-        return {"error": error}
-    rows = [row for row in (inventory or []) if row["provider"] == "mistral"]
-    state = benchmarks.read_state()
-    payload = benchmarks.build_payload(rows, state, include_sources=False)
-    models = [
-        {"name": model["name"], "upstream_model": model["upstream_model"],
-         "bench": model["bench"]}
-        for model in payload["models"]
-    ]
-    return {
-        "models": models,
-        "bench_metrics": benchmarks.metrics_metadata(),
-        "bench_fetched_at": benchmarks.last_success(state),
-    }
-
-
 def fetch_benchmarks() -> dict:
     """Compatibility wrapper: request one guarded background benchmark refresh."""
     if not (_litellm_config_path() or _read_opencode_go_key()):
@@ -1937,6 +1917,5 @@ def get_features() -> dict:
         "desktop_power":  bool(DESKTOP_SPOOL_DIR),
         "desktop_status": bool(WOL_DESKTOP_IP),
         "opencode_go":    _read_opencode_go_key() is not None,
-        "mistral":        bool(_litellm_config_path()),
         "ai_services":    bool(_litellm_config_path()) or _read_opencode_go_key() is not None,
     }

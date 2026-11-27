@@ -3612,29 +3612,6 @@ model_list:
         with patch.object(core, "LITELLM_CONFIG_FILE", ""):
             self.assertEqual(core._read_litellm_inventory(), (None, "not configured"))
 
-    def test_legacy_mistral_wrapper_filters_and_keeps_shape(self):
-        self.write("""
-model_list:
-  - model_name: glm53
-    litellm_params:
-      model: mistral/glm-5.3
-      api_key: config-secret
-  - model_name: other
-    litellm_params:
-      model: openai/gpt-6.1-sol
-""")
-        state = make_state({"harbor": [entry("tb4", "GLM-5.3", 41.82)]})
-        with patch.object(benchmarks, "read_state", return_value=state), \
-                patch.object(benchmarks, "ensure_refresh_scheduled") as ensure:
-            result = core.get_mistral_models()
-        ensure.assert_not_called()
-        self.assertEqual(set(result), {"models", "bench_metrics", "bench_fetched_at"})
-        self.assertEqual(result["models"][0]["name"], "glm53")
-        self.assertEqual(result["models"][0]["bench"]["tb4"], 41.82)
-        self.assertEqual(len(result["models"]), 1)
-        self.assertEqual(result["bench_fetched_at"], NOW)
-        self.assertNotIn("config-secret", json.dumps(result))
-
     def test_ai_services_reads_cache_without_scheduling_any_refresh(self):
         self.write("model_list:\n  - model_name: gpt\n    litellm_params:\n      model: openai/gpt-6.1-sol\n")
         state = make_state({"harbor": [entry("tb4", "GPT-6.1 Sol", 58.18)]})
@@ -3661,12 +3638,11 @@ model_list:
 
     def test_feature_flags_keep_legacy_keys_and_add_ai_services(self):
         features = core.get_features()
-        self.assertTrue(features["mistral"])
+        self.assertNotIn("mistral", features)
         self.assertTrue(features["ai_services"])
         self.assertIn("opencode_go", features)
         with patch.object(core, "LITELLM_CONFIG_FILE", ""):
             features = core.get_features()
-            self.assertFalse(features["mistral"])
             self.assertFalse(features["ai_services"])
         with patch.object(core, "_read_opencode_go_key", return_value="key"), \
                 patch.object(core, "LITELLM_CONFIG_FILE", ""):
@@ -3852,7 +3828,7 @@ class ApiContractTests(unittest.TestCase):
         routes = {route.path: route.methods for route in self.main.app.routes
                   if hasattr(route, "methods")}
         self.assertIn("GET", routes["/api/ai-services"])
-        self.assertIn("GET", routes["/api/mistral-models"])
+        self.assertNotIn("/api/mistral-models", routes)
         self.assertIn("GET", routes["/api/opencode-go"])
         self.assertIn("GET", routes["/api/opencode-go-limits"])
         self.assertIn("POST", routes["/api/benchmarks/fetch"])

@@ -291,37 +291,5 @@ model_list:
         self.assertEqual(models["embedding"]["missing"]["tb4"],
                          "unsupported modality")
 
-    def test_legacy_mistral_wrapper_keeps_mode_groups_separate(self):
-        self.write("""
-model_list:
-  - model_name: glm53
-    litellm_params:
-      model: mistral/glm-5.3
-      api_key: config-secret
-  - model_name: mistral-embed
-    litellm_params:
-      model: mistral/glm-5.3
-    model_info:
-      mode: embedding
-  - model_name: other
-    litellm_params:
-      model: openai/gpt-6.1-sol
-""")
-        state = offline_state({"harbor": [tb4_entry("GLM-5.3", 41.82)]})
-        with patch.object(benchmarks, "read_state", return_value=state), \
-                patch.object(benchmarks, "ensure_refresh_scheduled") as ensure:
-            result = core.get_mistral_models()
-        ensure.assert_not_called()
-        self.assertEqual(set(result), {"models", "bench_metrics", "bench_fetched_at"})
-        self.assertEqual(len(result["models"]), 2)
-        self.assertEqual({model["upstream_model"] for model in result["models"]},
-                         {"mistral/glm-5.3"})
-        by_name = {model["name"]: model for model in result["models"]}
-        self.assertEqual(set(by_name), {"glm53", "mistral-embed"})
-        self.assertEqual(by_name["glm53"]["bench"]["tb4"], 41.82)
-        self.assertEqual(by_name["mistral-embed"]["bench"], {})
-        self.assertNotIn("config-secret", json.dumps(result))
-
-
 if __name__ == "__main__":
     unittest.main()

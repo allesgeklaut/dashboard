@@ -102,10 +102,6 @@ def _benchmark_refresh_response(res):
         raise HTTPException(500, res.get("error", "fetch failed"))
     return res
 
-@app.get("/api/mistral-models")
-def api_mistral_models():
-    return core.get_mistral_models()
-
 @app.get("/api/ai-services")
 def api_ai_services():
     # Local state only, never upstream work. no-store keeps the cooldown and
