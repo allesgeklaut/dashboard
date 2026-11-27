@@ -615,7 +615,7 @@ def _go_limits_from_models_payload(payload: object) -> list[dict]:
     the prices are the model's base ``cost.text`` list prices in USD per
     1M tokens.  Long-context price overrides and time-of-day multipliers
     are deliberately not applied: the panel shows the base list price.
-    Free models and entries without a positive Go allowance are skipped; a
+    Free models and entries without a positive finite Go allowance are skipped; a
     paid model without a usable cost block keeps its row with null prices,
     and a paid entry without a non-empty string id is skipped rather than
     poisoning the name sort.
@@ -632,7 +632,7 @@ def _go_limits_from_models_payload(payload: object) -> list[dict]:
         usage = (m.get("go") or {}).get("monthly_usage") or {}
         monthly = usage.get("go")
         if not isinstance(monthly, (int, float)) or isinstance(monthly, bool) \
-                or monthly <= 0:
+                or not math.isfinite(monthly) or monthly <= 0:
             continue
         text = (m.get("cost") or {}).get("text") or {}
         out.append({

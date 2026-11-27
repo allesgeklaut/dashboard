@@ -160,6 +160,14 @@ class MistralCompatibilityTests(unittest.TestCase):
                     "id": "",
                     "go": {"monthly_usage": {"go": 90}},
                 },
+                {   # non-finite allowances (inf/NaN parse under Python json): skipped
+                    "id": "inf-monthly",
+                    "go": {"monthly_usage": {"go": float("inf")}},
+                },
+                {   # NaN allowance passes the <= 0 comparison alone: skipped
+                    "id": "nan-monthly",
+                    "go": {"monthly_usage": {"go": float("nan")}},
+                },
                 "not-a-dict",
             ]
         }
@@ -182,6 +190,8 @@ class MistralCompatibilityTests(unittest.TestCase):
         self.assertIsNone(by_name["inf-prices"]["output_price"])
         self.assertEqual(by_name["inf-prices"]["monthly"], 30)
         self.assertNotIn("free-model", by_name)
+        self.assertNotIn("inf-monthly", by_name)
+        self.assertNotIn("nan-monthly", by_name)
         self.assertEqual(len(rows), 5)
         # Defensive shapes: non-dict payload and empty data are both fine.
         self.assertEqual(core._go_limits_from_models_payload(None), [])
