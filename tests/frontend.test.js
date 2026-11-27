@@ -1697,7 +1697,7 @@ function aiServicesReport(overrides = {}) {
 
 async function loadAI(report = aiServicesReport(), options = {}) {
   const d = dashboard(options);
-  d.run("_features.ai_services=true; _features.opencode_go=false; _features.mistral=false; _activeTab='ai-services';");
+  d.run("_features.ai_services=true; _features.opencode_go=false; _activeTab='ai-services';");
   d.context.fetch = async url => {
     assert.equal(url, '/api/ai-services');
     return response(report);
@@ -1710,7 +1710,7 @@ test('AI services merges tabs into one dropdown table without AA or explanation 
   const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
   assert.match(html, /id="tab-btn-ai-services"[^>]*aria-controls="tab-ai-services"[^>]*>AI SERVICES</);
   assert.match(html, /id="tab-ai-services" class="tab-pane"/);
-  assert.match(html, /OPEN MISTRAL ↗/);
+  assert.doesNotMatch(html, /OPEN MISTRAL/);
   assert.match(html, /id="ocgl-table"/);
   assert.match(html, /id="ai-table"/);
   assert.match(html, /\/api\/ai-services/);
@@ -2377,15 +2377,14 @@ test('legacy OPENCODE and MISTRAL saved tabs migrate to AI SERVICES', () => {
   }
 });
 
-test('AI services enables on ai_services or either legacy provider flag', async () => {
+test('AI services enables on ai_services or the opencode_go flag', async () => {
   for (const flags of [
-    { ai_services: true, opencode_go: false, mistral: false },
-    { ai_services: false, opencode_go: true, mistral: false },
-    { ai_services: false, opencode_go: false, mistral: true },
+    { ai_services: true, opencode_go: false },
+    { ai_services: false, opencode_go: true },
   ]) {
     const d = dashboard();
     d.context.fetch = async () => response(aiServicesReport());
-    d.run(`_features.ai_services=${flags.ai_services}; _features.opencode_go=${flags.opencode_go}; _features.mistral=${flags.mistral}; aiServicesSyncFeature();`);
+    d.run(`_features.ai_services=${flags.ai_services}; _features.opencode_go=${flags.opencode_go}; aiServicesSyncFeature();`);
     const tab = d.context.document.querySelector('.tab-btn[data-tab="ai-services"]');
     assert.equal(tab.style.display, 'inline-block');
   }
@@ -2587,22 +2586,12 @@ test('loaded status shows an absolute time and an aging relative label', async (
   assert.match(d.element('ai-status').textContent, /\(20m ago\)/);
 });
 
-test('the Mistral console link only shows when the Mistral feature is enabled', () => {
-  const d = dashboard();
-  d.run('_features.ai_services=true; _features.opencode_go=true; _features.mistral=false; aiServicesSyncFeature();');
-  assert.equal(d.element('ai-mistral-console').style.display, 'none');
-  d.run('_features.mistral=true; aiServicesSyncFeature();');
-  assert.equal(d.element('ai-mistral-console').style.display, 'inline-flex');
-});
-
-test('usage stays outside the collapsed allowances below the Mistral link', () => {
+test('usage stays outside the collapsed allowances above the comparison table', () => {
   const html = fs.readFileSync(path.join(__dirname, '../app/static/index.html'), 'utf8');
-  const mistral = html.indexOf('id="ai-mistral-console"');
   const usage = html.indexOf('id="ocg-list"');
   const allowances = html.indexOf('id="ocg-details"');
   const comparison = html.indexOf('id="ai-count"');
-  assert.ok(mistral !== -1 && usage !== -1 && allowances !== -1 && comparison !== -1);
-  assert.ok(mistral < usage, 'the Mistral console link sits above the usage block');
+  assert.ok(usage !== -1 && allowances !== -1 && comparison !== -1);
   assert.ok(usage < allowances && allowances < comparison);
   const details = html.match(/<details[^>]*id="ocg-details"[^>]*>([\s\S]*?)<\/details>/);
   assert.ok(details, 'allowances are wrapped in details');
@@ -2666,7 +2655,7 @@ test('the AI inventory tick only fetches on an enabled, active, visible tab', as
   const off = dashboard();
   let offRequests = 0;
   off.context.fetch = async () => { offRequests++; return response(aiServicesReport()); };
-  off.run('_features.ai_services=false; _features.opencode_go=false; _features.mistral=false;' +
+  off.run('_features.ai_services=false; _features.opencode_go=false;' +
           '_activeTab="ai-services"; document.hidden=false; aiServicesTick()');
   await settle();
   assert.equal(offRequests, 0);

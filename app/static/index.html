@@ -1041,13 +1041,6 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
   <!-- ═══════════ AI SERVICES TAB ═══════════ -->
   <div id="tab-ai-services" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-ai-services" style="display:none">
 
-    <!-- Mistral usage console — kept at the top of the tab -->
-    <div class="stream-row" style="margin:0 0 10px">
-      <div class="stream-btns">
-        <a class="btn-stream" id="ai-mistral-console" href="https://admin.mistral.ai/subscription" target="_blank" rel="noopener noreferrer">OPEN MISTRAL ↗</a>
-      </div>
-    </div>
-
     <!-- OpenCode Go usage stays visible; only allowances collapse by default. -->
     <div class="sec-label" id="ocg-label" style="display:none">usage · opencode go</div>
     <div class="ocg-list" id="ocg-list" style="display:none"></div>
@@ -1338,7 +1331,7 @@ async function fetchJSON(path) {
 
 // ── feature flags ─────────────────────────────────────────────────────────────
 let _features = { shelly:false, shelly2:false, adguard:false, ollama:false, llama:false, stream:false,
-                  wake:false, desktop_power:false, desktop_status:false, opencode_go:false, mistral:false,
+                  wake:false, desktop_power:false, desktop_status:false, opencode_go:false,
                   ai_services:false, security:false, health:false };
 
 async function fetchFeatures() {
@@ -3924,7 +3917,7 @@ function aiNumberText(value) {
 }
 
 function aiServicesEnabled() {
-  return !!(_features.ai_services || _features.opencode_go || _features.mistral);
+  return !!(_features.ai_services || _features.opencode_go);
 }
 
 function aiRestoreMetric() {
@@ -4496,8 +4489,6 @@ function aiServicesSyncFeature() {
   }
   if (button) button.style.display = 'inline-block';
   aiHookEnterEvents();
-  const consoleLink = document.getElementById('ai-mistral-console');
-  if (consoleLink) consoleLink.style.display = _features.mistral ? 'inline-flex' : 'none';
   const ocgLabel = document.getElementById('ocg-label');
   const ocgList = document.getElementById('ocg-list');
   const ocgDetails = document.getElementById('ocg-details');
