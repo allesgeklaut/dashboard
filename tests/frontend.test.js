@@ -1607,7 +1607,7 @@ function aiServicesReport(overrides = {}) {
   return {
     refreshing: false,
     metrics: [
-      aiMetric('tb4', 'TB4', 'Terminal-Bench 4.0', 'pct', 'harbor'),
+      aiMetric('tb4', 'TB4', 'Terminal-Bench 4.1', 'pct', 'harbor'),
       aiMetric('livebench_coding', 'LBC', 'LiveBench Coding', 'pct', 'livebench'),
       aiMetric('eci', 'ECI', 'Epoch Capabilities Index', 'index', 'epoch'),
       aiMetric('livebench_reasoning', 'LB-R', 'LiveBench Reasoning', 'pct', 'livebench'),
@@ -1624,9 +1624,9 @@ function aiServicesReport(overrides = {}) {
         url: 'https://epoch.ai/benchmarks', warning: null,
       },
       livebench: {
-        last_checked: checked, last_success: success, source_updated: '2026-10-25',
-        stale: false, error: null, version: '20261025',
-        url: 'https://livebench.ai/data/20261025/table.csv', disabled: true,
+        last_checked: checked, last_success: success, source_updated: '2026-11-06',
+        stale: false, error: null, version: '20261106',
+        url: 'https://livebench.ai/data/20261106/table.csv', disabled: true,
         warning: 'LiveBench2.0 reuse terms unverified; opt-in after review',
       },
     },
@@ -1641,7 +1641,7 @@ function aiServicesReport(overrides = {}) {
         results: {
           tb4: [{
             source: 'harbor', metric: 'tb4', model: 'alpha-2026', agent: 'native',
-            effort: 'high', evaluator: 'Terminal-Bench 4.0', version: 'harbor/2026-09',
+            effort: 'high', evaluator: 'Terminal-Bench 4.1', version: 'harbor/2026-09',
             value: 72.4, date: '2026-09-30', date_kind: 'evaluation', ci: { low: 68, high: 76 },
             configuration: 'native agent / high', selected: true,
             metadata: { n_trials: 5, ci_method: 'bootstrap' },
@@ -1767,7 +1767,7 @@ test('one dropdown selects the benchmark; the table shows routes and one score c
   const d = await loadAI();
   const select = d.element('ai-metric-select');
   // Enabled sources only: LiveBench never appears as an option.
-  assert.match(select.innerHTML, /Terminal-Bench 4\.0/);
+  assert.match(select.innerHTML, /Terminal-Bench 4\.1/);
   assert.match(select.innerHTML, /Epoch Capabilities Index/);
   assert.doesNotMatch(select.innerHTML, /LiveBench/);
   assert.equal(select.value, 'tb4');
@@ -1778,7 +1778,7 @@ test('one dropdown selects the benchmark; the table shows routes and one score c
   // The score column comes second and uses the short label; the full name hovers.
   assert.ok(thead.indexOf('MODEL') < thead.indexOf('TB4'), 'score column is second');
   assert.ok(thead.indexOf('TB4') < thead.indexOf('AVAILABLE ROUTES'), 'routes column is last');
-  assert.match(thead, /title="Terminal-Bench 4\.0"/);
+  assert.match(thead, /title="Terminal-Bench 4\.1"/);
   assert.doesNotMatch(thead, /OVERALL|RANK/i);
   // Exactly one score column: no second benchmark, no source label under the header.
   assert.doesNotMatch(thead, /Epoch Capabilities Index|Harbor|Epoch AI/);
@@ -1895,7 +1895,7 @@ test('metric source aliases resolve to the backend source key', async () => {
   const d = await loadAI(report);
   // 'tb4' resolves to the harbor source, so its disabled state hides the metric.
   assert.equal(d.run("aiMetricDisabled('tb4')"), true);
-  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /Terminal-Bench 4\.0/);
+  assert.doesNotMatch(d.element('ai-metric-select').innerHTML, /Terminal-Bench 4\.1/);
   assert.equal(d.run('_aiMetric'), 'eci');
 });
 
@@ -2100,7 +2100,7 @@ test('an inventory error keeps the dropdown and table shell usable', async () =>
   assert.match(d.element('ai-error').textContent, /inventory unavailable: configuration unavailable/);
   assert.doesNotMatch(d.element('ai-error').textContent, /AI services unavailable/);
   assert.match(d.element('ai-tbody').innerHTML, /no models reported by the inventory/);
-  assert.match(d.element('ai-metric-select').innerHTML, /Terminal-Bench 4\.0/);
+  assert.match(d.element('ai-metric-select').innerHTML, /Terminal-Bench 4\.1/);
   assert.match(d.element('ai-count').textContent, /0 models/);
 });
 

@@ -127,10 +127,8 @@ a fetch failure.
 
 When a source has several results or configurations for an identity, the
 summary column uses the latest published dated result, never the maximum.
-The one exception is Terminal-Bench 4.0: it shows the highest recorded result
-across Harbor and BenchLM's two TB4 boards (a cross-source maximum, never a
-within-board one), so a displayed TB4 row may come from a different harness
-than another model's row.
+Every column, Terminal-Bench included, comes from exactly one source, so a
+displayed row never mixes harnesses across sources.
 Every published date carries a `date_kind`: Harbor's `metadata.date` (Release
 Date) and Epoch's `date` are model releases (`model_release`); LiveBench's
 pinned release is a benchmark release (`benchmark_release`).
@@ -192,9 +190,9 @@ publisher is not a trusted input: a compromised or wrong feed can publish bad
 scores even though parsing is safe, so treat results as provenance-bearing
 evidence.
 
-- **Harbor Terminal-Bench 4.0** (default) — official public JSON API:
+- **Harbor Terminal-Bench 4.1** (default) — official public JSON API:
   `POST https://api.harborframework.com/functions/v1/leaderboard-read` with
-  package `terminal-bench/terminal-bench` and leaderboard `4-0-0`. All pages
+  package `terminal-bench/terminal-bench` and leaderboard `4-1-0`. All pages
   are fetched and validated before a snapshot replaces the last good one.
   Accuracy and its 95% CI are 0–100 units. Rows mix native agents (for example
   Claude Code, Codex, and mini-SWE-agent), reasoning effort, the publisher's
@@ -211,17 +209,17 @@ evidence.
   remains open. `HOMELAB_LIVEBENCH_ENABLED` defaults to false (Compose forwards
   it); disabled suites are absent from the dropdown and cached scores stay
   hidden. Enable after your own review; this private installation opts in. The
-  source is pinned to release `20261025`, because the feed has no structured
+  source is pinned to release `20261106`, because the feed has no structured
   "latest release" manifest and the tab never scrapes HTML/JS to discover one.
   It reads
-  [table.csv](https://livebench.ai/data/20261025/table.csv) and
-  [categories.json](https://livebench.ai/data/20261025/categories.json) from
+  [table.csv](https://livebench.ai/data/20261106/table.csv) and
+  [categories.json](https://livebench.ai/data/20261106/categories.json) from
   that release. Scores are 0–100. `categories.json` defines the version-specific
   suite weights; Coding, Long Agentic, Reasoning, Browser, Data Analysis,
   Research and Design are selectable, and
   the tab does not compute an equal-weight overall score. Coding is
   deterministic; research and design use rubric/visual grading and can be
-  harder to compare. Provenance identifies **LiveBench 2.0, release 2026-10-25**
+  harder to compare. Provenance identifies **LiveBench 2.0, release 2026-11-06**
   and <https://livebench.ai>. Private use is an operator choice, not a blanket
   legal guarantee. Do not copy tasks.
 - **Epoch Capabilities Index (ECI)** (default source) — reads
@@ -236,26 +234,21 @@ evidence.
   stay hidden. The key is a secret: it lives only in
   `/opt/secrets/dashboard.env` (already mounted via `env_file`) or the local
   gitignored `.env`, and is never committed or printed. It reads
-  `https://data.benchlm.ai/v1/rankings/current?surface=overall|coding|agentic|knowledge`
-  and `https://data.benchlm.ai/mcp`. It contributes four metrics, **BenchAlign
+  `https://data.benchlm.ai/v1/rankings/current?surface=overall|coding|agentic|knowledge`.
+  It contributes four metrics, **BenchAlign
   Overall**, **BenchAlign Coding**, **BenchAlign Agentic** and **BenchAlign
   Knowledge** — 0–100 composite point estimates, not
-  percentages — and Terminal-Bench 4.0 rows from its two TB4 boards
-  (`benchlm-recorded:agentic.terminalBench4` and
-  `benchlm-capture:vals_bench_terminal_bench_4:entries`). TB4 shows the
-  **highest recorded result across Harbor and those two boards**, so a
-  displayed TB4 row may come from a different harness than another model's
-  row; each row's `version` names the board it came from (and its
-  `metadata.board` carries the board id). The
+  percentages. It supplies no Terminal-Bench rows: BenchLM publishes no
+  4.1 boards, and mixing 4.0 fallback rows into a 4.1 column would compare
+  different verifier versions, so TB4 stays Harbor-only. The
   free plan allows 250 successful reads per month at 30 requests/minute; one
-  page is one read, and a single manual refresh costs 11 reads in practice
-  (9 ranking GETs + 2 MCP calls, one per TB4 board) and never more than the
-  hard cap of 14 reads (3 pages per surface × 4 surfaces + 2 MCP calls). At
-  250 reads/month that is about 22 refreshes per month, so a daily refresh
-  no longer fits the free plan — refresh every other day or less. Retries can
+  page is one read, and a single manual refresh costs 4 reads in practice
+  (one per surface) and never more than the hard cap of 12 reads (3 pages per
+  surface × 4 surfaces). At 250 reads/month that is about 62 refreshes per
+  month, so a daily refresh fits the free plan. Retries can
   multiply these logical reads into wire requests (up to 3 attempts each), so
-  the ~22-refresh estimate assumes a clean run. BenchLM supplies no per-run dates, so its scores carry the new
-  date kind `source_snapshot` — the date BenchLM captured the board — never an
+  the refresh estimate assumes a clean run. BenchLM supplies no per-run dates, so its scores carry the new
+  date kind `source_snapshot` — the date BenchLM captured the snapshot — never an
   evaluation date or a benchmark release date. BenchLM data is
   [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): this
   private, non-commercial single-user install displays it with attribution —

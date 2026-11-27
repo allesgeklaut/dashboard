@@ -2,13 +2,13 @@
 
 Four fixed sources replace the removed Artificial Analysis scraping:
 
-* Harbor (Terminal-Bench 4.0), a documented public JSON leaderboard read.
+* Harbor (Terminal-Bench 4.1), a documented public JSON leaderboard read.
 * Epoch AI's ECI CSV (abstract composite index; CC BY 4.0 attribution).
-* LiveBench, pinned to the explicitly released ``20261025`` table.
+* LiveBench, pinned to the explicitly released ``20261106`` table.
 * BenchLM (BenchLM.ai Data API; optional, credentialed, disabled by default;
-  see ``BENCHLM_WARNING``).  It contributes the BenchAlign composite indexes
-  and Terminal-Bench 4.0 rows from its two TB4 boards; the displayed TB4
-  value is the highest recorded result across Harbor and those boards.
+  see ``BENCHLM_WARNING``).  It contributes the BenchAlign composite
+  indexes; Terminal-Bench is Harbor-only so one verifier version defines
+  the whole column.
 
 Security posture: only the module's fixed HTTPS URLs are ever requested, TLS
 verification is on, redirects are rejected, sessions ignore proxy/netrc
@@ -39,7 +39,7 @@ from the UI dropdown.
 
 Dates are semantic, never inferred: every dated entry carries ``date_kind``
 (``model_release`` for Harbor/Epoch, ``benchmark_release`` for LiveBench,
-``source_snapshot`` for BenchLM's board capture date, or ``evaluation`` only
+``source_snapshot`` for BenchLM's capture date, or ``evaluation`` only
 when a source actually supplies an eval date).  Summary selection uses the
 latest published dated result and never relabels it as an evaluation.
 ``source_updated`` is feed mutation metadata only (Harbor leaderboard/row
@@ -79,7 +79,7 @@ _log = logging.getLogger(__name__)
 # is read from the environment at request time and only ever sent here.
 HARBOR_ENDPOINT = "https://api.harborframework.com/functions/v1/leaderboard-read"
 HARBOR_PACKAGE = "terminal-bench/terminal-bench"
-HARBOR_LEADERBOARD = "4-0-0"
+HARBOR_LEADERBOARD = "4-1-0"
 HARBOR_PAGE_SIZE = 100
 HARBOR_MAX_PAGES = 50
 HARBOR_DOC_URL = "https://docs.harborframework.com/harbor-hub/leaderboards"
@@ -87,12 +87,13 @@ HARBOR_DOC_URL = "https://docs.harborframework.com/harbor-hub/leaderboards"
 EPOCH_CSV_URL = "https://epoch.ai/data/eci_scores.csv"
 EPOCH_PROVENANCE_URL = "https://epoch.ai/eci"
 
-LIVEBENCH_VERSION = "20261025"
+LIVEBENCH_VERSION = "20261106"
 LIVEBENCH_CSV_URL = f"https://livebench.ai/data/{LIVEBENCH_VERSION}/table.csv"
 LIVEBENCH_CATEGORIES_URL = f"https://livebench.ai/data/{LIVEBENCH_VERSION}/categories.json"
 
 BENCHLM_RANKINGS_URL = "https://data.benchlm.ai/v1/rankings/current"
-BENCHLM_MCP_URL = "https://data.benchlm.ai/mcp"
+BENCHLM_DOC_URL = "https://data.benchlm.ai/"
+BENCHLM_COMPOSITE_EVALUATOR = "BenchLM BenchAlign"
 BENCHLM_PAGE_SIZE = 100
 BENCHLM_SURFACES = (
     ("benchalign_overall", "overall"),
@@ -101,25 +102,14 @@ BENCHLM_SURFACES = (
     ("benchalign_knowledge", "knowledge"),
 )
 BENCHLM_MAX_PAGES = 3
-# Terminal-Bench 4.0 is published on two BenchLM boards whose publishers
-# disagree, so both are fetched and the highest recorded result per model
-# wins.  The label becomes the entry's version, so a row's provenance names
-# the board it came from.
-BENCHLM_TB4_BOARDS = (
-    ("benchlm-recorded", "benchlm-recorded:agentic.terminalBench4"),
-    ("vals-capture", "benchlm-capture:vals_bench_terminal_bench_4:entries"),
-)
+# Terminal-Bench 4.1 has no BenchLM boards yet, and mixing 4.0 fallback rows
+# into a 4.1 column would compare different verifier versions, so tb4 is
+# Harbor-only.  BenchLM serves the four BenchAlign composites above.
 # Hard read cap per refresh: at most 3 pages per surface (12 GETs across the
-# 4 surfaces) plus one MCP POST per TB4 board (2) — at most 14 logical
-# requests; each may be retried up to HTTP_ATTEMPTS (3) times by the shared
-# client, so the wire worst case is 42.  Reaching the cap only stops
+# 4 surfaces); each may be retried up to HTTP_ATTEMPTS (3) times by the
+# shared client, so the wire worst case is 36.  Reaching the cap only stops
 # pagination, it never raises.
-BENCHLM_MAX_REQUESTS = (
-    len(BENCHLM_SURFACES) * BENCHLM_MAX_PAGES + len(BENCHLM_TB4_BOARDS))
-BENCHLM_MCP_TOOL = "benchlm_list_current_benchmark_results"
-BENCHLM_MCP_PROTOCOL_VERSION = "2025-11-25"
-BENCHLM_COMPOSITE_EVALUATOR = "BenchLM BenchAlign"
-BENCHLM_TB4_EVALUATOR = "Terminal-Bench 4.0"
+BENCHLM_MAX_REQUESTS = len(BENCHLM_SURFACES) * BENCHLM_MAX_PAGES
 # BenchLM stamps every capture with its own methodology version instead of
 # one pinned feed version, so its snapshot/entry versions are validated as
 # sanitized text rather than compared against a single fixed pin.
@@ -168,11 +158,6 @@ MISSING_NOT_EVALUATED = "not evaluated"
 MISSING_UNMATCHED = "unmatched identity"
 MISSING_UNSUPPORTED = "unsupported modality"
 MISSING_UNAVAILABLE = "source unavailable"
-# Progress order of the per-metric missing reasons: a fallback candidate that
-# fails earlier (e.g. disabled) never masks a primary candidate's deeper reason.
-_MISSING_REASON_ORDER = {
-    MISSING_UNAVAILABLE: 0, MISSING_UNMATCHED: 1, MISSING_NOT_EVALUATED: 2,
-}
 
 # The result's date is never renamed into an evaluation date.  Known values are
 # deliberately narrow and are persisted/revalidated with the entry.
@@ -195,14 +180,6 @@ class MetricSpec:
     name: str
     unit: str
     source: str
-    # Secondary sources that may supply rows for this metric when the primary
-    # source does not cover a model (tb4 falls back to BenchLM's TB4 boards).
-    fallback: tuple[str, ...] = ()
-    # How the candidates are merged: "first" keeps the first candidate with
-    # rows (provenance order); "max" evaluates every candidate and keeps the
-    # one whose selected result value is highest (ties keep the earlier
-    # candidate).  Not part of as_dict: the frontend contract is unchanged.
-    merge: str = "first"
 
     def as_dict(self) -> dict:
         return {"key": self.key, "label": self.label, "name": self.name,
@@ -210,8 +187,7 @@ class MetricSpec:
 
 
 METRICS: tuple[MetricSpec, ...] = (
-    MetricSpec("tb4", "TB4", "Terminal-Bench 4.0", "pct", "harbor",
-               fallback=("benchlm",), merge="max"),
+    MetricSpec("tb4", "TB4", "Terminal-Bench 4.1", "pct", "harbor"),
     MetricSpec("livebench_coding", "LB-CODE", "LiveBench Coding", "pct", "livebench"),
     MetricSpec("eci", "ECI", "Epoch Capabilities Index", "index", "epoch"),
     MetricSpec("livebench_long_agentic", "LB-AGENT", "LiveBench Long Agentic", "pct", "livebench"),
@@ -259,7 +235,7 @@ EPOCH_WARNING = (
     "AI and the ECI authors."
 )
 LIVEBENCH_WARNING = (
-    "Pinned LiveBench release 20261025. Coding scores can saturate near 100; "
+    "Pinned LiveBench release 20261106. Coding scores can saturate near 100; "
     "research and design involve rubric or visual grading."
 )
 LIVEBENCH_DISABLED_WARNING = (
@@ -269,10 +245,7 @@ LIVEBENCH_DISABLED_WARNING = (
 BENCHLM_WARNING = (
     "BenchLM.ai BenchAlign scores are composite 0-100 point estimates, not "
     "percentages. BenchLM.ai BenchAlign data, CC BY-NC 4.0; cite BenchLM.ai. "
-    "Dates are the board capture date (source_snapshot), never evaluation "
-    "dates. Terminal-Bench 4.0 shows the highest recorded result across "
-    "Harbor and BenchLM's TB4 boards, so a displayed TB4 row may come from a "
-    "different harness than another model's row."
+    "Dates are the capture date (source_snapshot), never evaluation dates."
 )
 BENCHLM_DISABLED_WARNING = (
     "BenchLM.ai BenchAlign is opt-in: set the BENCHLM_DATA_KEY environment "
@@ -294,10 +267,8 @@ SOURCE_NAMES = tuple(SOURCES)
 
 # The summary is chosen by explicit date first, then by this published
 # reasoning-effort ordering.  It never ranks by score value, so it cannot pick
-# a per-metric maximum within one source/board.  (The tb4 "max" merge in
-# build_payload applies only across candidate sources, on each candidate's
-# already-selected result, so this rule still holds inside a board.)
-# Undated evaluations never produce a summary.
+# a per-metric maximum within one source.  Undated evaluations never produce
+# a summary.
 EFFORT_PRIORITY = {
     "max": 0, "xhigh": 1, "high": 2, "medium": 3, "low": 4,
     "minimal": 5, "none": 6,
@@ -457,7 +428,7 @@ def _clean_ci(value) -> dict | None:
 
 _METADATA_KEYS = {
     "n_trials", "rank", "ci_method", "n_runs", "task_count",
-    "status", "board",
+    "status",
 }
 
 
@@ -589,9 +560,9 @@ def _validated_entries(entries, *, source: str) -> list[dict]:
     for entry in entries:
         item = _sanitize_entry(entry)
         spec = METRIC_BY_KEY[item["metric"]]
-        # A fallback source may also carry rows for metrics whose primary
-        # source is another feed (BenchLM supplies Terminal-Bench 4.0 rows).
-        if spec.source != source and source not in spec.fallback:
+        # Rows must belong to the source that owns the metric: no source may
+        # inject rows into another source's metric.
+        if spec.source != source:
             raise SourceError(_SOURCE_ERROR_SCHEMA)
         # BenchLM stamps each capture with its own methodology version, so
         # its entry versions are validated as sanitized text, not one pin.
@@ -1018,7 +989,7 @@ def _validators_from(response: Response) -> dict:
     return validators
 
 
-# ── Harbor (Terminal-Bench 4.0) ─────────────────────────────────────────────
+# ── Harbor (Terminal-Bench 4.1) ─────────────────────────────────────────────
 def _harbor_pagination(payload: dict, *, requested_page: int):
     if not isinstance(payload, dict):
         raise SourceError(_SOURCE_ERROR_SCHEMA)
@@ -1108,7 +1079,7 @@ def _harbor_row(row, *, seen_ids: set) -> dict | None:
     if clean_rank is not None:
         metadata_out["rank"] = clean_rank
     return _make_entry(
-        "tb4", model, accuracy, evaluator="Terminal-Bench 4.0",
+        "tb4", model, accuracy, evaluator="Terminal-Bench 4.1",
         version=HARBOR_LEADERBOARD, date=row_date,
         # Harbor's column is literally "Release Date"; it is not an eval date.
         date_kind=DATE_KIND_MODEL_RELEASE if row_date else None,
@@ -1338,7 +1309,7 @@ def fetch_livebench(client: HttpClient, previous: dict | None, deadline: Deadlin
 
 
 # ── BenchLM (BenchLM.ai Data API; opt-in, credentialed) ─────────────────────
-def _benchlm_request_headers(*, mcp: bool = False) -> dict:
+def _benchlm_request_headers() -> dict:
     """Build the BenchLM request headers.
 
     The data key is read from the environment here, at request time, and is
@@ -1349,14 +1320,7 @@ def _benchlm_request_headers(*, mcp: bool = False) -> dict:
     if not key:
         # Never attach an empty credential; fail before any request goes out.
         raise SourceError(_SOURCE_ERROR_START)
-    headers = {"Authorization": f"Bearer {key}"}
-    if mcp:
-        headers["Content-Type"] = "application/json"
-        headers["Accept"] = "application/json, text/event-stream"
-        headers["MCP-Protocol-Version"] = BENCHLM_MCP_PROTOCOL_VERSION
-    else:
-        headers["Accept"] = "application/json"
-    return headers
+    return {"Authorization": f"Bearer {key}", "Accept": "application/json"}
 
 
 def _benchlm_ci(item: dict) -> dict | None:
@@ -1436,105 +1400,17 @@ def _benchlm_rankings_page(payload, *, metric: str, offset: int,
     return entries, data_as_of, version, next_offset
 
 
-def _board_model_key(item: dict) -> str:
-    """Resolve a board row's model identifier to BenchLM's canonical slug.
-
-    The Vals capture publishes no modelKey and only a publisher-prefixed
-    sourceModelId (``alibaba/qwen3.8-max``).  BenchLM's canonical keys carry
-    no vendor prefix, are lowercase, and use ``-`` where the publisher id
-    uses ``.`` or ``_``, so the publisher id is converted to that shape.
-    This is a deterministic format conversion of a known id scheme, not
-    fuzzy matching: it applies only when modelKey is absent, and canonical
-    keys are never rewritten.  Version suffixes (``-1017``, ``-0813``,
-    ``-internal``, dates) name distinct variants and are kept verbatim.
-    """
-    model_key = _text(item.get("modelKey"), maximum=200)
-    if model_key is not None:
-        return model_key  # canonical key: used verbatim, never rewritten
-    source = item.get("sourceModelId")
-    if not isinstance(source, str):
-        # Missing, null, and non-string values are rejected exactly the way
-        # _text rejects them.
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    slug = source.rsplit("/", 1)[-1].lower().replace(".", "-").replace("_", "-")
-    return _text(slug, maximum=200, required=True)
-
-
-def _benchlm_mcp_entries(payload, *, label: str, board_id: str,
-                         tb4: dict) -> str:
-    """Parse one TB4 MCP board response into rows merged into ``tb4``.
-
-    Rows are keyed by model and are deliberately NOT deduped through ``seen``:
-    the same model can appear on more than one board, and the entry with the
-    higher ``value`` wins (an exact tie keeps the earlier board in
-    ``BENCHLM_TB4_BOARDS`` order; a repeated row within one board keeps its
-    first occurrence).  The surviving entry carries the winning board's label
-    as its ``version`` and the board id in ``metadata["board"]``.  Returns the
-    board's own ``dataAsOf``.
-    """
-    if not isinstance(payload, dict):
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    result = payload.get("result")
-    if not isinstance(result, dict):
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    content = result.get("content")
-    if not isinstance(content, list) or not content:
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    text = None
-    for block in content:
-        if (isinstance(block, dict) and block.get("type") == "text"
-                and isinstance(block.get("text"), str)):
-            text = block["text"]
-            break
-    if text is None:
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    inner = _load_json(text.encode("utf-8"))
-    if not isinstance(inner, dict):
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    data_as_of = _date_from_iso(inner.get("dataAsOf"))
-    if data_as_of is None:
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    items = inner.get("items")
-    if not isinstance(items, list):
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    # Same per-page row bound as the rankings surface, before allocation.
-    if len(items) > BENCHLM_PAGE_SIZE:
-        raise SourceError(_SOURCE_ERROR_SCHEMA)
-    for item in items:
-        if not isinstance(item, dict):
-            raise SourceError(_SOURCE_ERROR_SCHEMA)
-        model = _board_model_key(item)
-        score = _number(item.get("score"), low=0.0, high=100.0)
-        existing = tb4.get(model)
-        if existing is not None:
-            if existing["metadata"].get("board") == board_id:
-                continue  # repeated row within one board: keep the first
-            if score <= existing["value"]:
-                continue  # cross-board: higher value wins, ties keep the
-                # earlier board (already stored)
-        tb4[model] = _make_entry(
-            "tb4", model, score, evaluator=BENCHLM_TB4_EVALUATOR,
-            version=label, date=data_as_of,
-            date_kind=DATE_KIND_SOURCE_SNAPSHOT,
-            metadata={"board": board_id},
-        )
-    return data_as_of
-
-
 def fetch_benchlm(client: HttpClient, previous: dict | None, deadline: Deadline) -> dict:
-    """Read every BenchAlign ranking surface plus every TB4 MCP board.
+    """Read every BenchAlign ranking surface.
 
     Hard read cap: at most ``BENCHLM_MAX_PAGES`` pages per surface (12 GETs
-    across the 4 surfaces) plus one MCP POST per TB4 board (2) — at most 14
-    logical requests; each may be retried up to ``HTTP_ATTEMPTS`` times by
-    the shared client, so the wire worst case is 42.  Pagination stops when
-    ``nextOffset`` is null, when a page is empty, or at the cap; hitting the
-    cap never raises, it just stops reading.  The TB4 boards are merged per
-    model, keeping the higher recorded value (see ``_benchlm_mcp_entries``).
+    across the 4 surfaces); each may be retried up to ``HTTP_ATTEMPTS`` times
+    by the shared client, so the wire worst case is 36.  Pagination stops
+    when ``nextOffset`` is null, when a page is empty, or at the cap; hitting
+    the cap never raises, it just stops reading.
     """
     entries: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    tb4: dict[str, dict] = {}
     requests = 0
     pages = 0
     data_as_of: str | None = None
@@ -1567,32 +1443,14 @@ def fetch_benchlm(client: HttpClient, previous: dict | None, deadline: Deadline)
             if not payload.get("items") or next_offset is None:
                 break  # empty page or no further page
             offset = next_offset
-    for label, board_id in BENCHLM_TB4_BOARDS:
-        if requests >= BENCHLM_MAX_REQUESTS:
-            break  # hard cap reached: stop, never raise
-        mcp_body = {
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": BENCHLM_MCP_TOOL,
-                       "arguments": {"boardId": board_id,
-                                     "limit": BENCHLM_PAGE_SIZE}},
-        }
-        response = client.request(
-            "POST", BENCHLM_MCP_URL, json_body=mcp_body,
-            headers=_benchlm_request_headers(mcp=True), deadline=deadline)
-        requests += 1
-        board_date = _benchlm_mcp_entries(
-            _load_json(response.body), label=label, board_id=board_id, tb4=tb4)
-        if data_as_of is None:
-            data_as_of = board_date
-    entries.extend(tb4.values())
     if len(entries) > MAX_ENTRIES:
         raise SourceError(_SOURCE_ERROR_SCHEMA)
     if not entries:
         raise SourceError(_SOURCE_ERROR_EMPTY)
     return {
         "entries": entries,
-        "version": version or BENCHLM_TB4_BOARDS[0][0],
-        # dataAsOf is the board capture date: feed mutation metadata, never
+        "version": version or "v1",
+        # dataAsOf is the capture date: feed mutation metadata, never
         # a model-release or evaluation date.
         "source_updated": data_as_of,
         "validators": {},
@@ -2549,88 +2407,26 @@ def build_payload(inventory: list[dict], state: dict, *,
             if blocked:
                 model["missing"][spec.key] = MISSING_UNMATCHED
                 continue
-            # The primary source wins; each fallback source (BenchLM for tb4)
-            # is tried in order and the FIRST one that is enabled, has cached
-            # data, resolves an identity, and has entries for this metric
-            # supplies the rows — unless the metric's merge policy is "max"
-            # (tb4): then every such candidate is evaluated and the one whose
-            # selected result value is highest supplies the rows (ties keep
-            # the earlier candidate, so the primary stays the provenance).
-            # When every candidate fails, the reason of the candidate that
-            # got furthest is reported (unavailable < unmatched < not
-            # evaluated), so a disabled fallback never masks the primary
-            # source's own unmatched/not-evaluated reason — except when the
-            # primary itself is unavailable: a primary-source outage is
-            # always reported as "source unavailable", never as a deeper
-            # fallback reason such as "not evaluated".
-            chosen: tuple[str, list[dict]] | None = None
-            # merge="max" bookkeeping: (source, entries, results, selected
-            # index, selected value) of the best candidate so far.  The max
-            # is taken across candidates only, on each candidate's
-            # already-selected result; _select_latest still picks within a
-            # candidate, so it never becomes a per-board maximum.
-            max_pick: tuple[str, list[dict], list[dict], int, float] | None = None
-            # First candidate with rows, used by merge="max" only when no
-            # candidate yields a numeric selected value: the selection then
-            # falls through to the "first" behaviour unchanged.
-            first_with_entries: tuple[str, list[dict]] | None = None
-            reason = MISSING_UNAVAILABLE
-            reason_rank = -1
-            primary_reason = None
-            for position, source in enumerate((spec.source, *spec.fallback)):
-                if not source_has_data.get(source):
-                    candidate_reason = MISSING_UNAVAILABLE
-                else:
-                    identity = resolved.get(source)
-                    if identity is None:
-                        candidate_reason = MISSING_UNMATCHED
-                    else:
-                        # A resolved key with a valid date suffix is tried
-                        # first; the date-stripped base key only supplies
-                        # metrics the dated key does not have (never merged).
-                        entries = _metric_entries(indexes[source], spec.key, identity)
-                        if not entries:
-                            candidate_reason = MISSING_NOT_EVALUATED
-                        else:
-                            if first_with_entries is None:
-                                first_with_entries = (source, entries)
-                            if spec.merge == "max":
-                                # Do not break: evaluate every candidate and
-                                # keep the highest selected value (strictly
-                                # greater replaces, so an exact tie keeps the
-                                # earlier candidate).
-                                results = [_result(entry, source) for entry in entries]
-                                selected_index = _select_latest(results)
-                                if selected_index is not None:
-                                    value = results[selected_index]["value"]
-                                    if max_pick is None or value > max_pick[4]:
-                                        max_pick = (source, entries, results,
-                                                    selected_index, value)
-                                candidate_reason = MISSING_NOT_EVALUATED
-                            else:
-                                chosen = (source, entries)
-                                break
-                if position == 0:
-                    primary_reason = candidate_reason
-                rank = _MISSING_REASON_ORDER[candidate_reason]
-                if rank > reason_rank:
-                    reason, reason_rank = candidate_reason, rank
-            if primary_reason == MISSING_UNAVAILABLE:
-                # The primary source is enabled but has no data: report its
-                # outage regardless of how far the fallback got.
-                reason = MISSING_UNAVAILABLE
-            if spec.merge == "max":
-                if max_pick is not None:
-                    chosen = (max_pick[0], max_pick[1])
-                elif first_with_entries is not None:
-                    # No candidate yielded a numeric selected value: fall
-                    # through to the existing (first-candidate) behaviour,
-                    # including its results emission and missing reason.
-                    chosen = first_with_entries
-            if chosen is None:
-                model["missing"][spec.key] = reason
+            # The metric's own source supplies the rows when it is enabled,
+            # has cached data, resolves an identity, and has entries for the
+            # metric; otherwise the missing reason names the furthest point
+            # reached: source unavailable < unmatched identity < not
+            # evaluated.
+            if not source_has_data.get(spec.source):
+                model["missing"][spec.key] = MISSING_UNAVAILABLE
                 continue
-            source, entries = chosen
+            source = spec.source
+            identity = resolved.get(source)
+            if identity is None:
+                model["missing"][spec.key] = MISSING_UNMATCHED
+                continue
+            # A resolved key with a valid date suffix is tried first; the
+            # date-stripped base key only supplies metrics the dated key
+            # does not have.
+            entries = _metric_entries(indexes[source], spec.key, identity)
+            if not entries:
+                model["missing"][spec.key] = MISSING_NOT_EVALUATED
+                continue
             results = [_result(entry, source) for entry in entries]
             selected_index = _select_latest(results)
             if selected_index is None:

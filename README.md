@@ -77,15 +77,15 @@ Git history; revoke exposed credentials before publishing source.
 AI Services reads structured feeds only; it does not scrape leaderboard
 HTML/JavaScript:
 
-- **Harbor Terminal-Bench 4.0** (default) — public
+- **Harbor Terminal-Bench 4.1** (default) — public
   [leaderboard API](https://docs.harborframework.com/harbor-hub/leaderboards)
   ([endpoint](https://api.harborframework.com/functions/v1/leaderboard-read)).
   Harbor documents unauthenticated reads for displaying public leaderboards on
   your website. Rows mix native agents, reasoning effort, and trial counts; the
   dashboard preserves that provenance instead of claiming a pure-model rank.
 - **LiveBench 2.0** (optional, disabled by default) — seven suites pinned to release
-  `20261025` ([table.csv](https://livebench.ai/data/20261025/table.csv),
-  [categories.json](https://livebench.ai/data/20261025/categories.json),
+  `20261106` ([table.csv](https://livebench.ai/data/20261106/table.csv),
+  [categories.json](https://livebench.ai/data/20261106/categories.json),
   [site](https://livebench.ai/)). The original 2024 dataset's
   [Apache-2.0 datasheet](https://github.com/LiveBench/LiveBench/blob/main/docs/DATASHEET.md)
   does not conclusively establish reuse terms for the newer 2.0 score feed;
@@ -102,18 +102,16 @@ HTML/JavaScript:
   shown.
 - **BenchLM (BenchLM.ai Data API)** (optional, off unless `BENCHLM_DATA_KEY` is
   set) —
-  [rankings API](https://data.benchlm.ai/v1/rankings/current?surface=overall|coding|agentic|knowledge)
-  and [MCP endpoint](https://data.benchlm.ai/mcp). Adds **BenchAlign Overall**,
-  **BenchAlign Coding**, **BenchAlign Agentic** and **BenchAlign Knowledge**
-  (0–100 composite point estimates, not percentages; one manual refresh reads
-  11 requests in practice — 9 GETs + 2 MCP calls — and at most 14 across the
-  4 surfaces + 2 MCP calls; retries can multiply these logical requests on
-  the wire, so this count assumes a clean run)
-  plus Terminal-Bench 4.0 rows from its two TB4 boards: the displayed TB4
-  value is the highest recorded result across Harbor and those boards, so a
-  TB4 row's harness varies by model (its `version` names the board); it does
-  not replace any other source — no ECI composite, no LiveBench per-suite
-  breakdown, and it covers roughly 19 of this install's 28 inventory models.
+  [rankings API](https://data.benchlm.ai/v1/rankings/current?surface=overall|coding|agentic|knowledge).
+  Adds **BenchAlign Overall**, **BenchAlign Coding**, **BenchAlign Agentic**
+  and **BenchAlign Knowledge** (0–100 composite point estimates, not
+  percentages; one manual refresh reads 4 GETs in practice and at most 12
+  across the 4 surfaces; retries can multiply these logical requests on
+  the wire, so this count assumes a clean run). It supplies no
+  Terminal-Bench rows — BenchLM publishes no 4.1 boards, and mixing 4.0
+  fallback rows into a 4.1 column would compare different verifier versions,
+  so the TB4 column stays Harbor-only — and it does not replace any other
+  source: no ECI composite, no LiveBench per-suite breakdown.
   BenchLM data is [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/);
   this private, non-commercial single-user install shows it with attribution —
   cite BenchLM.ai (CC BY-NC 4.0) — as the operator's choice; redistribution or
@@ -126,10 +124,9 @@ and Epoch's `date` are model releases (`model_release`), and LiveBench's pin is
 a benchmark release (`benchmark_release`).
 The score column uses the latest published dated result — ties break on
 reasoning effort, then agent/configuration lexical order, never on score — and
-the API keeps every configuration's own value. Terminal-Bench 4.0 is the one
-exception: its column shows the highest recorded result across Harbor and
-BenchLM's two TB4 boards, so a displayed TB4 row may come from a different
-harness than another model's row. Score hover text shows the
+the API keeps every configuration's own value; every column, Terminal-Bench
+included, comes from exactly one source, so a displayed row never mixes
+harnesses across sources. Score hover text shows the
 selected result's agent, effort, confidence interval, date kind, trial count and
 benchmark model identity when available. Stale cached scores and missing reasons
 are also identified on hover. An evaluation date
