@@ -2151,7 +2151,8 @@ def _build_index(source_state: dict | None) -> dict:
 
 
 def _identity_candidates(row: dict) -> list[str]:
-    """Every ``/``-suffix of the upstream id, full id first.
+    """Every ``/``-suffix of the upstream id, full id first, then the
+    route's public name as secondary evidence.
 
     ``mistral/zai-glm-5-3`` -> [full, ``zai-glm-5-3``];
     ``openai/responses/gpt-5.6-luna`` -> [full, ``responses/gpt-5.6-luna``,
@@ -2159,14 +2160,23 @@ def _identity_candidates(row: dict) -> list[str]:
     ``mistral/glm-5.3/`` -> [``mistral/glm-5.3``, ``glm-5.3``].  No published
     source model contains ``/``, so a slashed candidate can only ever match
     exactly; the first matching candidate wins.
+
+    The route's public name (for example ``qwen3.8-flash-next`` fronting a
+    local ``openai/qwen3.8-flash-next-iq3_s`` deployment) is tried only
+    after every upstream-derived candidate fails: a resolvable upstream id
+    stays authoritative, while quantization or deployment suffixes on the
+    upstream can still match through the name the route publishes.
     """
     upstream = (row.get("upstream_model") or "").rstrip("/")
     candidates = [upstream]
     parts = upstream.split("/")
-    for start in range(1, len(parts)):
-        suffix = "/".join(parts[start:])
+    for start_index in range(1, len(parts)):
+        suffix = "/".join(parts[start_index:])
         if suffix and suffix != upstream and suffix not in candidates:
             candidates.append(suffix)
+    name = row.get("name")
+    if isinstance(name, str) and name and name not in candidates:
+        candidates.append(name)
     return candidates
 
 

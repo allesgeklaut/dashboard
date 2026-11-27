@@ -3221,6 +3221,56 @@ class RuleCascadeTests(unittest.TestCase):
                 self.assertNotEqual(benchmarks._canonical_tokens(left),
                                     benchmarks._canonical_tokens(right))
 
+    def test_identity_candidates_put_the_route_name_last(self):
+        # The public name is secondary evidence: it joins after every
+        # upstream-derived candidate and is never duplicated.
+        row = {"name": "qwen3.8-flash-next",
+               "upstream_model": "openai/qwen3.8-flash-next-iq3_s"}
+        self.assertEqual(benchmarks._identity_candidates(row),
+                         ["openai/qwen3.8-flash-next-iq3_s",
+                          "qwen3.8-flash-next-iq3_s",
+                          "qwen3.8-flash-next"])
+        self.assertEqual(
+            benchmarks._identity_candidates(
+                {"name": "qwen3.8-max", "upstream_model": "openai/qwen3.8-max"}),
+            ["openai/qwen3.8-max", "qwen3.8-max"])
+
+    def test_route_name_matches_after_upstream_candidates_fail(self):
+        # A local quantized deployment publishes the route name
+        # qwen3.8-flash-next; when no upstream candidate resolves (the
+        # -iq3_s tail is not a known normalization), the name resolves to
+        # the feed's canonical qwen3-8-flash-next row.
+        index = self._index("qwen3-8-flash-next")
+        row = {"name": "qwen3.8-flash-next",
+               "upstream_model": "openai/qwen3.8-flash-next-iq3_s"}
+        self.assertEqual(
+            benchmarks._resolve_identity(row, "benchlm", index),
+            "qwen3-8-flash-next")
+
+    def test_upstream_match_wins_over_the_route_name(self):
+        # The name never overrides a resolvable upstream id.
+        index = self._index("qwen3-8-max", "qwen3-8-flash-next")
+        row = {"name": "qwen3.8-flash-next",
+               "upstream_model": "openai/qwen3.8-max"}
+        self.assertEqual(benchmarks._resolve_identity(row, "benchlm", index),
+                         "qwen3-8-max")
+
+    def test_modified_variants_stay_blocked_despite_a_clean_route_name(self):
+        # The name fallback never revives modified weights: the
+        # modified-variant gate runs before identity resolution, so a clean
+        # route name fronting an abliterated upstream stays unscored.
+        state = make_state({"benchlm": [
+            entry("benchalign_overall", "qwen3-8-27b", 61.0, source="benchlm",
+                  date="2026-11-23"),
+        ]})
+        payload = benchmarks.build_payload(
+            [inventory_model("qwen3.8-27b", "openai/qwen3.8:27b-abliterated")],
+            state, benchlm_enabled=True)
+        model = payload["models"][0]
+        self.assertEqual(model["missing"]["benchalign_overall"],
+                         "unmatched identity")
+        self.assertNotIn("benchalign_overall", model["bench"])
+
     def test_date_suffix_validation(self):
         valid = {"1017": 1, "0902": 1, "0731": 1, "0813": 1, "0229": 1,
                  "20260317": 1, "2026-03-17": 3}

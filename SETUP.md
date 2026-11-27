@@ -120,7 +120,13 @@ only after an exact match, then a case-folded match, then a canonical-form
 match, then a unique dated extension of a published model — failing closed
 when the dated extension is ambiguous. There is no
 fuzzy prefix matching, version guessing, automatic `-latest` alias mapping, or
-copying a base model's score onto a modified/abliterated variant. An unmatched
+copying a base model's score onto a modified/abliterated variant. One
+secondary clue exists: the route's public name is tried after every
+upstream-derived candidate fails, so a quantized local deployment (for
+example `qwen3.8-flash-next` fronting `openai/qwen3.8-flash-next-iq3_s`)
+still matches its published feed row through the name the route advertises;
+a resolvable upstream id always wins, and the modified-variant gate still
+runs first. An unmatched
 row shows a dash with a hover-only missing reason (not evaluated, unmatched
 identity, unsupported modality, or source unavailable). Missing coverage is not
 a fetch failure.
