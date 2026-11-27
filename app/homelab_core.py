@@ -55,11 +55,8 @@ OPENCODE_GO_TTL      = 60  # seconds to cache a successful upstream response
 # Go plan limits/pricing table — parsed from the docs source that builds
 # https://opencode.ai/docs/go (no JSON API exists for it).  Unofficial, so the
 # parser degrades gracefully: last-known-good is served as "stale".
-OPENCODE_LIMITS_URLS = (
-    "https://raw.githubusercontent.com/anomalyco/opencode/dev/services/www/src/docs/content/console/go.mdx",
-    "https://raw.githubusercontent.com/anomalyco/opencode/master/services/www/src/docs/content/console/go.mdx",
-)
-OPENCODE_LIMITS_TTL  = 3600  # seconds between docs refetches
+OPENCODE_LIMITS_URL  = "https://opencode.ai/inference/go/v1/models"
+OPENCODE_LIMITS_TTL  = 3600  # seconds between models-endpoint refetches
 OPENCODE_LIMITS_RETRY = 300  # seconds to back off after a failed refetch
 LITELLM_CONFIG_FILE = os.getenv("LITELLM_CONFIG_FILE", "")
 # ── Desktop control (Wake-on-LAN + remote power off) — see SETUP.md § 6 ──────
@@ -601,80 +598,32 @@ _opencode_limits_fetch_lock = threading.Lock()
 _opencode_limits_cache: dict = {"ts": 0.0, "data": None, "fail_ts": 0.0}
 
 
-def _parse_go_limits_mdx(text: str) -> list[dict]:
-    """Parse the go-pricing + go-requests PlanTabs tables (Go slot) from the
-    docs mdx into one row per model: {"name", "req_5h", "monthly"}.
+def _go_limits_from_models_payload(payload: object) -> list[dict]:
+    """One row per paid Go model from the models endpoint:
+    {"name", "five_hour", "monthly"}.
 
-    Values are ints, or the string "unlimited"; None means unknown/missing.
+    Monthly dollars come from each model's ``go.monthly_usage.go`` entry.
+    The 5-hour window is 20% of the monthly allowance by plan definition,
+    shown as its dollar budget. Free models and entries without a positive
+    Go allowance are skipped.
     """
-
-    def block(tab_id: str) -> str:
-        i = text.find(f'<PlanTabs id="{tab_id}"')
-        if i < 0:
-            return ""
-        j = text.find("</PlanTabs>", i)
-        return text[i:j if j >= 0 else len(text)]
-
-    def slot(block_text: str, name: str) -> str:
-        i = block_text.find(f'<div slot="{name}">')
-        if i < 0:
-            return ""
-        j = block_text.find('<div slot="', i + 1)
-        return block_text[i:j if j >= 0 else len(block_text)]
-
-    def rows(block_text: str) -> list[list[str]]:
-        out = []
-        for line in block_text.splitlines():
-            line = line.strip()
-            if not line.startswith("|"):
-                continue
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            if all(set(c) <= {"-", ":", " "} for c in cells):  # separator row
-                continue
-            if cells and cells[0].lower() == "model":          # header row
-                continue
-            out.append(cells)
-        return out
-
-    def value(cell: str):
-        # "2x · Limited time" promo rows carry the old value struck through
-        # (~~$30~~) and the current one bold (**$60**).  Drop the struck-out
-        # value, the annotations, and all markup, then parse what remains.
-        s = re.sub(r"~~.*?~~", "", cell)
-        s = re.sub(r"<small>.*?</small>", "", s, flags=re.S)
-        s = re.sub(r"<[^>]+>", " ", s).replace("**", "").strip()
-        if s.lower().startswith("unlimited"):
-            return "unlimited"
-        try:
-            return int(round(float(s.replace("$", "").replace(",", ""))))
-        except (ValueError, OverflowError):
-            return None
-
-    monthly: dict[str, object] = {}
-    for r in rows(slot(block("go-pricing"), "go")):
-        if len(r) >= 6:
-            # variant rows ("... (Peak)", "... (≤ 256K tokens)") share a
-            # monthly limit — merge them onto the base model name
-            base = re.sub(r"\s*\(.*\)$", "", r[0])
-            monthly.setdefault(base, value(r[5]))
-
-    models = []
-    for r in rows(slot(block("go-requests"), "go")):
-        if len(r) < 2:
+    if not isinstance(payload, dict):
+        return []
+    out: list[dict] = []
+    for m in payload.get("data") or []:
+        if not isinstance(m, dict):
             continue
-        req = value(r[1])
-        if req is None:   # a row whose count won't parse is junk (header/shape change)
+        usage = (m.get("go") or {}).get("monthly_usage") or {}
+        monthly = usage.get("go")
+        if not isinstance(monthly, (int, float)) or monthly <= 0:
             continue
-        # strip promo annotations ("…<br /><small>2x · Limited time</small>") so
-        # the name matches the pricing table and renders cleanly
-        name = re.sub(r"<small>.*?</small>", "", r[0], flags=re.S)
-        name = re.sub(r"<br\s*/?>", " ", name).strip()
-        models.append({
-            "name":    name,
-            "req_5h":  req,
-            "monthly": monthly.get(name),
+        out.append({
+            "name":      m.get("id"),
+            "five_hour": int(round(monthly * 0.2)),
+            "monthly":   int(round(monthly)),
         })
-    return models
+    out.sort(key=lambda r: r["name"])
+    return out
 
 
 def get_opencode_go_limits() -> dict:
@@ -683,10 +632,12 @@ def get_opencode_go_limits() -> dict:
 
 
 def _get_opencode_go_limits() -> dict:
-    """Go plan per-model limits (est. requests/5h + monthly $), from the docs
-    source.  Cached for OPENCODE_LIMITS_TTL; on failure the last-known-good
-    copy is served with "stale": true (cold start with no source → error)."""
-    if not _read_opencode_go_key():
+    """Go plan per-model limits (monthly $ + the 20%-of-monthly 5-hour budget),
+    from the authenticated Go models endpoint.  Cached for
+    OPENCODE_LIMITS_TTL; on failure the last-known-good copy is served with
+    "stale": true (cold start with no source → error)."""
+    key = _read_opencode_go_key()
+    if not key:
         return {"error": "not configured"}
 
     now = time.time()
@@ -701,15 +652,22 @@ def _get_opencode_go_limits() -> dict:
             return {"error": "unavailable"}
 
     models: list[dict] = []
-    for url in OPENCODE_LIMITS_URLS:
-        try:
-            r = requests.get(url, timeout=10)
-            if r.status_code == 200:
-                models = _parse_go_limits_mdx(r.text)
-            if models:
-                break
-        except Exception:
-            continue
+    try:
+        r = requests.get(
+            OPENCODE_LIMITS_URL,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+                "User-Agent": "homelab-ctrl/2 (dashboard usage panel)",
+            },
+            timeout=10,
+            # Never let a redirect forward the Bearer token to another host.
+            allow_redirects=False,
+        )
+        if r.status_code == 200:
+            models = _go_limits_from_models_payload(r.json())
+    except Exception:
+        pass
 
     with _opencode_limits_lock:
         _opencode_limits_cache["fail_ts"] = 0.0 if models else now

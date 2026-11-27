@@ -222,11 +222,12 @@ class CacheConcurrencyTests(unittest.TestCase):
 
         def upstream(*_args, **_kwargs):
             time.sleep(0.03)
-            return Mock(status_code=200, text="fixture")
+            return Mock(status_code=200, json=Mock(return_value={
+                "data": [{"id": "fixture", "go": {"monthly_usage": {"go": 100}}}]
+            }))
 
         with patch.object(core, "_read_opencode_go_key", return_value="dummy"), \
                 patch.object(core, "_opencode_limits_cache", {"data": None, "ts": 0, "fail_ts": 0}), \
-                patch.object(core, "_parse_go_limits_mdx", return_value=[{"name": "fixture"}]), \
                 patch.object(core.requests, "get", side_effect=upstream) as get:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 results = list(pool.map(lambda _: caller(), range(2)))

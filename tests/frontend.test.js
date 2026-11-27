@@ -2400,7 +2400,7 @@ test('usage and allowance sections stay above the comparison and keep no score c
       return response({ rolling: { percent: 23, status: 'ok', resets_at: null } });
     }
     if (url === '/api/opencode-go-limits') {
-      return response({ models: [{ name: 'fixture-model', req_5h: 100, monthly: 12 }] });
+      return response({ models: [{ name: 'fixture-model', five_hour: 20, monthly: 12 }] });
     }
     return response(aiServicesReport());
   };
@@ -2411,7 +2411,7 @@ test('usage and allowance sections stay above the comparison and keep no score c
   assert.match(d.element('ocg-list').innerHTML, /23%/);
   const limits = d.element('ocgl-tbody').innerHTML;
   assert.match(limits, /fixture-model/);
-  assert.match(limits, /100/);
+  assert.match(limits, /\$20/);
   assert.match(limits, /\$12/);
   assert.doesNotMatch(limits, /TB4|bench|score/i);
   assert.equal(d.element('ocgl-wrap').style.display, 'block');

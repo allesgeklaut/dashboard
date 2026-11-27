@@ -1052,7 +1052,7 @@ a.btn-stream { display:inline-flex; align-items:center; text-decoration:none; }
           <thead>
             <tr>
               <th class="proc-sortable" data-key="name" onclick="sortLimits('name')">MODEL</th>
-              <th class="ocg-num proc-sortable" data-key="req_5h" onclick="sortLimits('req_5h')">REQ / 5H</th>
+              <th class="ocg-num proc-sortable" data-key="five_hour" onclick="sortLimits('five_hour')">5H LIMIT</th>
               <th class="ocg-num proc-sortable" data-key="monthly" onclick="sortLimits('monthly')">MONTHLY</th>
             </tr>
           </thead>
@@ -4562,10 +4562,10 @@ function renderLimits() {
                     : v === 'unlimited' ? 'unlimited' : '—';
   const rows = sorted.map(m => `<tr>
       <td>${escHtml(m.name)}</td>
-      <td class="ocg-num">${num(m.req_5h)}</td>
+      <td class="ocg-num">${money(m.five_hour)}</td>
       <td class="ocg-num">${money(m.monthly)}</td>
     </tr>`);
-  if (_ocglData.stale) rows.push('<tr><td colspan="3" class="ocg-stale">stale — docs source unreachable</td></tr>');
+  if (_ocglData.stale) rows.push('<tr><td colspan="3" class="ocg-stale">stale — Go models endpoint unreachable</td></tr>');
   document.getElementById('ocgl-tbody').innerHTML = rows.join('');
   document.querySelectorAll('#ocgl-table th').forEach(th => {
     th.classList.toggle('sorted-asc',  th.dataset.key === key && dir === 1);
