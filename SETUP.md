@@ -64,7 +64,7 @@ on purpose.
 
 The former OPENCODE and MISTRAL tabs are now one **AI SERVICES** tab. It has a
 single LiteLLM-backed inventory table, with the OpenCode Go usage/allowances card
-and a Mistral console link preserved above it:
+above it:
 
 - **OpenCode Go usage and allowances** — the Go plan's rolling 5h / weekly /
   monthly usage plus the per-model table: the base $/1M-token input and
@@ -86,9 +86,6 @@ and a Mistral console link preserved above it:
   `.env.example`); locally it can fall back to the dev machine's auth store
   (`OPENCODE_AUTH_FILE` overrides the path). Usage polls only while the page
   is open — nothing runs in the background.
-- **Mistral console** — an **OPEN MISTRAL** link to Mistral's admin console for
-  subscription/usage. It is only a link: the dashboard does not scrape Mistral,
-  use cookies or a billing API, or require a Mistral or LiteLLM admin key.
 - **Inventory table** — rows come from the valid routes in the LiteLLM
   `model_list`, not only `mistral/` routes. Routes are grouped by exact upstream
   model ID and mode, so a chat route and an embedding route that share one
