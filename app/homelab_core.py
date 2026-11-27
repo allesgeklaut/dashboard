@@ -600,11 +600,11 @@ _opencode_limits_cache: dict = {"ts": 0.0, "data": None, "fail_ts": 0.0}
 
 
 def _go_price(value: object) -> float | None:
-    """A non-negative per-million list price; booleans are not numbers."""
+    """A finite, non-negative per-million list price; booleans are not numbers."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     value = float(value)
-    return value if value >= 0 else None
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 def _go_limits_from_models_payload(payload: object) -> list[dict]:
@@ -616,13 +616,18 @@ def _go_limits_from_models_payload(payload: object) -> list[dict]:
     1M tokens.  Long-context price overrides and time-of-day multipliers
     are deliberately not applied: the panel shows the base list price.
     Free models and entries without a positive Go allowance are skipped; a
-    paid model without a usable cost block keeps its row with null prices.
+    paid model without a usable cost block keeps its row with null prices,
+    and a paid entry without a non-empty string id is skipped rather than
+    poisoning the name sort.
     """
     if not isinstance(payload, dict):
         return []
     out: list[dict] = []
     for m in payload.get("data") or []:
         if not isinstance(m, dict):
+            continue
+        name = m.get("id")
+        if not isinstance(name, str) or not name:
             continue
         usage = (m.get("go") or {}).get("monthly_usage") or {}
         monthly = usage.get("go")
@@ -631,7 +636,7 @@ def _go_limits_from_models_payload(payload: object) -> list[dict]:
             continue
         text = (m.get("cost") or {}).get("text") or {}
         out.append({
-            "name":         m.get("id"),
+            "name":         name,
             "input_price":  _go_price((text.get("input") or {}).get("price")),
             "output_price": _go_price((text.get("output") or {}).get("price")),
             "monthly":      int(round(monthly)),

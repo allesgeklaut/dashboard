@@ -303,12 +303,27 @@ model_list:
                     "cost": {"text": {"input": {"price": True},
                                       "output": {"price": -1}}},
                 },
+                {   # non-finite prices (inf/NaN parse under Python json): nulls
+                    "id": "inf-prices",
+                    "go": {"monthly_usage": {"go": 30}},
+                    "cost": {"text": {"input": {"price": float("inf")},
+                                      "output": {"price": float("nan")}}},
+                },
+                {   # paid entry without a usable id: skipped, never sorted
+                    "id": None,
+                    "go": {"monthly_usage": {"go": 80}},
+                },
+                {   # empty-string id is equally unusable: skipped
+                    "id": "",
+                    "go": {"monthly_usage": {"go": 90}},
+                },
                 "not-a-dict",
             ]
         }
         rows = core._go_limits_from_models_payload(payload)
         self.assertEqual([r["name"] for r in rows],
-                         ["aa-first", "bad-prices", "mm-middle", "zz-last"])
+                         ["aa-first", "bad-prices", "inf-prices",
+                          "mm-middle", "zz-last"])
         by_name = {r["name"]: r for r in rows}
         self.assertEqual(by_name["zz-last"],
                          {"name": "zz-last", "input_price": 1.4,
@@ -320,7 +335,11 @@ model_list:
         self.assertEqual(by_name["mm-middle"]["monthly"], 60)
         self.assertIsNone(by_name["bad-prices"]["input_price"])
         self.assertIsNone(by_name["bad-prices"]["output_price"])
+        self.assertIsNone(by_name["inf-prices"]["input_price"])
+        self.assertIsNone(by_name["inf-prices"]["output_price"])
+        self.assertEqual(by_name["inf-prices"]["monthly"], 30)
         self.assertNotIn("free-model", by_name)
+        self.assertEqual(len(rows), 5)
         # Defensive shapes: non-dict payload and empty data are both fine.
         self.assertEqual(core._go_limits_from_models_payload(None), [])
         self.assertEqual(core._go_limits_from_models_payload({"data": []}), [])
