@@ -2300,9 +2300,6 @@ def _is_modified_variant(row: dict) -> bool:
     and gets no stock score.
     """
     values = list(_identity_candidates(row))
-    name = row.get("name")
-    if isinstance(name, str):
-        values.append(name)
     routes = row.get("routes")
     if isinstance(routes, list):
         for route in routes:
@@ -2372,8 +2369,7 @@ def _select_latest(results: list[dict]) -> int | None:
 
 
 def build_payload(inventory: list[dict], state: dict, *,
-                  benchlm_enabled: bool | None = None,
-                  include_sources: bool = True) -> dict:
+                  benchlm_enabled: bool | None = None) -> dict:
     """Assemble the AI Services contract from inventory rows and cache state."""
     metrics = _enabled_metrics()
     enabled_sources = {source for source in SOURCE_NAMES
@@ -2452,44 +2448,30 @@ def build_payload(inventory: list[dict], state: dict, *,
         models.append(model)
 
     payload = {"models": models, "metrics": [spec.as_dict() for spec in metrics]}
-    if include_sources:
-        sources = {}
-        for name in SOURCE_NAMES:
-            source_state = state.get(name) or {}
-            disabled = name not in enabled_sources
-            warning = (SOURCE_DISABLED_WARNINGS.get(name, SOURCES[name].warning)
-                       if disabled else SOURCES[name].warning)
-            sources[name] = {
-                "last_checked": source_state.get("last_checked"),
-                "last_success": source_state.get("last_success"),
-                "source_updated": source_state.get("source_updated"),
-                "stale": True if disabled else bool(source_state.get("stale", True)),
-                "error": source_state.get("error"),
-                "version": source_state.get("version") or SOURCES[name].version,
-                "url": SOURCES[name].url,
-                "warning": warning,
-                "disabled": disabled,
-            }
-        payload["sources"] = sources
+    sources = {}
+    for name in SOURCE_NAMES:
+        source_state = state.get(name) or {}
+        disabled = name not in enabled_sources
+        warning = (SOURCE_DISABLED_WARNINGS.get(name, SOURCES[name].warning)
+                   if disabled else SOURCES[name].warning)
+        sources[name] = {
+            "last_checked": source_state.get("last_checked"),
+            "last_success": source_state.get("last_success"),
+            "source_updated": source_state.get("source_updated"),
+            "stale": True if disabled else bool(source_state.get("stale", True)),
+            "error": source_state.get("error"),
+            "version": source_state.get("version") or SOURCES[name].version,
+            "url": SOURCES[name].url,
+            "warning": warning,
+            "disabled": disabled,
+        }
+    payload["sources"] = sources
     return payload
-
-
-def metrics_metadata() -> list[dict]:
-    return [spec.as_dict() for spec in _enabled_metrics()]
-
-
-def last_success(state: dict) -> float | None:
-    """Latest successful refresh among sources currently enabled for display."""
-    values = [entry.get("last_success") for name, entry in state.items()
-              if _source_enabled(name)
-              and isinstance(entry.get("last_success"), (int, float))
-              and not isinstance(entry.get("last_success"), bool)]
-    return max(values) if values else None
 
 
 __all__ = [
     "BenchmarkStore", "Deadline", "HttpClient", "METRICS", "SOURCES",
     "BENCHLM_ENABLED", "BENCHLM_WARNING",
     "build_payload", "ensure_refresh_scheduled", "get_store", "is_refreshing",
-    "last_success", "metrics_metadata", "read_state", "request_refresh", "refresh_policy",
+    "read_state", "request_refresh", "refresh_policy",
 ]
